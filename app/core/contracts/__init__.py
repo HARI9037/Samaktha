@@ -41,6 +41,7 @@ from app.core.contracts.policy import (
 )
 from app.core.contracts.runtime import RuntimeContext, RuntimeResult, RuntimeTask
 from app.core.contracts.routing import RoutingDecision
+from app.core.contracts.trace import ExecutionTrace, TimelineEvent
 
 __all__ = [
     "ActionRisk",
@@ -53,6 +54,7 @@ __all__ = [
     "ConversationMessage",
     "ContextRequest",
     "ExecutionPlan",
+    "ExecutionTrace",
     "Goal",
     "GoalComplexity",
     "MemoryReader",
@@ -81,6 +83,7 @@ __all__ = [
     "TaskKind",
     "TaskOutcome",
     "TaskStatus",
+    "TimelineEvent",
     "WorkflowStage",
     "WorkflowStep",
 ]

@@ -2,7 +2,7 @@ import time
 import pytest
 from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeTask, RuntimeResult
 from app.core.contracts.planning import TaskStatus
-from app.runtime.trace import ExecutionTrace
+from app.core.contracts.trace import ExecutionTrace
 from app.runtime.executor import ProviderExecutor, ToolExecutor
 from app.workflow.engine import WorkflowEngine
 from app.core.orchestrator.engine import SamakthaOrchestrator

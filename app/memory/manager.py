@@ -5,6 +5,7 @@ from typing import Any, List, Optional, Union
 from app.core.contracts.memory import MemoryRecord
 from app.memory.base import Memory
 from app.memory.categories import normalize_category, normalize_category_for_storage
+from app.memory.metrics import MemoryMetricsCollector, MemoryMetricsSnapshot
 from app.memory.models import MemoryEntry
 from app.memory.repository import MemoryRepository
 from app.memory.search import search_entries
@@ -28,14 +29,20 @@ class MemoryManager(Memory):
             self._repo = MemoryRepository(store=store)
         else:
             self._repo = MemoryRepository()
+        self._metrics = MemoryMetricsCollector()
+
+    def get_metrics(self) -> MemoryMetricsSnapshot:
+        return self._metrics.get_metrics()
 
     async def read(self, key: str) -> Optional[MemoryRecord]:
+        self._metrics.record_read()
         entry = self._repo.get(key)
         if entry is None:
             return None
         return self._entry_to_record(entry)
 
     async def write(self, key: str, value: Any, category: str = "internal") -> None:
+        self._metrics.record_write()
         now = datetime.utcnow()
         stored_category = normalize_category_for_storage(category)
         entry = self._repo.get(key)
@@ -56,9 +63,11 @@ class MemoryManager(Memory):
         self._repo.save(entry)
 
     async def delete(self, key: str) -> None:
+        self._metrics.record_delete()
         self._repo.delete(key)
 
     async def search(self, query: str = "", category: Optional[str] = None) -> List[MemoryRecord]:
+        self._metrics.record_search()
         entries = self._repo.list_all()
         filter_category = (
             normalize_category_for_storage(category) if category is not None else None

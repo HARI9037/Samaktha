@@ -115,10 +115,31 @@ class ToolLike(Protocol):
         raise NotImplementedError
 
 
+class ToolResultLike(Protocol):
+    @property
+    def ok(self) -> bool:
+        raise NotImplementedError
+
+    @property
+    def data(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @property
+    def error(self) -> str | None:
+        raise NotImplementedError
+
+
 class ToolManagerLike(Protocol):
     """Tool manager shape required by Runtime."""
 
     def resolve_tool(self, tool_id: str) -> ToolLike | None:
+        raise NotImplementedError
+
+    async def execute_tool(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+    ) -> ToolResultLike:
         raise NotImplementedError
 
 
@@ -145,26 +166,8 @@ class ToolExecutor:
         import time
         started_at = time.perf_counter()
         
-        tool = self._tool_manager.resolve_tool(task.action_type)
-        if tool is None:
-            if context and context.trace:
-                context.trace.add_event(
-                    source="runtime",
-                    event_type="runtime.tool.failed",
-                    duration_ms=(time.perf_counter() - started_at) * 1000,
-                    task_id=task.task_id,
-                    error=f"Tool is not registered: {task.action_type}"
-                )
-            return RuntimeResult(
-                task_id=task.task_id,
-                status=TaskStatus.FAILED,
-                routing=routing,
-                error=f"Tool is not registered: {task.action_type}",
-            )
-
-        # Re-map inputs for tool (assuming inputs contains the kwargs)
         try:
-            tool_result = await tool.run(task.inputs)
+            tool_result = await self._tool_manager.execute_tool(task.action_type, task.inputs)
             
             if tool_result.ok:
                 result = RuntimeResult(

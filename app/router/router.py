@@ -8,6 +8,7 @@ from app.router.base import Router
 from app.router.capabilities import CapabilityRegistry, ProviderCapability
 from app.router.policy import RoutingPolicy
 from app.router.registry import RouterRegistry
+from app.router.metrics import RouterMetricsCollector, RouterMetricsSnapshot
 from app.router.scoring import ScoringEngine
 
 
@@ -33,6 +34,10 @@ class ModelRouter(Router):
         self._policy = policy or RoutingPolicy()
         self._scoring = ScoringEngine()
         self._model_manager = model_manager
+        self._metrics = RouterMetricsCollector()
+
+    def get_metrics(self) -> RouterMetricsSnapshot:
+        return self._metrics.get_metrics()
 
     async def route(self, request: RouterRequest) -> RoutingDecision:
         capability = self._capability_from_request(request)
@@ -59,6 +64,7 @@ class ModelRouter(Router):
                 if self._model_is_eligible(candidate.model_id, request)
             ]
             if not candidates:
+                self._metrics.record_decision(successful=False)
                 return RoutingDecision(
                     provider_id="",
                     model_id="",
@@ -70,6 +76,7 @@ class ModelRouter(Router):
                 )
 
         if not candidates:
+            self._metrics.record_decision(successful=False)
             return RoutingDecision(
                 provider_id="",
                 model_id="",
@@ -96,6 +103,7 @@ class ModelRouter(Router):
                          and c.model_id == best.model_id),
                         candidates[0],
                     )
+                    self._metrics.record_decision(successful=True)
                     return RoutingDecision(
                         provider_id=matched.provider_id,
                         model_id=matched.model_id,
@@ -124,6 +132,7 @@ class ModelRouter(Router):
                             **matched.metadata,
                         },
                     )
+                self._metrics.record_decision(successful=False)
                 return RoutingDecision(
                     provider_id="",
                     model_id="",
@@ -134,6 +143,7 @@ class ModelRouter(Router):
 
         # v0.1 fallback: pick first matching candidate
         selected = candidates[0]
+        self._metrics.record_decision(successful=True)
         return RoutingDecision(
             provider_id=selected.provider_id,
             model_id=selected.model_id,

@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.runtime.trace import ExecutionTrace
+from app.core.contracts.trace import ExecutionTrace
 
 
 class ExecutionReport(BaseModel):

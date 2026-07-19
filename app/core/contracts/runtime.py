@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.core.contracts.planning import TaskStatus
 from app.core.contracts.routing import RoutingDecision
-from app.runtime.trace import ExecutionTrace
+from app.core.contracts.trace import ExecutionTrace
 
 
 class RuntimeContext(BaseModel):

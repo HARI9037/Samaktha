@@ -11,10 +11,17 @@ from app.runtime.base import Runtime
 from app.runtime.report import ExecutionReport
 from app.workflow.models import WorkflowResult, WorkflowTask
 from app.workflow.state import WorkflowState
+from app.workflow.metrics import WorkflowMetricsCollector, WorkflowMetricsSnapshot
 
 
 class WorkflowEngine:
     """Sequential workflow executor for an existing execution plan."""
+    
+    def __init__(self) -> None:
+        self._metrics = WorkflowMetricsCollector()
+
+    def get_metrics(self) -> WorkflowMetricsSnapshot:
+        return self._metrics.get_metrics()
 
     async def execute(
         self,
@@ -46,6 +53,10 @@ class WorkflowEngine:
             state.finished_at = datetime.utcnow()
             state.errors.append(
                 "No workflow tasks were produced for execution.")
+            
+            duration = (perf_counter() - started) * 1000
+            self._metrics.record_execution(success=False, duration_ms=duration)
+            
             return WorkflowResult(
                 success=False,
                 workflow_state=state,
@@ -104,6 +115,9 @@ class WorkflowEngine:
                     f"Workflow task failed: {workflow_task.task_id}")
             state.finished_at = datetime.utcnow()
             
+            duration = (perf_counter() - started) * 1000
+            self._metrics.record_execution(success=False, duration_ms=duration)
+            
             if context and context.trace:
                 context.trace.add_event(
                     source="workflow",
@@ -130,6 +144,9 @@ class WorkflowEngine:
 
         state.status = "completed"
         state.finished_at = datetime.utcnow()
+        
+        duration = (perf_counter() - started) * 1000
+        self._metrics.record_execution(success=True, duration_ms=duration)
         
         if context and context.trace:
             context.trace.add_event(

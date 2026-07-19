@@ -7,6 +7,7 @@ from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeResult, R
 from app.core.contracts.planning import TaskStatus
 from app.runtime.base import Runtime
 from app.runtime.dispatcher import RuntimeDispatcher
+from app.runtime.metrics import RuntimeMetricsCollector, RuntimeMetricsSnapshot
 
 
 class RuntimeEngine(Runtime):
@@ -15,6 +16,10 @@ class RuntimeEngine(Runtime):
     def __init__(self, dispatcher: RuntimeDispatcher) -> None:
         self._dispatcher = dispatcher
         self._started = False
+        self._metrics = RuntimeMetricsCollector()
+
+    def get_metrics(self) -> RuntimeMetricsSnapshot:
+        return self._metrics.get_metrics()
 
     async def start(self) -> None:
         self._started = True
@@ -28,6 +33,7 @@ class RuntimeEngine(Runtime):
         task: RuntimeTask,
         routing: RoutingDecision,
     ) -> RuntimeResult:
+        self._metrics.record_dispatch()
         started_at = datetime.now(timezone.utc)
         started = perf_counter()
         executor = self._dispatcher.dispatch(task.action_type)

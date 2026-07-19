@@ -133,4 +133,4 @@ async def test_tool_executor_unknown_tool():
     
     result = await executor.execute(context, task, routing)
     assert result.status == TaskStatus.FAILED
-    assert "not registered" in result.error
+    assert "not found" in result.error

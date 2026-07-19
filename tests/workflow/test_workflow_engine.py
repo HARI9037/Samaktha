@@ -181,6 +181,7 @@ def test_orchestrator_uses_workflow_engine() -> None:
     async def run_test() -> None:
         class TrackingWorkflowEngine(WorkflowEngine):
             def __init__(self) -> None:
+                super().__init__()
                 self.called = False
 
             async def execute(self, execution_plan, runtime, router, context=None):

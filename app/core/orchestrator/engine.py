@@ -16,10 +16,11 @@ from app.core.contracts.policy import (
 )
 from app.core.contracts.planning import ExecutionPlan, PlanTask, TaskKind, TaskStatus
 from app.core.gambit import Planner
+from app.core.orchestrator.metrics import OrchestratorMetricsCollector, OrchestratorMetricsSnapshot
 from app.core.orchestrator.pipeline import PipelineState
 from app.router import Router
 from app.runtime.base import Runtime
-from app.runtime.trace import ExecutionTrace
+from app.core.contracts.trace import ExecutionTrace
 from app.workflow import WorkflowEngine
 
 
@@ -45,6 +46,10 @@ class SamakthaOrchestrator:
         self._default_action_type = default_action_type
         self._policy_engine = policy_engine or PolicyEngine()
         self._approval_engine = approval_engine or ApprovalEngine()
+        self._metrics = OrchestratorMetricsCollector()
+
+    def get_metrics(self) -> OrchestratorMetricsSnapshot:
+        return self._metrics.get_metrics()
 
     async def run(
         self,
@@ -101,6 +106,7 @@ class SamakthaOrchestrator:
         )
         if governance_error is not None:
             state.runtime_result = governance_error
+            self._metrics.record_pipeline(success=False, governance_blocked=True)
             if runtime_context.trace:
                 runtime_context.trace.add_event(
                     source="orchestrator",
@@ -131,6 +137,7 @@ class SamakthaOrchestrator:
                 event_type="orchestrator.completed",
                 duration_ms=(time.perf_counter() - started_at) * 1000,
             )
+        self._metrics.record_pipeline(success=workflow_result.success)
         return state
 
     @staticmethod

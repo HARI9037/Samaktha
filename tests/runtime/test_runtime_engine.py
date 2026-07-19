@@ -128,6 +128,6 @@ def test_tool_execution_returns_controlled_failure() -> None:
         result = await engine.run(runtime_context(), task, routing_decision())
 
         assert result.status == TaskStatus.FAILED
-        assert "Tool is not registered" in result.error
+        assert "Tool not found" in result.error
 
     asyncio.run(run_test())
