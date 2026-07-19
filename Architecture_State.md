@@ -690,3 +690,20 @@ Phase 2 infrastructure work has begun without changing the Phase 1 dependency bo
 - Tool metadata now supports versions, input schemas, and arbitrary metadata. ToolManager exposes capability discovery and validation.
 
 These are integration-oriented extensions only. Agents, autonomous reasoning loops, reflection loops, embeddings, vector databases, RAG, multimodal execution, function calling, scheduling, parallel execution, background workers, and distributed execution remain outside the implementation.
+
+---
+
+## Phase 2.1 Architecture Alignment
+
+Status: Implemented
+
+Phase 2.1 aligns the live implementation with the frozen subsystem boundaries without adding a new execution model.
+
+- CAP governance now evaluates the selected runtime action through `PolicyEngine` and `ApprovalEngine` before Workflow execution. A non-allow decision produces a failed `RuntimeResult` and prevents Runtime invocation.
+- Runtime's `ProviderManagerLike` contract now requires `execute_provider(...)`. `ProviderExecutor` no longer dynamically bypasses ProviderManager through direct provider resolution.
+- `PlanTask.execution_action_type` carries the planned execution type into Workflow-created `RuntimeTask` objects. Existing tasks default to `text_generation`.
+- The API reads normalized provider output from `RuntimeResult.output["content"]`, with the legacy `"response"` field retained only as a compatibility fallback.
+- `ModelRouter` uses `ModelManager` metadata as the canonical source for model scores and context/capability eligibility when available.
+- `CapabilityRegistry` keys metadata by `(provider_id, model_id)` so multiple models from one provider remain independently addressable.
+
+These changes preserve the Phase 1 pipeline and public defaults. Phase 2.1 does not add agents, autonomous loops, embeddings, RAG, multimodal execution, function calling, scheduling, parallel execution, background workers, or distributed execution.

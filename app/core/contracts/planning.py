@@ -105,6 +105,7 @@ class PlanTask(BaseModel):
     router_request: RouterRequest | None = None
     cap_required: bool = True
     status: TaskStatus = TaskStatus.PENDING
+    execution_action_type: str = "text_generation"
 
 
 class WorkflowStep(BaseModel):

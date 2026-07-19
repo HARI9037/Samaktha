@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.cap import ContextEngine
+from app.core.cap import ApprovalEngine, ContextEngine, PolicyEngine
 from app.core.contracts import (
     ContextRequest,
     ConversationMessage,
@@ -9,7 +9,12 @@ from app.core.contracts import (
     RuntimeResult,
     RuntimeTask,
 )
-from app.core.contracts.planning import ExecutionPlan, PlanTask, TaskKind
+from app.core.contracts.policy import (
+    ApprovalDecision,
+    ApprovalRequest,
+    PlannedAction,
+)
+from app.core.contracts.planning import ExecutionPlan, PlanTask, TaskKind, TaskStatus
 from app.core.gambit import Planner
 from app.core.orchestrator.pipeline import PipelineState
 from app.router import Router
@@ -28,6 +33,8 @@ class SamakthaOrchestrator:
         runtime: Runtime,
         workflow_engine: WorkflowEngine | None = None,
         default_action_type: str = "text_generation",
+        policy_engine: PolicyEngine | None = None,
+        approval_engine: ApprovalEngine | None = None,
     ) -> None:
         self._context_engine = context_engine
         self._planner = planner
@@ -35,6 +42,8 @@ class SamakthaOrchestrator:
         self._runtime = runtime
         self._workflow_engine = workflow_engine or WorkflowEngine()
         self._default_action_type = default_action_type
+        self._policy_engine = policy_engine or PolicyEngine()
+        self._approval_engine = approval_engine or ApprovalEngine()
 
     async def run(
         self,
@@ -72,6 +81,13 @@ class SamakthaOrchestrator:
             request=request,
             plan=state.execution_plan,
         )
+        governance_error = await self._govern_runtime_task(
+            task=state.runtime_task,
+            runtime_context=runtime_context,
+        )
+        if governance_error is not None:
+            state.runtime_result = governance_error
+            return state
         workflow_result = await self._workflow_engine.execute(
             execution_plan=state.execution_plan,
             runtime=self._runtime,
@@ -108,6 +124,37 @@ class SamakthaOrchestrator:
             metadata={
                 "plan_id": plan.plan_id,
                 "plan_task_kind": plan_task.kind.value,
+            },
+        )
+
+    async def _govern_runtime_task(
+        self,
+        task: RuntimeTask,
+        runtime_context: RuntimeContext,
+    ) -> RuntimeResult | None:
+        action = PlannedAction(
+            action_id=task.task_id,
+            action_type=task.action_type,
+            description=task.description,
+            payload=task.inputs,
+            metadata=task.metadata,
+        )
+        policy = self._policy_engine.evaluate(action)
+        approval = await self._approval_engine.decide(
+            ApprovalRequest(action=action, policy=policy),
+            subject_id=runtime_context.user_id or runtime_context.request_id,
+        )
+        if approval.decision == ApprovalDecision.ALLOW:
+            return None
+        return RuntimeResult(
+            task_id=task.task_id,
+            status=TaskStatus.FAILED,
+            error="CAP governance blocked execution",
+            metadata={
+                "governance_decision": approval.decision.value,
+                "governance_reasons": approval.reasons,
+                "policy_risk": policy.risk.value,
+                "privacy_category": policy.privacy.category.value,
             },
         )
 

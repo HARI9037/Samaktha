@@ -5,7 +5,7 @@ from typing import Optional
 from app.core.contracts import RouterRequest, RoutingDecision
 from app.models import ModelManager
 from app.router.base import Router
-from app.router.capabilities import CapabilityRegistry
+from app.router.capabilities import CapabilityRegistry, ProviderCapability
 from app.router.policy import RoutingPolicy
 from app.router.registry import RouterRegistry
 from app.router.scoring import ScoringEngine
@@ -38,6 +38,20 @@ class ModelRouter(Router):
         capability = self._capability_from_request(request)
         candidates = self._registry.candidates(capability)
 
+        # ModelRegistry is authoritative for model capabilities. A model with
+        # coding metadata can satisfy a code request even when legacy router
+        # registrations only declare their base text capability.
+        if not candidates and capability == "code_generation" and self._model_manager is not None:
+            candidates = [
+                candidate
+                for candidate in self._registry.candidates("text_generation")
+                if (
+                    (model := self._model_manager.resolve_model(candidate.model_id))
+                    is not None
+                    and model.coding_score > 0
+                )
+            ]
+
         if self._model_manager is not None:
             candidates = [
                 candidate
@@ -65,8 +79,8 @@ class ModelRouter(Router):
             )
 
         # v0.2: score candidates when capability data is available
-        if self._capability_registry is not None:
-            all_caps = self._capability_registry.all()
+        if self._capability_registry is not None or self._model_manager is not None:
+            all_caps = self._capabilities_for_candidates(candidates)
             # Filter to only those providers that appear in our candidates list
             candidate_ids = {c.provider_id for c in candidates}
             scoreable_caps = [cap for cap in all_caps if cap.provider_id in candidate_ids]
@@ -77,7 +91,9 @@ class ModelRouter(Router):
                     best = ranked[0]
                     # Find the matching registry entry for the top-scored provider
                     matched = next(
-                        (c for c in candidates if c.provider_id == best.provider_id),
+                        (c for c in candidates
+                         if c.provider_id == best.provider_id
+                         and c.model_id == best.model_id),
                         candidates[0],
                     )
                     return RoutingDecision(
@@ -95,12 +111,14 @@ class ModelRouter(Router):
                             "scoring_version": "v0.2",
                             "context_window": str(next(
                                 (cap.context_window for cap in scoreable_caps
-                                 if cap.provider_id == best.provider_id),
+                                 if cap.provider_id == best.provider_id
+                                 and cap.model_id == best.model_id),
                                 0,
                             )),
                             "latency_ms": str(next(
                                 (cap.latency_ms for cap in scoreable_caps
-                                 if cap.provider_id == best.provider_id),
+                                 if cap.provider_id == best.provider_id
+                                 and cap.model_id == best.model_id),
                                 "unknown",
                             )),
                             **matched.metadata,
@@ -141,6 +159,46 @@ class ModelRouter(Router):
         if request.requires_reasoning and model.reasoning_score <= 0:
             return False
         return True
+
+    def _capabilities_for_candidates(
+        self,
+        candidates,
+    ) -> list[ProviderCapability]:
+        capabilities: list[ProviderCapability] = []
+        for candidate in candidates:
+            registered = (
+                self._capability_registry.get(
+                    candidate.provider_id,
+                    candidate.model_id,
+                )
+                if self._capability_registry is not None
+                else None
+            )
+            model = (
+                self._model_manager.resolve_model(candidate.model_id)
+                if self._model_manager is not None
+                else None
+            )
+            if model is not None:
+                capabilities.append(ProviderCapability(
+                    provider_id=candidate.provider_id,
+                    model_id=candidate.model_id,
+                    capabilities=list(candidate.capabilities),
+                    reasoning_score=model.reasoning_score,
+                    coding_score=model.coding_score,
+                    speed_score=model.speed_score,
+                    privacy_score=model.privacy_score,
+                    cost_score=model.cost_score,
+                    context_window=model.context_window,
+                    maximum_output=model.maximum_output,
+                    input_cost_per_1k=model.input_cost_per_1k,
+                    output_cost_per_1k=model.output_cost_per_1k,
+                    version=model.version,
+                    metadata={"capability_source": model.capability_source},
+                ))
+            elif registered is not None:
+                capabilities.append(registered)
+        return capabilities
 
     @staticmethod
     def _capability_from_request(request: RouterRequest) -> str:

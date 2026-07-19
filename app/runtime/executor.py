@@ -24,6 +24,15 @@ class ProviderManagerLike(Protocol):
     def resolve_provider(self, provider_id: str) -> ProviderLike | None:
         raise NotImplementedError
 
+    async def execute_provider(
+        self,
+        provider_id: str,
+        payload: dict[str, Any],
+        model_id: str | None = None,
+        required_capabilities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
 
 class ProviderLike(Protocol):
     """Provider shape required by Runtime without importing provider modules."""
@@ -48,45 +57,27 @@ class ProviderExecutor:
         task: RuntimeTask,
         routing: RoutingDecision,
     ) -> RuntimeResult:
-        if hasattr(self._provider_manager, "execute_provider"):
-            output = await self._provider_manager.execute_provider(
-                provider_id=routing.provider_id,
-                payload=task.inputs,
-                model_id=routing.model_id,
-                required_capabilities=[task.action_type],
-            )
-            status = (
-                TaskStatus.COMPLETED
-                if output.get("success", True)
-                else TaskStatus.FAILED
-            )
-            return RuntimeResult(
-                task_id=task.task_id,
-                status=status,
-                routing=routing,
-                output=(
-                    output.get("metadata", {}).get("legacy_response")
-                    if output.get("metadata", {}).get("legacy_response")
-                    else output
-                ) if status == TaskStatus.COMPLETED else {},
-                error=output.get("message") if status == TaskStatus.FAILED else None,
-            )
-
-        provider = self._provider_manager.resolve_provider(routing.provider_id)
-        if provider is None:
-            return RuntimeResult(
-                task_id=task.task_id,
-                status=TaskStatus.FAILED,
-                routing=routing,
-                error=f"Provider is not registered: {routing.provider_id}",
-            )
-
-        output = await provider.execute(task.inputs)
+        output = await self._provider_manager.execute_provider(
+            provider_id=routing.provider_id,
+            payload=task.inputs,
+            model_id=routing.model_id,
+            required_capabilities=[task.action_type],
+        )
+        status = (
+            TaskStatus.COMPLETED
+            if output.get("success", True)
+            else TaskStatus.FAILED
+        )
         return RuntimeResult(
             task_id=task.task_id,
-            status=TaskStatus.COMPLETED,
+            status=status,
             routing=routing,
-            output=output,
+            output=(
+                output.get("metadata", {}).get("legacy_response")
+                if output.get("metadata", {}).get("legacy_response")
+                else output
+            ) if status == TaskStatus.COMPLETED else {},
+            error=output.get("message") if status == TaskStatus.FAILED else None,
         )
 
 

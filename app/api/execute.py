@@ -24,7 +24,9 @@ async def execute_request(
         request=payload.message,
         runtime_context=RuntimeContext(request_id=str(uuid4())),
     )
-    response = result.output.get("response")
+    response = result.output.get("content")
+    if response is None:
+        response = result.output.get("response")
     return ExecuteResponse(
         status=result.status.value,
         response=str(response) if response is not None else None,

@@ -129,7 +129,7 @@ class WorkflowEngine:
                         task_id=plan_task.task_id,
                         title=plan_task.title,
                         description=plan_task.description,
-                        action_type="text_generation",
+                        action_type=plan_task.execution_action_type,
                         inputs={
                             "prompt": plan_task.description,
                             "plan_task_id": plan_task.task_id,

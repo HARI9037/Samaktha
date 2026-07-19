@@ -31,15 +31,28 @@ class CapabilityRegistry:
     """In-memory store of provider capability metadata used by the Router."""
 
     def __init__(self) -> None:
-        self._capabilities: Dict[str, ProviderCapability] = {}
+        self._capabilities: Dict[tuple[str, str], ProviderCapability] = {}
 
     def register(self, capability: ProviderCapability) -> None:
         """Register capability metadata for a provider."""
-        self._capabilities[capability.provider_id] = capability
+        self._capabilities[(capability.provider_id, capability.model_id)] = capability
 
-    def get(self, provider_id: str) -> Optional[ProviderCapability]:
+    def get(
+        self,
+        provider_id: str,
+        model_id: str | None = None,
+    ) -> Optional[ProviderCapability]:
         """Retrieve capability metadata for a specific provider."""
-        return self._capabilities.get(provider_id)
+        if model_id is not None:
+            return self._capabilities.get((provider_id, model_id))
+        return next(
+            (
+                capability
+                for (candidate_provider, _), capability in self._capabilities.items()
+                if candidate_provider == provider_id
+            ),
+            None,
+        )
 
     def all(self) -> List[ProviderCapability]:
         """Return all registered capabilities."""
