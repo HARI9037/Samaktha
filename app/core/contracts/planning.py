@@ -89,6 +89,8 @@ class RouterRequest(BaseModel):
     requires_code: bool
     requires_reasoning: bool
     requires_fast_response: bool = False
+    max_latency_ms: float | None = None
+    max_cost_per_1k_tokens: float | None = None
 
 
 class PlanTask(BaseModel):

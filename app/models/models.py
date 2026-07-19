@@ -20,4 +20,8 @@ class ModelInfo(BaseModel):
     maximum_output: int = 4096
     supports_vision: bool = False
     supports_reasoning: bool = False
+    version: str | None = None
+    input_cost_per_1k: float = 0.0
+    output_cost_per_1k: float = 0.0
+    capability_source: str = "registered"
     metadata: dict = Field(default_factory=dict)

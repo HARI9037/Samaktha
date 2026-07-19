@@ -229,6 +229,46 @@ def create_orchestrator() -> SamakthaOrchestrator:
             provider_id="local", model_id=provider_settings.local_model or "unknown", capabilities=["text_generation"]),
     ])
     capability_registry = CapabilityRegistry()
+    capability_registry.register(ProviderCapability(
+        provider_id="mock",
+        model_id="mock-model",
+        capabilities=["text_generation"],
+        reasoning_score=3,
+        coding_score=3,
+        speed_score=10,
+        privacy_score=8,
+        cost_score=10,
+        context_window=4096,
+        maximum_output=1024,
+        latency_ms=1.0,
+    ))
+    capability_registry.register(ProviderCapability(
+        provider_id="openai",
+        model_id=provider_settings.openai_model,
+        capabilities=["text_generation", "code_generation"],
+        reasoning_score=8,
+        coding_score=8,
+        speed_score=7,
+        privacy_score=3,
+        cost_score=7,
+        context_window=128000,
+        maximum_output=provider_settings.max_output_tokens,
+        input_cost_per_1k=0.00015,
+        output_cost_per_1k=0.0006,
+    ))
+    capability_registry.register(ProviderCapability(
+        provider_id="local",
+        model_id=provider_settings.local_model or "unknown",
+        capabilities=["text_generation"],
+        reasoning_score=6,
+        coding_score=6,
+        speed_score=5,
+        privacy_score=10,
+        cost_score=10,
+        context_window=4096,
+        maximum_output=provider_settings.max_output_tokens,
+        latency_ms=50.0,
+    ))
     model_router = ModelRouter(
         router_registry,
         capability_registry,

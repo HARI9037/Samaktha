@@ -1,4 +1,5 @@
 import sqlite3
+import json
 from datetime import datetime
 from threading import Lock
 from typing import Iterator, Optional
@@ -14,6 +15,8 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     category TEXT,
     created_at TEXT,
     updated_at TEXT
+    ,metadata TEXT DEFAULT '{}'
+    ,score REAL DEFAULT 0
 )
 '''
 
@@ -33,6 +36,19 @@ class SQLiteStore:
             conn = self._get_conn()
             try:
                 conn.execute(_TABLE_SCHEMA)
+                columns = {
+                    row['name'] for row in conn.execute(
+                        'PRAGMA table_info(memory_entries)'
+                    ).fetchall()
+                }
+                if 'metadata' not in columns:
+                    conn.execute(
+                        "ALTER TABLE memory_entries ADD COLUMN metadata TEXT DEFAULT '{}'"
+                    )
+                if 'score' not in columns:
+                    conn.execute(
+                        'ALTER TABLE memory_entries ADD COLUMN score REAL DEFAULT 0'
+                    )
                 conn.commit()
             finally:
                 conn.close()
@@ -45,17 +61,21 @@ class SQLiteStore:
             entry.category,
             entry.created_at.isoformat(),
             entry.updated_at.isoformat(),
+            json.dumps(entry.metadata),
+            entry.score,
         )
         with self._lock:
             conn = self._get_conn()
             try:
                 conn.execute(
                     """
-                    INSERT INTO memory_entries (id, key, value, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO memory_entries (id, key, value, category, created_at, updated_at, metadata, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         value=excluded.value,
                         category=excluded.category,
-                        updated_at=excluded.updated_at
+                        updated_at=excluded.updated_at,
+                        metadata=excluded.metadata,
+                        score=excluded.score
                     """,
                     data,
                 )
@@ -101,4 +121,6 @@ class SQLiteStore:
             category=row['category'],
             created_at=datetime.fromisoformat(row['created_at']),
             updated_at=datetime.fromisoformat(row['updated_at']),
+            metadata=json.loads(row['metadata'] or '{}'),
+            score=float(row['score'] or 0),
         )

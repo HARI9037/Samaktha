@@ -18,6 +18,13 @@ class ProviderCapability(BaseModel):
     speed_score: int = 5
     privacy_score: int = 5   # high = supports private / local execution
     cost_score: int = 5      # high = lower cost
+    context_window: int = 0
+    maximum_output: int = 0
+    input_cost_per_1k: float = 0.0
+    output_cost_per_1k: float = 0.0
+    latency_ms: float | None = None
+    version: str | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class CapabilityRegistry:

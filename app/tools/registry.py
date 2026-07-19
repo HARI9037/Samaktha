@@ -24,3 +24,10 @@ class ToolRegistry:
     def list_tools(self) -> List[ToolInfo]:
         """List metadata for all registered tools."""
         return [info for _, info in self._tools.values()]
+
+    def list_by_capability(self, capability: str) -> List[ToolInfo]:
+        """Return tools declaring a capability in deterministic order."""
+        return [
+            info for info in self.list_tools()
+            if capability in info.capabilities
+        ]

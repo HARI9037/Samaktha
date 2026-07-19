@@ -51,6 +51,7 @@ class MemoryManager(Memory):
                 category=stored_category,
                 created_at=now,
                 updated_at=now,
+                metadata={"source": "memory_manager"},
             )
         self._repo.save(entry)
 
@@ -75,5 +76,7 @@ class MemoryManager(Memory):
                 "id": entry.id,
                 "created_at": entry.created_at.isoformat(),
                 "updated_at": entry.updated_at.isoformat(),
+                "score": entry.score,
+                **entry.metadata,
             },
         )

@@ -11,3 +11,6 @@ class RoutingPolicy(BaseModel):
     prefer_local: bool = False
     prefer_low_cost: bool = False
     prefer_fast_response: bool = False
+    max_latency_ms: float | None = None
+    max_cost_per_1k_tokens: float | None = None
+    require_context_tokens: int | None = None

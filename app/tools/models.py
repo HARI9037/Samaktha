@@ -9,3 +9,6 @@ class ToolInfo(BaseModel):
     tool_id: str
     description: str
     capabilities: List[str] = Field(default_factory=list)
+    version: str | None = None
+    input_schema: dict[str, object] = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict)

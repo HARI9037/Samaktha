@@ -80,6 +80,21 @@ Provider Selection Engine v0.1 adds deterministic provider selection through `Pr
 
 Retries, Redis-backed state, external health monitoring, router scoring changes, workflow changes, CAP changes, GAMBIT changes, memory changes, and tool changes are intentionally outside Provider System v1.0.
 
+## Phase 2 Integration State
+
+Status: In progress
+
+Phase 2 extends the frozen Phase 1 boundaries without changing subsystem ownership.
+
+- Router metadata now supports context windows, output limits, pricing, latency, versions, and arbitrary metadata. Scoring can apply context, latency, and cost constraints when those values are supplied; existing defaults preserve v0.1/v0.2 behavior.
+- ModelInfo supports version, pricing, and capability-source metadata. ModelRegistry and ModelManager support deterministic batch registration and metadata updates without dynamic network discovery.
+- RuntimeResult and ExecutionReport support optional timing and diagnostic metadata. RuntimeEngine annotates results with request and action context.
+- ProviderManager supports bounded transient retries through the existing `max_retries` setting before its existing cooldown/fallback path.
+- MemoryEntry supports metadata and deterministic relevance scores. SQLiteStore performs additive schema migration for existing databases; search ranks key matches ahead of value matches.
+- ToolInfo supports version, input schema, and metadata. ToolManager supports capability discovery and validation.
+
+Phase 2 remains intentionally limited to deterministic infrastructure improvements. It does not add agents, autonomous loops, reflection loops, embeddings, vector search, RAG, multimodal execution, function calling, scheduling, parallel execution, background workers, or distributed execution.
+
 ### Configuration
 
 Environment variables (prefix `SAMAKTHA_`):

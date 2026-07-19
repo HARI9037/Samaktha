@@ -676,3 +676,17 @@ The repository intentionally leaves the following unfinished at the Phase 2 boun
 
 Phase 2 starts from integration work around the existing interfaces. It does not begin by merging CAP, GAMBIT, Workflow, Router, Runtime, Providers, Memory, or Tools into a single subsystem.
 
+---
+
+## Phase 2 Implementation Addendum
+
+Phase 2 infrastructure work has begun without changing the Phase 1 dependency boundaries.
+
+- Router capability metadata now optionally includes context limits, output limits, pricing, latency, version, and free-form metadata. Scoring applies context, latency, and cost constraints only when those values are supplied.
+- Model metadata now supports version, pricing, and capability-source fields. Model registration supports deterministic batch registration and metadata updates; no network discovery is performed.
+- Runtime results now optionally carry start/end timestamps, duration, and diagnostics. Runtime annotates results after executor completion while preserving the existing result contract.
+- ProviderManager uses the configured bounded transient retry count before its existing cooldown and fallback behavior.
+- Memory entries now support metadata and deterministic relevance scores. SQLite schema migration adds these fields without discarding existing records.
+- Tool metadata now supports versions, input schemas, and arbitrary metadata. ToolManager exposes capability discovery and validation.
+
+These are integration-oriented extensions only. Agents, autonomous reasoning loops, reflection loops, embeddings, vector databases, RAG, multimodal execution, function calling, scheduling, parallel execution, background workers, and distributed execution remain outside the implementation.

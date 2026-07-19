@@ -38,6 +38,23 @@ class ModelRouter(Router):
         capability = self._capability_from_request(request)
         candidates = self._registry.candidates(capability)
 
+        if self._model_manager is not None:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if self._model_is_eligible(candidate.model_id, request)
+            ]
+            if not candidates:
+                return RoutingDecision(
+                    provider_id="",
+                    model_id="",
+                    reasoning_summary=(
+                        f"No registered model satisfies capability: {capability}"
+                    ),
+                    constraints=[f"model_constraints:{capability}"],
+                    metadata={"capability": capability},
+                )
+
         if not candidates:
             return RoutingDecision(
                 provider_id="",
@@ -76,9 +93,26 @@ class ModelRouter(Router):
                             "capability": capability,
                             "score": str(best.score),
                             "scoring_version": "v0.2",
+                            "context_window": str(next(
+                                (cap.context_window for cap in scoreable_caps
+                                 if cap.provider_id == best.provider_id),
+                                0,
+                            )),
+                            "latency_ms": str(next(
+                                (cap.latency_ms for cap in scoreable_caps
+                                 if cap.provider_id == best.provider_id),
+                                "unknown",
+                            )),
                             **matched.metadata,
                         },
                     )
+                return RoutingDecision(
+                    provider_id="",
+                    model_id="",
+                    reasoning_summary="No eligible model satisfies routing constraints",
+                    constraints=["routing_constraints"],
+                    metadata={"capability": capability},
+                )
 
         # v0.1 fallback: pick first matching candidate
         selected = candidates[0]
@@ -95,6 +129,18 @@ class ModelRouter(Router):
                 **selected.metadata,
             },
         )
+
+    def _model_is_eligible(self, model_id: str, request: RouterRequest) -> bool:
+        model = self._model_manager.resolve_model(model_id)
+        if model is None:
+            return True
+        if model.context_window < request.estimated_context_tokens:
+            return False
+        if request.requires_code and model.coding_score <= 0:
+            return False
+        if request.requires_reasoning and model.reasoning_score <= 0:
+            return False
+        return True
 
     @staticmethod
     def _capability_from_request(request: RouterRequest) -> str:

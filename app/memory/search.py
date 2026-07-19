@@ -8,10 +8,14 @@ def search_entries(entries: List[MemoryEntry], query: str = "", category: Option
     for entry in entries:
         if query_lower:
             # Match keyword in key or value
-            if query_lower in entry.key.lower() or query_lower in str(entry.value).lower():
+            key_match = query_lower in entry.key.lower()
+            value_match = query_lower in str(entry.value).lower()
+            if key_match or value_match:
                 if category is None or entry.category == category:
+                    entry.score = float(2 if key_match else 1)
                     results.append(entry)
         else:
             if category is None or entry.category == category:
+                entry.score = 1.0
                 results.append(entry)
-    return results
+    return sorted(results, key=lambda entry: (-entry.score, entry.key))

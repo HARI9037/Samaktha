@@ -14,6 +14,12 @@ class ModelManager:
         """Register or replace model metadata."""
         self._registry.register(model)
 
+    def register_models(self, models: list[ModelInfo]) -> None:
+        self._registry.register_many(models)
+
+    def update_model_metadata(self, model: ModelInfo) -> None:
+        self._registry.discover_from_metadata(model)
+
     def resolve_model(self, model_id: str) -> Optional[ModelInfo]:
         """Resolve model metadata from the registry."""
         return self._registry.get(model_id)

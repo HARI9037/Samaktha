@@ -41,7 +41,11 @@ class ScoringEngine:
     ) -> List[ProviderScore]:
         """Return capabilities ranked from most to least suitable."""
         policy = policy or RoutingPolicy()
-        scored = [self._score(request, cap, policy) for cap in capabilities]
+        scored = [
+            self._score(request, cap, policy)
+            for cap in capabilities
+            if self._eligible(request, cap, policy)
+        ]
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored
 
@@ -104,3 +108,26 @@ class ScoringEngine:
             score=score,
             reasons=reasons,
         )
+
+    @staticmethod
+    def _eligible(
+        request: RouterRequest,
+        cap: ProviderCapability,
+        policy: RoutingPolicy,
+    ) -> bool:
+        required_context = max(
+            request.estimated_context_tokens,
+            policy.require_context_tokens or 0,
+        )
+        if cap.context_window and cap.context_window < required_context:
+            return False
+        latency_limit = request.max_latency_ms or policy.max_latency_ms
+        if latency_limit is not None and cap.latency_ms is not None:
+            if cap.latency_ms > latency_limit:
+                return False
+        cost_limit = request.max_cost_per_1k_tokens or policy.max_cost_per_1k_tokens
+        if cost_limit is not None:
+            cost = cap.input_cost_per_1k + cap.output_cost_per_1k
+            if cost > cost_limit and cost > 0:
+                return False
+        return True

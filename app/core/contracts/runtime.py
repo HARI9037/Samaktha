@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -37,3 +38,7 @@ class RuntimeResult(BaseModel):
     routing: RoutingDecision | None = None
     output: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)

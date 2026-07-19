@@ -13,6 +13,15 @@ class ModelRegistry:
         """Register or replace model metadata by model ID."""
         self._models[model.model_id] = model
 
+    def register_many(self, models: List[ModelInfo]) -> None:
+        """Register a deterministic batch of model metadata."""
+        for model in models:
+            self.register(model)
+
+    def discover_from_metadata(self, model: ModelInfo) -> None:
+        """Record externally supplied metadata without performing discovery."""
+        self.register(model.model_copy(update={"capability_source": "metadata"}))
+
     def get(self, model_id: str) -> Optional[ModelInfo]:
         """Retrieve model metadata by model ID."""
         return self._models.get(model_id)

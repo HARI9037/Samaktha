@@ -138,8 +138,20 @@ class ProviderManager:
             provider = self._registry.get_provider(candidate.provider_id)
             if provider is None:
                 continue
-            raw = await provider.execute({**payload, "model_id": model_id or self._default_model(candidate)})
-            response = self._normalize_response(raw, candidate.provider_id, model_id)
+            response: ProviderResponse | None = None
+            retry_limit = max(0, self._settings.max_retries)
+            for attempt in range(retry_limit + 1):
+                raw = await provider.execute({
+                    **payload,
+                    "model_id": model_id or self._default_model(candidate),
+                })
+                response = self._normalize_response(raw, candidate.provider_id, model_id)
+                transient = response.finish_reason in {
+                    "rate_limited", "server_error", "timeout", "unavailable"
+                }
+                if response.success or not transient or attempt >= retry_limit:
+                    break
+            response = response or self._unavailable_response(candidate, model_id)
             self._metrics.record(candidate.provider_id, response)
             if response.finish_reason in {"rate_limited", "server_error", "timeout", "unavailable"}:
                 self._mark_cooldown(candidate.provider_id)

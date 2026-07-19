@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from time import perf_counter
+
 from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask
 from app.core.contracts.planning import TaskStatus
 from app.runtime.base import Runtime
@@ -25,6 +28,8 @@ class RuntimeEngine(Runtime):
         task: RuntimeTask,
         routing: RoutingDecision,
     ) -> RuntimeResult:
+        started_at = datetime.now(timezone.utc)
+        started = perf_counter()
         executor = self._dispatcher.dispatch(task.action_type)
         if executor is None:
             return RuntimeResult(
@@ -32,5 +37,20 @@ class RuntimeEngine(Runtime):
                 status=TaskStatus.FAILED,
                 routing=routing,
                 error=f"No runtime executor registered for action type: {task.action_type}",
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                duration_ms=(perf_counter() - started) * 1000,
+                metadata={"diagnostic": "executor_not_registered"},
             )
-        return await executor.execute(context, task, routing)
+        result = await executor.execute(context, task, routing)
+        finished_at = datetime.now(timezone.utc)
+        return result.model_copy(update={
+            "started_at": result.started_at or started_at,
+            "finished_at": result.finished_at or finished_at,
+            "duration_ms": result.duration_ms or (perf_counter() - started) * 1000,
+            "metadata": {
+                **result.metadata,
+                "runtime_action_type": task.action_type,
+                "runtime_request_id": context.request_id,
+            },
+        })
