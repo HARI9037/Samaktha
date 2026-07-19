@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from app.core.contracts import ExecutionPlan, RouterRequest, RuntimeContext, RuntimeResult, RuntimeTask
 from app.core.contracts.planning import TaskStatus
 from app.router.base import Router
 from app.runtime.base import Runtime
+from app.runtime.report import ExecutionReport
 from app.workflow.models import WorkflowResult, WorkflowTask
 from app.workflow.state import WorkflowState
 
@@ -30,13 +32,22 @@ class WorkflowEngine:
             total_steps=len(workflow_tasks),
             started_at=datetime.utcnow(),
         )
+        started = perf_counter()
 
         if not workflow_tasks:
             state.status = "failed"
             state.finished_at = datetime.utcnow()
             state.errors.append(
                 "No workflow tasks were produced for execution.")
-            return WorkflowResult(success=False, workflow_state=state, outputs=[], errors=list(state.errors))
+            return WorkflowResult(
+                success=False,
+                workflow_state=state,
+                outputs=[],
+                errors=list(state.errors),
+                execution_report=self._execution_report(
+                    execution_plan.plan_id, state, started,
+                ),
+            )
 
         outputs: list[Any] = []
         for index, workflow_task in enumerate(workflow_tasks, start=1):
@@ -74,11 +85,22 @@ class WorkflowEngine:
                 workflow_state=state,
                 outputs=outputs,
                 errors=list(state.errors),
+                execution_report=self._execution_report(
+                    execution_plan.plan_id, state, started,
+                ),
             )
 
         state.status = "completed"
         state.finished_at = datetime.utcnow()
-        return WorkflowResult(success=True, workflow_state=state, outputs=outputs, errors=list(state.errors))
+        return WorkflowResult(
+            success=True,
+            workflow_state=state,
+            outputs=outputs,
+            errors=list(state.errors),
+            execution_report=self._execution_report(
+                execution_plan.plan_id, state, started,
+            ),
+        )
 
     async def run(
         self,
@@ -96,6 +118,32 @@ class WorkflowEngine:
         if isinstance(router_request, RouterRequest):
             return router_request
         return execution_plan.router_request
+
+    @staticmethod
+    def _execution_report(
+        plan_id: str,
+        state: WorkflowState,
+        started: float,
+    ) -> ExecutionReport:
+        return ExecutionReport(
+            plan_id=plan_id,
+            success=state.status == "completed",
+            started_at=state.started_at,
+            finished_at=state.finished_at,
+            duration_ms=int((perf_counter() - started) * 1000),
+            completed_tasks=state.completed_steps,
+            failed_tasks=1 if state.failed_step is not None else 0,
+            results=[
+                result.model_dump() if hasattr(result, "model_dump") else result
+                for result in state.results
+            ],
+            errors=list(state.errors),
+            metadata={
+                "workflow_id": state.workflow_id,
+                "total_steps": state.total_steps,
+                "failed_step": state.failed_step,
+            },
+        )
 
     @staticmethod
     def _workflow_tasks(execution_plan: ExecutionPlan) -> list[WorkflowTask]:

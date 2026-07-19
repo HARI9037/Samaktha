@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from app.runtime.report import ExecutionReport
 
 
 class ExecuteRequest(BaseModel):
@@ -13,3 +14,4 @@ class ExecuteResponse(BaseModel):
     status: str
     response: str | None = None
     error: str | None = None
+    diagnostics: ExecutionReport | None = None

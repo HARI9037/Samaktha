@@ -96,6 +96,11 @@ class SamakthaOrchestrator:
         )
         state.runtime_result = self._final_runtime_result(workflow_result)
         state.routing_decision = self._final_routing_decision(workflow_result)
+        state.execution_report = workflow_result.execution_report
+        if state.runtime_result is not None and state.execution_report is not None:
+            state.runtime_result.metadata["execution_report"] = (
+                state.execution_report.model_dump()
+            )
         return state
 
     @staticmethod

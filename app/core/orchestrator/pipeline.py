@@ -9,6 +9,7 @@ from app.core.contracts import (
     RuntimeResult,
     RuntimeTask,
 )
+from app.runtime.report import ExecutionReport
 
 
 class PipelineState(BaseModel):
@@ -20,3 +21,4 @@ class PipelineState(BaseModel):
     runtime_task: RuntimeTask | None = None
     routing_decision: RoutingDecision | None = None
     runtime_result: RuntimeResult | None = None
+    execution_report: ExecutionReport | None = None
