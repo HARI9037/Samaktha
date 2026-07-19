@@ -1,0 +1,1 @@
+"""Samaktha Core application package."""

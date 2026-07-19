@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class ProviderCapability(BaseModel):
+    """Router-local model describing the performance characteristics of a provider."""
+
+    provider_id: str
+    model_id: str
+    capabilities: List[str] = Field(default_factory=list)
+
+    # Scores are 1–10; higher is better in each dimension.
+    reasoning_score: int = 5
+    coding_score: int = 5
+    speed_score: int = 5
+    privacy_score: int = 5   # high = supports private / local execution
+    cost_score: int = 5      # high = lower cost
+
+
+class CapabilityRegistry:
+    """In-memory store of provider capability metadata used by the Router."""
+
+    def __init__(self) -> None:
+        self._capabilities: Dict[str, ProviderCapability] = {}
+
+    def register(self, capability: ProviderCapability) -> None:
+        """Register capability metadata for a provider."""
+        self._capabilities[capability.provider_id] = capability
+
+    def get(self, provider_id: str) -> Optional[ProviderCapability]:
+        """Retrieve capability metadata for a specific provider."""
+        return self._capabilities.get(provider_id)
+
+    def all(self) -> List[ProviderCapability]:
+        """Return all registered capabilities."""
+        return list(self._capabilities.values())
