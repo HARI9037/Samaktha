@@ -19,6 +19,7 @@ from app.core.gambit import Planner
 from app.core.orchestrator.pipeline import PipelineState
 from app.router import Router
 from app.runtime.base import Runtime
+from app.runtime.trace import ExecutionTrace
 from app.workflow import WorkflowEngine
 
 
@@ -68,6 +69,19 @@ class SamakthaOrchestrator:
         conversation: list[ConversationMessage] | None = None,
     ) -> PipelineState:
         state = PipelineState(request=request)
+        
+        if runtime_context.metadata.get("enable_tracing") and runtime_context.trace is None:
+            runtime_context.trace = ExecutionTrace(request_id=runtime_context.request_id)
+            
+        import time
+        started_at = time.perf_counter()
+        
+        if runtime_context.trace:
+            runtime_context.trace.add_event(
+                source="orchestrator",
+                event_type="orchestrator.started",
+                request=request
+            )
 
         state.context = await self._context_engine.build(
             ContextRequest(
@@ -87,6 +101,13 @@ class SamakthaOrchestrator:
         )
         if governance_error is not None:
             state.runtime_result = governance_error
+            if runtime_context.trace:
+                runtime_context.trace.add_event(
+                    source="orchestrator",
+                    event_type="orchestrator.failed",
+                    duration_ms=(time.perf_counter() - started_at) * 1000,
+                    error="CAP governance blocked execution"
+                )
             return state
         workflow_result = await self._workflow_engine.execute(
             execution_plan=state.execution_plan,
@@ -98,8 +119,17 @@ class SamakthaOrchestrator:
         state.routing_decision = self._final_routing_decision(workflow_result)
         state.execution_report = workflow_result.execution_report
         if state.runtime_result is not None and state.execution_report is not None:
+            if runtime_context.trace:
+                state.execution_report.trace = runtime_context.trace
             state.runtime_result.metadata["execution_report"] = (
                 state.execution_report.model_dump()
+            )
+            
+        if runtime_context.trace:
+            runtime_context.trace.add_event(
+                source="orchestrator",
+                event_type="orchestrator.completed",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
             )
         return state
 

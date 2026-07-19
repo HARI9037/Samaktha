@@ -57,6 +57,18 @@ class ProviderExecutor:
         task: RuntimeTask,
         routing: RoutingDecision,
     ) -> RuntimeResult:
+        if context and context.trace:
+            context.trace.add_event(
+                source="runtime",
+                event_type="runtime.provider.started",
+                task_id=task.task_id,
+                provider_id=routing.provider_id,
+                model_id=routing.model_id
+            )
+            
+        import time
+        started_at = time.perf_counter()
+        
         output = await self._provider_manager.execute_provider(
             provider_id=routing.provider_id,
             payload=task.inputs,
@@ -68,7 +80,8 @@ class ProviderExecutor:
             if output.get("success", True)
             else TaskStatus.FAILED
         )
-        return RuntimeResult(
+        
+        result = RuntimeResult(
             task_id=task.task_id,
             status=status,
             routing=routing,
@@ -79,6 +92,16 @@ class ProviderExecutor:
             ) if status == TaskStatus.COMPLETED else {},
             error=output.get("message") if status == TaskStatus.FAILED else None,
         )
+        
+        if context and context.trace:
+            context.trace.add_event(
+                source="runtime",
+                event_type="runtime.provider.completed" if status == TaskStatus.COMPLETED else "runtime.provider.failed",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                task_id=task.task_id,
+            )
+            
+        return result
 
 
 class ToolLike(Protocol):
@@ -111,8 +134,27 @@ class ToolExecutor:
         task: RuntimeTask,
         routing: RoutingDecision,
     ) -> RuntimeResult:
+        if context and context.trace:
+            context.trace.add_event(
+                source="runtime",
+                event_type="runtime.tool.started",
+                task_id=task.task_id,
+                tool_id=task.action_type
+            )
+            
+        import time
+        started_at = time.perf_counter()
+        
         tool = self._tool_manager.resolve_tool(task.action_type)
         if tool is None:
+            if context and context.trace:
+                context.trace.add_event(
+                    source="runtime",
+                    event_type="runtime.tool.failed",
+                    duration_ms=(time.perf_counter() - started_at) * 1000,
+                    task_id=task.task_id,
+                    error=f"Tool is not registered: {task.action_type}"
+                )
             return RuntimeResult(
                 task_id=task.task_id,
                 status=TaskStatus.FAILED,
@@ -122,26 +164,36 @@ class ToolExecutor:
 
         # Re-map inputs for tool (assuming inputs contains the kwargs)
         try:
-            result = await tool.run(task.inputs)
+            tool_result = await tool.run(task.inputs)
             
-            if result.ok:
-                return RuntimeResult(
+            if tool_result.ok:
+                result = RuntimeResult(
                     task_id=task.task_id,
                     status=TaskStatus.COMPLETED,
                     routing=routing,
-                    output=result.data,
+                    output=tool_result.data,
                 )
             else:
-                return RuntimeResult(
+                result = RuntimeResult(
                     task_id=task.task_id,
                     status=TaskStatus.FAILED,
                     routing=routing,
-                    error=result.error or "Tool execution failed",
+                    error=tool_result.error or "Tool execution failed",
                 )
         except Exception as e:
-            return RuntimeResult(
+            result = RuntimeResult(
                 task_id=task.task_id,
                 status=TaskStatus.FAILED,
                 routing=routing,
                 error=str(e),
             )
+            
+        if context and context.trace:
+            context.trace.add_event(
+                source="runtime",
+                event_type="runtime.tool.completed" if result.status == TaskStatus.COMPLETED else "runtime.tool.failed",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                task_id=task.task_id,
+            )
+            
+        return result

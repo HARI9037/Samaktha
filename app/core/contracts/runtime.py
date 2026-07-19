@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.core.contracts.planning import TaskStatus
 from app.core.contracts.routing import RoutingDecision
+from app.runtime.trace import ExecutionTrace
 
 
 class RuntimeContext(BaseModel):
@@ -15,6 +16,7 @@ class RuntimeContext(BaseModel):
     request_id: str = Field(description="Unique request identifier.")
     user_id: str | None = None
     session_id: str | None = None
+    trace: ExecutionTrace | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

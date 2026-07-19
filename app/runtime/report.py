@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.runtime.trace import ExecutionTrace
+
 
 class ExecutionReport(BaseModel):
     """Generic runtime execution summary."""
@@ -18,4 +20,5 @@ class ExecutionReport(BaseModel):
     failed_tasks: int = 0
     results: list[Any] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    trace: ExecutionTrace | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

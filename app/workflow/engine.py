@@ -34,6 +34,13 @@ class WorkflowEngine:
         )
         started = perf_counter()
 
+        if context and context.trace:
+            context.trace.add_event(
+                source="workflow",
+                event_type="workflow.started",
+                total_steps=state.total_steps,
+            )
+
         if not workflow_tasks:
             state.status = "failed"
             state.finished_at = datetime.utcnow()
@@ -55,6 +62,15 @@ class WorkflowEngine:
             routing_request = self._routing_request_for(
                 execution_plan, workflow_task)
 
+            if context and context.trace:
+                context.trace.add_event(
+                    source="workflow",
+                    event_type="workflow.task.started",
+                    task_id=workflow_task.task_id,
+                    step=index,
+                )
+
+            task_started = perf_counter()
             try:
                 routing = await router.route(routing_request)
                 result = await runtime.run(runtime_context, workflow_task.runtime_task, routing)
@@ -70,6 +86,13 @@ class WorkflowEngine:
 
             if result.status == TaskStatus.COMPLETED:
                 state.completed_steps += 1
+                if context and context.trace:
+                    context.trace.add_event(
+                        source="workflow",
+                        event_type="workflow.task.completed",
+                        duration_ms=(perf_counter() - task_started) * 1000,
+                        task_id=workflow_task.task_id,
+                    )
                 continue
 
             state.failed_step = index
@@ -80,6 +103,21 @@ class WorkflowEngine:
                 state.errors.append(
                     f"Workflow task failed: {workflow_task.task_id}")
             state.finished_at = datetime.utcnow()
+            
+            if context and context.trace:
+                context.trace.add_event(
+                    source="workflow",
+                    event_type="workflow.task.failed",
+                    duration_ms=(perf_counter() - task_started) * 1000,
+                    task_id=workflow_task.task_id,
+                    error=result.error or "Unknown failure"
+                )
+                context.trace.add_event(
+                    source="workflow",
+                    event_type="workflow.failed",
+                    duration_ms=(perf_counter() - started) * 1000,
+                )
+
             return WorkflowResult(
                 success=False,
                 workflow_state=state,
@@ -92,6 +130,14 @@ class WorkflowEngine:
 
         state.status = "completed"
         state.finished_at = datetime.utcnow()
+        
+        if context and context.trace:
+            context.trace.add_event(
+                source="workflow",
+                event_type="workflow.completed",
+                duration_ms=(perf_counter() - started) * 1000,
+            )
+            
         return WorkflowResult(
             success=True,
             workflow_state=state,
