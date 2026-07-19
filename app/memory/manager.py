@@ -3,12 +3,14 @@ from datetime import datetime
 from typing import Any, List, Optional, Union
 
 from app.core.contracts.memory import MemoryRecord
+from app.core.contracts.skills import SkillRecord, SkillSearchResult
 from app.memory.base import Memory
 from app.memory.categories import normalize_category, normalize_category_for_storage
 from app.memory.metrics import MemoryMetricsCollector, MemoryMetricsSnapshot
 from app.memory.models import MemoryEntry
 from app.memory.repository import MemoryRepository
 from app.memory.search import search_entries
+from app.memory.skills import SkillMemoryStore
 from app.memory.store import InMemoryStore
 
 
@@ -30,9 +32,13 @@ class MemoryManager(Memory):
         else:
             self._repo = MemoryRepository()
         self._metrics = MemoryMetricsCollector()
+        self._skill_store = SkillMemoryStore()
 
     def get_metrics(self) -> MemoryMetricsSnapshot:
         return self._metrics.get_metrics()
+
+    def get_skill_metrics(self) -> dict[str, int]:
+        return self._skill_store.get_metrics()
 
     async def read(self, key: str) -> Optional[MemoryRecord]:
         self._metrics.record_read()
@@ -74,6 +80,80 @@ class MemoryManager(Memory):
         )
         filtered = search_entries(entries, query, filter_category)
         return [self._entry_to_record(entry) for entry in filtered]
+
+    # ------------------------------------------------------------------
+    # Skill Memory APIs — Core
+    # ------------------------------------------------------------------
+
+    def save_skill(self, skill: SkillRecord) -> None:
+        self._skill_store.save_skill(skill)
+
+    def update_skill(self, skill: SkillRecord) -> None:
+        self._skill_store.update_skill(skill)
+
+    def get_skill(self, skill_id: str) -> Optional[SkillRecord]:
+        return self._skill_store.get_skill(skill_id)
+
+    def list_skills(self) -> list[SkillRecord]:
+        return self._skill_store.list_skills()
+
+    def search_skills(
+        self,
+        query: str = "",
+        tag: str = "",
+        category: str = ""
+    ) -> list[SkillSearchResult]:
+        if tag:
+            return self._skill_store.search_by_tag(tag)
+        if category:
+            return self._skill_store.search_by_category(category)
+        if query:
+            return self._skill_store.search_by_name(query)
+        return []
+
+    def find_relevant_skills(
+        self,
+        goal: str,
+        category: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+    ) -> list[SkillSearchResult]:
+        """Rank and filter ACTIVE skills relevant to a goal."""
+        return self._skill_store.find_relevant_skills(goal, category, tags)
+
+    # ------------------------------------------------------------------
+    # Skill Memory APIs — Lifecycle
+    # ------------------------------------------------------------------
+
+    def record_skill_use(self, skill_id: str) -> None:
+        self._skill_store.record_skill_use(skill_id)
+
+    def record_skill_success(self, skill_id: str) -> None:
+        self._skill_store.record_skill_success(skill_id)
+
+    def record_skill_failure(self, skill_id: str) -> None:
+        self._skill_store.record_skill_failure(skill_id)
+
+    def deprecate_skill(self, skill_id: str, reason: str = "") -> None:
+        self._skill_store.deprecate_skill(skill_id, reason)
+
+    def archive_skill(self, skill_id: str) -> None:
+        self._skill_store.archive_skill(skill_id)
+
+    def merge_duplicate_skills(self, primary_id: str, duplicate_id: str) -> bool:
+        return self._skill_store.merge_duplicate_skills(primary_id, duplicate_id)
+
+    def run_lifecycle_maintenance(self, stale_days: int = 30) -> dict[str, int]:
+        return self._skill_store.run_lifecycle_maintenance(stale_days)
+
+    def list_deprecated_skills(self) -> list[SkillRecord]:
+        return self._skill_store.list_deprecated_skills()
+
+    def list_archived_skills(self) -> list[SkillRecord]:
+        return self._skill_store.list_archived_skills()
+
+    # ------------------------------------------------------------------
+    # Private Helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _entry_to_record(entry: MemoryEntry) -> MemoryRecord:

@@ -1,11 +1,11 @@
 # Samaktha Core
 
-**Current Stable Release:** Samaktha Core v0.2
+**Current Stable Release:** Samaktha Core v0.3
 
 **Phase Status:**
 - ✅ Phase 1 Complete
 - ✅ Phase 2 Complete
-- ⬜ Phase 3 Planned
+- ✅ Phase 3 Complete
 - ⬜ Phase 4 Planned
 
 ---
@@ -21,10 +21,11 @@ Samaktha enforces execution through completely decoupled subsystems mapped by ri
 
 ### Subsystems:
 - **CAP (Cognitive Alignment and Policy):** The sole governance engine.
-- **GAMBIT (Goal-directed Autonomous Meaning and Behavioral Intent Translator):** The exclusive cognitive planner.
+- **GAMBIT (Goal-directed Autonomous Meaning and Behavioral Intent Translator):** The exclusive cognitive planner, reflection, and learning engine.
 - **Workflow:** The sequential execution coordinator.
 - **Runtime:** The deterministic task execution engine.
 - **Router:** The intelligent provider selection protocol.
+- **Memory:** The persistence and lifecycle owner of context and learned skills.
 - **ProviderManager & ToolManager:** The strict canonical boundaries for all external interactions.
 
 ## Architecture Diagram
@@ -32,7 +33,7 @@ Samaktha enforces execution through completely decoupled subsystems mapped by ri
 graph TD
     User([User Request]) --> Orchestrator
     Orchestrator --> ContextEngine
-    Orchestrator --> GAMBIT[GAMBIT Planner]
+    Orchestrator --> GAMBIT[GAMBIT Planner & Learner]
     Orchestrator --> CAP[CAP Governance]
     Orchestrator --> WorkflowEngine
     
@@ -49,17 +50,19 @@ graph TD
     ToolManager --> Tools[(System Tools)]
     
     ContextEngine --> MemoryManager[(Memory SQLite)]
+    MemoryManager --> GAMBIT
 ```
 
 ## End-to-End Execution Flow
 1. **Receive:** The Orchestrator accepts a user request, allocating Context and an ExecutionTrace.
 2. **Retrieve:** The Context Engine loads short and long-term memory.
-3. **Plan:** GAMBIT intelligently breaks down the request into discrete tasks.
+3. **Plan:** GAMBIT intelligently breaks down the request into discrete tasks, injecting retrieved active skills from Memory.
 4. **Govern:** CAP audits the plan for safety and risk compliance.
 5. **Coordinate:** The Workflow Engine sequences the tasks.
 6. **Route:** The Router optimally selects providers and models for each task.
 7. **Execute:** The Runtime executes the sequence, locking interactions behind Provider/Tool managers.
 8. **Report:** Traces, metrics, and outcomes are synthesized into an `ExecutionReport` and returned.
+9. **Learn:** GAMBIT analyzes the execution trace, extracts successful patterns into reusable skills, and persists them to Memory.
 
 ## Repository Structure
 ```text
@@ -67,16 +70,16 @@ Samaktha/
 ├── app/
 │   ├── api/             # API layer and routing
 │   ├── core/            # Core systems (CAP, GAMBIT, contracts, orchestrator)
-│   ├── memory/          # Storage and context retrieval
+│   ├── memory/          # Storage, skill lifecycle, and context retrieval
 │   ├── providers/       # LLM provider implementations
 │   ├── router/          # Execution routing logic
 │   ├── runtime/         # Deterministic execution and tool integration
 │   ├── tools/           # Functional capabilities
 │   └── workflow/        # Sequential coordination
 ├── docs/                # Architecture state and technical documentation
-├── tests/               # 181-test strict regression suite
+├── tests/               # 246-test strict regression suite
 ├── CHANGELOG.md         # Release history
-├── RELEASE_NOTES_v0.2.md# Current release summary
+├── RELEASE_NOTES_v0.3.md# Current release summary
 └── README.md            # Project overview
 ```
 
@@ -105,7 +108,7 @@ GROQ_API_KEY=gsk-...
 ```
 
 ## Running Tests
-Run the entire regression suite (181 tests) to verify boundary integrity:
+Run the entire regression suite (246 tests) to verify boundary integrity:
 ```bash
 pytest
 ```
@@ -117,6 +120,8 @@ pytest
 - High-resolution timeline tracing.
 - SQLite-backed memory indexing.
 - Tool capability sandboxing.
+- **Deterministic cognitive learning (Skill extraction and persistence).**
+- **Automated skill lifecycle management (Decay, deprecation, archival).**
 
 ## Completed Phase 1
 - Initial framework scaffolding.
@@ -128,23 +133,25 @@ pytest
 - `app.core.contracts` boundary hardening (zero circular dependencies).
 - Strict canonical execution pipelines (`ToolManager`, `ProviderManager`).
 - Deep observability via `ExecutionReport`, `ExecutionTrace`, and distributed `MetricsCollectors`.
-- Comprehensive testing (181 tests).
+
+## Completed Phase 3
+- Implemented Reflection Engine to analyze failure and success traces.
+- Implemented Learning Engine to extract reusable deterministic skills.
+- Implemented Skill Memory Store.
+- Implemented Planner Skill Retrieval and injection.
+- Implemented Skill Lifecycle Management with decay and usage tracking.
 
 ## Current Limitations
 - Memory relies on keyword-based retrieval rather than semantic vector embeddings.
 - Metrics are independently tracked rather than unified under a core observable interface.
-- GAMBIT does not currently support recursive, goal-seeking reflection loops.
+- GAMBIT does not currently support recursive, goal-seeking execution loops (background agents).
 
 ## Roadmap
-**Phase 3 (Next Phase):**
-- Introduce autonomous agents.
-- Implement reflection and self-correcting logic in GAMBIT.
-- Upgrade the memory system with Semantic Vectors / RAG.
-
-**Phase 4:**
+**Phase 4 (Next Phase):**
 - Distributed execution scaling.
 - Advanced multi-agent orchestration.
 - Long-term continuous learning systems.
+- Upgrading the memory system with Semantic Vectors / RAG.
 
 ## Contributing
 Please see `CONTRIBUTING.md` for details on our code of conduct, and the process for submitting pull requests. All PRs must maintain 100% test coverage and preserve architectural invariants.

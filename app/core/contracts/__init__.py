@@ -9,10 +9,13 @@ from app.core.contracts.conversation import (
 from app.core.contracts.memory import MemoryReader, MemoryRecord, MemoryRequest, MemoryResult
 from app.core.contracts.planning import (
     ExecutionPlan,
+    FailureCause,
     Goal,
     GoalComplexity,
     PlanReflection,
     PlanTask,
+    ReflectionResult,
+    ReplanRecommendation,
     RouterRequest,
     Skill,
     SkillMatch,
@@ -39,8 +42,10 @@ from app.core.contracts.policy import (
     PrivacyCategory,
     PrivacyClassification,
 )
+from app.core.contracts.learning import LearningResult, SkillCandidate, SkillConfidence
 from app.core.contracts.runtime import RuntimeContext, RuntimeResult, RuntimeTask
 from app.core.contracts.routing import RoutingDecision
+from app.core.contracts.skills import SkillLifecycleState, SkillRecord, SkillSearchResult
 from app.core.contracts.trace import ExecutionTrace, TimelineEvent
 
 __all__ = [
@@ -55,8 +60,10 @@ __all__ = [
     "ContextRequest",
     "ExecutionPlan",
     "ExecutionTrace",
+    "FailureCause",
     "Goal",
     "GoalComplexity",
+    "LearningResult",
     "MemoryReader",
     "MemoryRecord",
     "MemoryRequest",
@@ -67,6 +74,8 @@ __all__ = [
     "PermissionScope",
     "PlanReflection",
     "PlanTask",
+    "ReflectionResult",
+    "ReplanRecommendation",
     "PlannedAction",
     "PolicyDecision",
     "PrivacyCategory",
@@ -78,8 +87,13 @@ __all__ = [
     "RuntimeTask",
     "RoutingDecision",
     "Skill",
+    "SkillCandidate",
+    "SkillConfidence",
     "SkillMatch",
+    "SkillRecord",
+    "SkillLifecycleState",
     "SkillRegistry",
+    "SkillSearchResult",
     "TaskKind",
     "TaskOutcome",
     "TaskStatus",

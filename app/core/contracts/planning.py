@@ -106,6 +106,7 @@ class PlanTask(BaseModel):
     cap_required: bool = True
     status: TaskStatus = TaskStatus.PENDING
     execution_action_type: str = "text_generation"
+    origin: str = "planner"
 
 
 class WorkflowStep(BaseModel):
@@ -127,6 +128,9 @@ class ExecutionPlan(BaseModel):
     router_request: RouterRequest
     skill_matches: list[SkillMatch] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    used_skill_ids: list[str] = Field(default_factory=list)
+    used_skill_names: list[str] = Field(default_factory=list)
+    planner_reasoning: list[str] = Field(default_factory=list)
 
 
 class TaskOutcome(BaseModel):
@@ -154,3 +158,47 @@ class SkillRegistry(Protocol):
 
     async def search(self, query: str, limit: int = 5) -> list[SkillMatch]:
         raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.1 – Reflection Engine contracts
+# ---------------------------------------------------------------------------
+
+
+class FailureCause(StrEnum):
+    """Detected root cause category of a task failure."""
+
+    PROVIDER_ERROR = "provider_error"
+    TOOL_ERROR = "tool_error"
+    POLICY_BLOCK = "policy_block"
+    PARTIAL_OUTPUT = "partial_output"
+    REPEATED_FAILURE = "repeated_failure"
+    UNKNOWN = "unknown"
+
+
+class ReplanRecommendation(StrEnum):
+    """Deterministic replanning recommendation produced by reflection."""
+
+    REPLAN_IMMEDIATELY = "replan_immediately"
+    REPLAN_WITH_CONTEXT = "replan_with_context"
+    RETRY_SAME_PLAN = "retry_same_plan"
+    ABANDON = "abandon"
+
+
+class ReflectionResult(BaseModel):
+    """Rich reflection output produced by ReflectionEngine.reflect_on_report()."""
+
+    plan_id: str
+    reflection_id: str
+    total_tasks: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    blocked_count: int = 0
+    success_rate: float = 0.0
+    failure_causes: list[FailureCause] = Field(default_factory=list)
+    repeated_failures: list[str] = Field(default_factory=list)
+    replan_recommendation: ReplanRecommendation = ReplanRecommendation.RETRY_SAME_PLAN
+    replan_worthwhile: bool = False
+    lessons: list[str] = Field(default_factory=list)
+    follow_up_tasks: list[PlanTask] = Field(default_factory=list)
+    duration_ms: int = 0
