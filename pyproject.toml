@@ -1,7 +1,7 @@
 [project]
 name = "samaktha-core"
-version = "0.1.0"
-description = "Samaktha Core v0.1 backend foundation"
+version = "0.3.0"
+description = "Samaktha Core v0.3 backend foundation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
