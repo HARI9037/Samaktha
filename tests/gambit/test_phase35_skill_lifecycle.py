@@ -392,7 +392,7 @@ def test_skill_memory_store_does_not_import_forbidden_modules() -> None:
     forbidden = [
         "ProviderManager",
         "ToolManager",
-        "WorkflowEngine",
+        "PlanBuilder",
         "Planner",
         "ReflectionEngine",
         "LearningEngine",

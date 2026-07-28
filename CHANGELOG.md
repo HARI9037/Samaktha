@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.0] - 2026-07-19
+
+### Added
+- **Advanced Provider Ecosystem**: Multi-provider support (OpenAI, Anthropic, Groq, local) via `ProviderManager`.
+- **Multimodal Capabilities**: Introduced `multimodal` routing and image/audio base64 data injection without boundary violations.
+- **Streaming Responses**: Deterministic server-sent event chunk streams via `StreamingExecutor`.
+- **Tool Composition**: Evolved `ToolManager` to support sequential and parallel `ToolChain` dependency execution.
+- **Security & Privacy Layer**: Built `ToolGuard`, `InputSecurityScanner`, and `OutputSecurityFilter` to proactively intercept path traversal, leakages, and credentials before tool execution. Added `retention_policy` and `SecurityLevel` privacy markings to `ContextMemoryStore`.
+
+## [v0.4.0] - 2026-07-19
+
+### Added
+- **Parallel Execution**: Replaced linear workflow iteration with `ParallelWorkflowScheduler` to handle dynamic ExecutionGraph dependencies using asynchronous coroutines (`asyncio.gather`).
+- **Multi-Agent Orchestration**: Enhanced GAMBIT with `AgentPlanner` and `AgentRegistry` to assign complex multi-agent goals without violating workflow/runtime isolation.
+- **Distributed State Foundation**: Added `ExecutionGraph` dependency tracking and `RuntimeExecutionPool` to maintain state consistency across concurrent workers.
+- **Semantic Memory**: Upgraded `MemoryManager` and `SkillMemoryStore` with a purely deterministic TF-IDF semantic index for context and skill retrieval.
+- **Unified Telemetry**: Centralized metrics and observability under `app.core.telemetry`, defining rigid `TelemetrySnapshot` and `TelemetryEvent` structures in contracts.
+
+### Changed
+- **Protocol Centralization**: Moved `ProviderLike`, `ToolLike`, `ProviderManagerLike`, and `ToolManagerLike` to `app.core.contracts.protocols`.
+- **GAMBIT Naming**: Renamed internal `WorkflowEngine` inside GAMBIT to `PlanBuilder` to eliminate naming ambiguity with the Workflow subsystem.
+- **Test Suite**: Expanded test coverage heavily to 315 passing tests encompassing concurrent scheduling, fault tolerance, and agent isolation.
+
 ## [v0.3.0] - 2026-07-19
 
 ### Added

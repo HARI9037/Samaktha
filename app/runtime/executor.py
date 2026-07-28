@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 from typing import Any, Protocol
+import logging
 
 from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask
 from app.core.contracts.planning import TaskStatus
+from app.core.contracts.pause import ExecutionPause
+from app.core.contracts.protocols import (
+    ProviderManagerLike,
+    ToolManagerLike,
+)
+
+log = logging.getLogger(__name__)
 
 
 class Executor(Protocol):
@@ -15,33 +23,6 @@ class Executor(Protocol):
         task: RuntimeTask,
         routing: RoutingDecision,
     ) -> RuntimeResult:
-        raise NotImplementedError
-
-
-class ProviderManagerLike(Protocol):
-    """Provider manager shape required by Runtime."""
-
-    def resolve_provider(self, provider_id: str) -> ProviderLike | None:
-        raise NotImplementedError
-
-    async def execute_provider(
-        self,
-        provider_id: str,
-        payload: dict[str, Any],
-        model_id: str | None = None,
-        required_capabilities: list[str] | None = None,
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-
-class ProviderLike(Protocol):
-    """Provider shape required by Runtime without importing provider modules."""
-
-    @property
-    def name(self) -> str:
-        raise NotImplementedError
-
-    async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
 
@@ -57,90 +38,66 @@ class ProviderExecutor:
         task: RuntimeTask,
         routing: RoutingDecision,
     ) -> RuntimeResult:
+        log.debug("ProviderExecutor.execute() starts for task_id=%s", task.task_id)
         if context and context.trace:
             context.trace.add_event(
                 source="runtime",
                 event_type="runtime.provider.started",
                 task_id=task.task_id,
-                provider_id=routing.provider_id,
-                model_id=routing.model_id
+                provider_id=routing.provider_id if routing else task.action_type,
+                model_id=routing.model_id if routing else None
             )
             
         import time
         started_at = time.perf_counter()
-        
-        output = await self._provider_manager.execute_provider(
-            provider_id=routing.provider_id,
-            payload=task.inputs,
-            model_id=routing.model_id,
-            required_capabilities=[task.action_type],
-        )
-        status = (
-            TaskStatus.COMPLETED
-            if output.get("success", True)
-            else TaskStatus.FAILED
+
+        log.info(
+            "Provider selection | provider=%s model=%s reason=router decision streaming=disabled",
+            routing.provider_id if routing else task.action_type,
+            routing.model_id if routing else "default",
         )
         
-        result = RuntimeResult(
-            task_id=task.task_id,
-            status=status,
-            routing=routing,
-            output=(
-                output.get("metadata", {}).get("legacy_response")
-                if output.get("metadata", {}).get("legacy_response")
-                else output
-            ) if status == TaskStatus.COMPLETED else {},
-            error=output.get("message") if status == TaskStatus.FAILED else None,
-        )
-        
+        try:
+            output = await self._provider_manager.execute_provider(
+                provider_id=routing.provider_id,
+                payload=task.inputs,
+                model_id=routing.model_id,
+                required_capabilities=[task.action_type],
+            )
+            status = (
+                TaskStatus.COMPLETED
+                if output.get("success", True)
+                else TaskStatus.FAILED
+            )
+            
+            result = RuntimeResult(
+                task_id=task.task_id,
+                status=status,
+                routing=routing,
+                output=(
+                    output.get("metadata", {}).get("legacy_response")
+                    if output.get("metadata", {}).get("legacy_response")
+                    else output
+                ) if status == TaskStatus.COMPLETED else {},
+                error=output.get("message") if status == TaskStatus.FAILED else None,
+            )
+        except Exception as e:
+            result = RuntimeResult(
+                task_id=task.task_id,
+                status=TaskStatus.FAILED,
+                routing=routing,
+                error=str(e),
+            )
+            
         if context and context.trace:
             context.trace.add_event(
                 source="runtime",
-                event_type="runtime.provider.completed" if status == TaskStatus.COMPLETED else "runtime.provider.failed",
+                event_type="runtime.provider.completed" if result.status == TaskStatus.COMPLETED else "runtime.provider.failed",
                 duration_ms=(time.perf_counter() - started_at) * 1000,
                 task_id=task.task_id,
             )
             
         return result
-
-
-class ToolLike(Protocol):
-    """Tool shape required by Runtime without importing tool modules."""
-
-    @property
-    def name(self) -> str:
-        raise NotImplementedError
-
-    async def run(self, arguments: dict[str, Any]) -> Any:
-        raise NotImplementedError
-
-
-class ToolResultLike(Protocol):
-    @property
-    def ok(self) -> bool:
-        raise NotImplementedError
-
-    @property
-    def data(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @property
-    def error(self) -> str | None:
-        raise NotImplementedError
-
-
-class ToolManagerLike(Protocol):
-    """Tool manager shape required by Runtime."""
-
-    def resolve_tool(self, tool_id: str) -> ToolLike | None:
-        raise NotImplementedError
-
-    async def execute_tool(
-        self,
-        tool_id: str,
-        arguments: dict[str, Any],
-    ) -> ToolResultLike:
-        raise NotImplementedError
 
 
 class ToolExecutor:
@@ -155,19 +112,24 @@ class ToolExecutor:
         task: RuntimeTask,
         routing: RoutingDecision,
     ) -> RuntimeResult:
+        log.debug("ToolExecutor.execute() starts for task_id=%s with action_type=%s", task.task_id, task.action_type)
+        tool_id = task.metadata.get("tool") if task.action_type == "tool" else task.action_type
+
         if context and context.trace:
             context.trace.add_event(
                 source="runtime",
                 event_type="runtime.tool.started",
                 task_id=task.task_id,
-                tool_id=task.action_type
+                tool_id=tool_id
             )
             
         import time
         started_at = time.perf_counter()
         
+        log.info("ToolExecutor: ENTER — tool_id=%s inputs_keys=%s", tool_id, list(task.inputs.keys()))
+
         try:
-            tool_result = await self._tool_manager.execute_tool(task.action_type, task.inputs)
+            tool_result = await self._tool_manager.execute_tool(tool_id, task.inputs)
             
             if tool_result.ok:
                 result = RuntimeResult(
@@ -175,6 +137,17 @@ class ToolExecutor:
                     status=TaskStatus.COMPLETED,
                     routing=routing,
                     output=tool_result.data,
+                )
+            elif tool_result.error == "MULTIPLE_MATCHES":
+                result = RuntimeResult(
+                    task_id=task.task_id,
+                    status=TaskStatus.PAUSED,
+                    routing=routing,
+                    pause=ExecutionPause(
+                        reason="multiple_matches",
+                        metadata={"candidates": tool_result.data.get("candidates", [])},
+                    ),
+                    error=tool_result.error,
                 )
             else:
                 result = RuntimeResult(
@@ -198,5 +171,7 @@ class ToolExecutor:
                 duration_ms=(time.perf_counter() - started_at) * 1000,
                 task_id=task.task_id,
             )
+
+        log.info("ToolExecutor: EXIT — status=%s error=%s has_output=%s", result.status, result.error, result.output is not None)
             
         return result

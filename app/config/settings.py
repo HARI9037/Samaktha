@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     sqlite_url: str = Field(default="sqlite:///./samaktha.db")
 
-    model_config = SettingsConfigDict(env_prefix="SAMAKTHA_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="SAMAKTHA_", env_file=".env", extra="ignore")
 
 
 @lru_cache

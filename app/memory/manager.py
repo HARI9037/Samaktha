@@ -2,10 +2,11 @@ import uuid
 from datetime import datetime
 from typing import Any, List, Optional, Union
 
-from app.core.contracts.memory import MemoryRecord
+from app.core.contracts.memory import MemoryItem, MemoryRecord, MemorySearchResult, MemoryType
 from app.core.contracts.skills import SkillRecord, SkillSearchResult
 from app.memory.base import Memory
 from app.memory.categories import normalize_category, normalize_category_for_storage
+from app.memory.context import ContextMemoryStore
 from app.memory.metrics import MemoryMetricsCollector, MemoryMetricsSnapshot
 from app.memory.models import MemoryEntry
 from app.memory.repository import MemoryRepository
@@ -33,6 +34,7 @@ class MemoryManager(Memory):
             self._repo = MemoryRepository()
         self._metrics = MemoryMetricsCollector()
         self._skill_store = SkillMemoryStore()
+        self._context_store = ContextMemoryStore()  # Phase 4.5
 
     def get_metrics(self) -> MemoryMetricsSnapshot:
         return self._metrics.get_metrics()
@@ -150,6 +152,35 @@ class MemoryManager(Memory):
 
     def list_archived_skills(self) -> list[SkillRecord]:
         return self._skill_store.list_archived_skills()
+
+    # ------------------------------------------------------------------
+    # Semantic Memory APIs — Phase 4.5
+    # ------------------------------------------------------------------
+
+    def store_memory(self, item: MemoryItem) -> None:
+        """Store a typed MemoryItem in the semantic context store."""
+        self._context_store.save_context(item)
+
+    def search_memory(
+        self,
+        query: str,
+        top_k: int = 10,
+        memory_type: MemoryType | None = None,
+    ) -> list[MemorySearchResult]:
+        """Semantic search over stored MemoryItems."""
+        return self._context_store.search_context(query, top_k=top_k, memory_type=memory_type)
+
+    def delete_memory(self, item_id: str) -> None:
+        """Remove a MemoryItem by ID."""
+        self._context_store.delete_memory(item_id)
+
+    def update_memory(self, item: MemoryItem) -> None:
+        """Update an existing MemoryItem (upsert)."""
+        self._context_store.update_memory(item)
+
+    def get_recent_context(self, n: int = 10) -> list[MemoryItem]:
+        """Return the n most recently stored context items."""
+        return self._context_store.get_recent_context(n)
 
     # ------------------------------------------------------------------
     # Private Helpers

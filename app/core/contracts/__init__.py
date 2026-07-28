@@ -6,7 +6,16 @@ from app.core.contracts.conversation import (
     MessageRole,
     PreparedContext,
 )
-from app.core.contracts.memory import MemoryReader, MemoryRecord, MemoryRequest, MemoryResult
+from app.core.contracts.memory import (
+    MemoryDomainCategory,
+    MemoryItem,
+    MemoryReader,
+    MemoryRecord,
+    MemoryRequest,
+    MemoryResult,
+    MemorySearchResult,
+    MemoryType,
+)
 from app.core.contracts.planning import (
     ExecutionPlan,
     FailureCause,
@@ -34,6 +43,7 @@ from app.core.contracts.policy import (
     ApprovalOutcome,
     ApprovalRequest,
     ApprovalResult,
+    ExecutionPermit,
     PermissionDecision,
     PermissionRecord,
     PermissionScope,
@@ -42,14 +52,64 @@ from app.core.contracts.policy import (
     PrivacyCategory,
     PrivacyClassification,
 )
+from app.core.contracts.agents import (
+    AgentCapability,
+    AgentDefinition,
+    AgentPlan,
+    AgentRole,
+    AgentTask,
+)
+from app.core.contracts.workers import (
+    WorkerAssignment,
+    WorkerCapability,
+    WorkerDefinition,
+    WorkerResult,
+    WorkerType,
+)
 from app.core.contracts.learning import LearningResult, SkillCandidate, SkillConfidence
-from app.core.contracts.runtime import RuntimeContext, RuntimeResult, RuntimeTask
+from app.core.contracts.runtime import RuntimeContext, RuntimeResult, RuntimeTask, ApprovedRuntimeTask
 from app.core.contracts.routing import RoutingDecision
 from app.core.contracts.skills import SkillLifecycleState, SkillRecord, SkillSearchResult
 from app.core.contracts.trace import ExecutionTrace, TimelineEvent
+from app.core.contracts.provider import (
+    ProviderCapability,
+    ProviderDefinition,
+    ProviderRequest,
+    ProviderResponse,
+)
+from app.core.contracts.multimodal import (
+    MediaInput,
+    MediaType,
+    MultimodalRequest,
+    MultimodalResponse,
+)
+from app.core.contracts.streaming import (
+    StreamChunk,
+    StreamEventType,
+    StreamRequest,
+    StreamResponse,
+)
+
+from app.core.contracts.tools import (
+    ToolChain,
+    ToolExecutionResult,
+    ToolFailurePolicy,
+    ToolStep,
+)
+from app.core.contracts.security import (
+    SecurityDecision,
+    SecurityLevel,
+    SecurityPolicy,
+)
+from app.core.contracts.state import ExecutionStatus, TaskExecutionState, ExecutionState
 
 __all__ = [
     "ActionRisk",
+    "AgentCapability",
+    "AgentDefinition",
+    "AgentPlan",
+    "AgentRole",
+    "AgentTask",
     "AmbiguityCandidate",
     "AmbiguityCheck",
     "ApprovalDecision",
@@ -58,34 +118,54 @@ __all__ = [
     "ApprovalResult",
     "ConversationMessage",
     "ContextRequest",
+    "ExecutionGraph",
     "ExecutionPlan",
+    "ExecutionState",
+    "ExecutionStatus",
     "ExecutionTrace",
     "FailureCause",
     "Goal",
     "GoalComplexity",
     "LearningResult",
+    "MemoryDomainCategory",
+    "MemoryItem",
     "MemoryReader",
     "MemoryRecord",
     "MemoryRequest",
     "MemoryResult",
+    "MemorySearchResult",
+    "MemoryType",
+    "MediaInput",
+    "MediaType",
     "MessageRole",
+    "MultimodalRequest",
+    "MultimodalResponse",
     "PermissionDecision",
     "PermissionRecord",
     "PermissionScope",
     "PlanReflection",
     "PlanTask",
-    "ReflectionResult",
-    "ReplanRecommendation",
     "PlannedAction",
     "PolicyDecision",
+    "PreparedContext",
     "PrivacyCategory",
     "PrivacyClassification",
-    "PreparedContext",
+    "ProviderCapability",
+    "ProviderDefinition",
+    "ProviderRequest",
+    "ProviderResponse",
+    "ReflectionResult",
+    "ReplanRecommendation",
     "RouterRequest",
+    "ApprovedRuntimeTask",
+    "ExecutionPermit",
     "RuntimeContext",
     "RuntimeResult",
     "RuntimeTask",
     "RoutingDecision",
+    "SecurityDecision",
+    "SecurityLevel",
+    "SecurityPolicy",
     "Skill",
     "SkillCandidate",
     "SkillConfidence",
@@ -94,10 +174,20 @@ __all__ = [
     "SkillLifecycleState",
     "SkillRegistry",
     "SkillSearchResult",
+    "StreamChunk",
+    "StreamEventType",
+    "StreamRequest",
+    "StreamResponse",
+    "TaskDependency",
+    "TaskExecutionState",
     "TaskKind",
     "TaskOutcome",
     "TaskStatus",
     "TimelineEvent",
+    "ToolChain",
+    "ToolExecutionResult",
+    "ToolFailurePolicy",
+    "ToolStep",
     "WorkflowStage",
     "WorkflowStep",
 ]

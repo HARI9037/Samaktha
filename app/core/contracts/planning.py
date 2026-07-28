@@ -20,6 +20,8 @@ class TaskStatus(StrEnum):
     PENDING = "pending"
     READY = "ready"
     BLOCKED = "blocked"
+    BLOCKED_BY_DEPENDENCY = "blocked_by_dependency"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -46,6 +48,28 @@ class WorkflowStage(StrEnum):
     REFLECT = "reflect"
 
 
+class GoalIntent(StrEnum):
+    """Structured intent identified for a goal."""
+
+    READ_RESOURCE = "read_resource"
+    WRITE_RESOURCE = "write_resource"
+    LIST_DIRECTORY = "list_directory"
+    SEARCH_RESOURCE = "search_resource"
+    DELETE_RESOURCE = "delete_resource"
+    MOVE_RESOURCE = "move_resource"
+    COPY_RESOURCE = "copy_resource"
+    RENAME_RESOURCE = "rename_resource"
+    SEARCH_MEMORY = "search_memory"
+    GENERATE_CODE = "generate_code"
+    ANSWER_QUESTION = "answer_question"
+    OPERATE_WINDOWS = "operate_windows"
+    RUN_COMMAND = "run_command"
+    USE_BROWSER = "use_browser"
+    SEND_EMAIL = "send_email"
+    MANAGE_CALENDAR = "manage_calendar"
+    PLAY_MEDIA = "play_media"
+
+
 class Goal(BaseModel):
     """Normalized representation of a user goal."""
 
@@ -53,6 +77,9 @@ class Goal(BaseModel):
     raw_request: str
     summary: str
     complexity: GoalComplexity
+    intent: GoalIntent = GoalIntent.ANSWER_QUESTION
+    target_path: str | None = None
+    query: str | None = None
     requires_long_context: bool = False
     requires_code: bool = False
     requires_local_model: bool = False
@@ -107,6 +134,11 @@ class PlanTask(BaseModel):
     status: TaskStatus = TaskStatus.PENDING
     execution_action_type: str = "text_generation"
     origin: str = "planner"
+    metadata: dict = Field(default_factory=dict)
+    
+    # Phase 4.3 - Distributed Execution Metadata
+    worker_requirement: str | None = None
+    preferred_worker: str | None = None
 
 
 class WorkflowStep(BaseModel):
@@ -116,6 +148,7 @@ class WorkflowStep(BaseModel):
     stage: WorkflowStage
     title: str
     task_ids: list[str]
+    metadata: dict = Field(default_factory=dict)
 
 
 class ExecutionPlan(BaseModel):
@@ -202,3 +235,36 @@ class ReflectionResult(BaseModel):
     lessons: list[str] = Field(default_factory=list)
     follow_up_tasks: list[PlanTask] = Field(default_factory=list)
     duration_ms: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.7 – Planner-level result envelope
+# ---------------------------------------------------------------------------
+
+
+class PlannerStatus(StrEnum):
+    """Outcome of a planning cycle returned to the Orchestrator."""
+
+    OK = "ok"
+    """Plan was produced successfully; Workflow should execute it."""
+
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
+    """A required capability is not installed.
+
+    Workflow must NOT execute.  The Orchestrator must return a user-facing
+    message via CAPABILITY_UNAVAILABLE_MESSAGE without invoking the Provider.
+    """
+
+
+class PlannerResult(BaseModel):
+    """Envelope returned by Planner.plan_with_capability_check().
+
+    The Orchestrator inspects .status before deciding whether to hand
+    .plan to the Workflow Engine.
+    """
+
+    status: PlannerStatus = PlannerStatus.OK
+    plan: ExecutionPlan | None = None
+    required_capability: str | None = None
+    """Human-readable capability name when status == CAPABILITY_UNAVAILABLE."""
+

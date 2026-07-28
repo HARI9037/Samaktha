@@ -203,7 +203,7 @@ def test_learning_engine_does_not_import_forbidden_modules() -> None:
         "ToolManager",
         "ToolExecutor",
         "ProviderExecutor",
-        "WorkflowEngine",
+        "PlanBuilder",
         "Runtime",
         "Planner",
         "ReflectionEngine",

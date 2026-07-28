@@ -18,6 +18,11 @@ class RuntimeDispatcher:
             "provider": "provider",
             "tool_execution": "tool",
             "tool": "tool",
+            # AI-OS tool routes — each maps to ToolExecutor
+            "filesystem": "tool",
+            "pdf": "tool",
+            "memory": "tool",
+            "windows": "tool",
             **(action_executor_map or {}),
         }
 

@@ -1,11 +1,12 @@
 from typing import Any
 
-from app.providers.base import Provider
+from app.core.contracts.provider import ProviderCapability
+from app.providers.base import BaseProvider
 from app.providers.config import ProviderSettings
 from app.providers.http_chat import OpenAICompatibleChatClient
 
 
-class OpenAIProvider(Provider):
+class OpenAIProvider(BaseProvider):
     """Provider implementation for OpenAI-compatible APIs."""
 
     def __init__(self, settings: ProviderSettings) -> None:
@@ -22,6 +23,12 @@ class OpenAIProvider(Provider):
     @property
     def name(self) -> str:
         return "openai"
+
+    def supports(self, capability: ProviderCapability) -> bool:
+        return capability == ProviderCapability.TEXT_GENERATION
+
+    async def health_check(self) -> bool:
+        return True
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._client.execute(payload)

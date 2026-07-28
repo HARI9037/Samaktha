@@ -21,7 +21,7 @@ from app.memory.sqlite_store import SQLiteStore
 from app.memory.manager import MemoryManager
 from app.memory.repository import MemoryRepository
 from app.models import ModelInfo, ModelManager, ModelRegistry
-from app.tools import FileSystemTool, ToolInfo, ToolManager, ToolRegistry
+from app.tools import ToolInfo, ToolManager, ToolRegistry
 from app.workflow import WorkflowEngine
 from app.router import (
     CapabilityRegistry,
@@ -37,6 +37,7 @@ from app.runtime import (
     RuntimeRegistry,
     ToolExecutor,
 )
+from app.runtime.streaming import StreamingExecutor
 import os
 
 
@@ -158,9 +159,9 @@ def create_orchestrator() -> SamakthaOrchestrator:
             supports_images=False,
             supports_audio=False,
             reasoning_score=8,
-            coding_score=7,
-            speed_score=8,
-            cost_score=8,
+            coding_score=8,
+            speed_score=10,
+            cost_score=9,
             privacy_score=4,
         ),
         ModelInfo(
@@ -203,14 +204,70 @@ def create_orchestrator() -> SamakthaOrchestrator:
     repository = MemoryRepository(store=sqlite_store)
     memory_manager = MemoryManager(repository=repository)
 
+    from app.tools import FileSystemTool, MemoryTool, PDFTool, WindowsTool, ImageTool, ResolverTool, DocumentTool
     tool_registry = ToolRegistry()
     tool_registry.register(
+        tool_id="resolver",
+        tool=ResolverTool(registry=tool_registry),
+        info=ToolInfo(
+            tool_id="resolver",
+            description="Dynamically routes resource tasks to specific format tools.",
+            capabilities=["read", "list", "search", "move", "copy", "delete", "rename"],
+        ),
+    )
+    tool_registry.register(
         tool_id="filesystem",
-        tool=FileSystemTool(root_dir="workspace"),
+        tool=FileSystemTool(),        # No sandbox — allows absolute paths from planner
         info=ToolInfo(
             tool_id="filesystem",
-            description="Tool for file system operations",
-            capabilities=["read_file", "write_file", "list_directory"],
+            description="Local filesystem operations: exists, read, write, list, search, copy, move, delete, mkdir",
+            capabilities=["exists", "read", "read_file", "write", "write_file", "list", "list_directory", "search", "copy", "move", "delete", "mkdir"],
+        ),
+    )
+    tool_registry.register(
+        tool_id="document",
+        tool=DocumentTool(),
+        info=ToolInfo(
+            tool_id="document",
+            description="Extract text, tables, images, and metadata from documents (PDF, DOCX, PPTX, XLSX, TXT, MD, HTML) using IBM Docling",
+            capabilities=["read_document", "summarize_document", "extract_text", "extract_tables", "extract_metadata"],
+        ),
+    )
+    tool_registry.register(
+        tool_id="pdf",
+        tool=PDFTool(),
+        info=ToolInfo(
+            tool_id="pdf",
+            description="Extract text, metadata, and page count from PDF documents",
+            capabilities=["extract_text", "read_pdf", "page_count", "metadata", "tables"],
+        ),
+    )
+    tool_registry.register(
+        tool_id="image",
+        tool=ImageTool(),
+        info=ToolInfo(
+            tool_id="image",
+            description="Analyze image contents and extract metadata",
+            capabilities=["analyze", "read_image", "metadata"],
+        ),
+    )
+    memory_tool = MemoryTool(memory_manager=memory_manager)
+    tool_registry.register(
+        tool_id="memory",
+        tool=memory_tool,
+        info=ToolInfo(
+            tool_id="memory",
+            description="Search and retrieve conversation and skill memories",
+            capabilities=["search", "retrieve"],
+        ),
+    )
+    tool_registry.register(
+        tool_id="windows",
+        tool=WindowsTool(),
+        info=ToolInfo(
+            tool_id="windows",
+            description="Windows OS operations: list processes, clipboard, terminal commands",
+            capabilities=["processes", "clipboard_get", "clipboard_set", "terminal"],
         ),
     )
     tool_manager = ToolManager(tool_registry)
@@ -225,6 +282,8 @@ def create_orchestrator() -> SamakthaOrchestrator:
             provider_id="mock", model_id="mock-model", capabilities=["text_generation"]),
         ProviderModelRegistration(
             provider_id="openai", model_id=provider_settings.openai_model, capabilities=["text_generation"]),
+        ProviderModelRegistration(
+            provider_id="groq", model_id=provider_settings.groq_model, capabilities=["text_generation"]),
         ProviderModelRegistration(
             provider_id="local", model_id=provider_settings.local_model or "unknown", capabilities=["text_generation"]),
     ])
@@ -257,6 +316,19 @@ def create_orchestrator() -> SamakthaOrchestrator:
         output_cost_per_1k=0.0006,
     ))
     capability_registry.register(ProviderCapability(
+        provider_id="groq",
+        model_id=provider_settings.groq_model,
+        capabilities=["text_generation", "code_generation"],
+        reasoning_score=9,
+        coding_score=8,
+        speed_score=10,
+        privacy_score=4,
+        cost_score=9,
+        context_window=128000,
+        maximum_output=provider_settings.max_output_tokens,
+        latency_ms=20.0,
+    ))
+    capability_registry.register(ProviderCapability(
         provider_id="local",
         model_id=provider_settings.local_model or "unknown",
         capabilities=["text_generation"],
@@ -273,6 +345,7 @@ def create_orchestrator() -> SamakthaOrchestrator:
         router_registry,
         capability_registry,
         model_manager=model_manager,
+        preferred_provider=provider_settings.default_provider,
     )
 
     orchestrator = SamakthaOrchestrator(
@@ -282,4 +355,8 @@ def create_orchestrator() -> SamakthaOrchestrator:
         runtime=runtime,
         workflow_engine=WorkflowEngine(),
     )
+    # Expose existing runtime streaming as a connection point for frontends;
+    # this does not alter the orchestrator's synchronous workflow path.
+    orchestrator.streaming_executor = StreamingExecutor(provider_manager)
+    orchestrator.provider_settings = provider_settings
     return orchestrator

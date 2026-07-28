@@ -1,6 +1,6 @@
 import asyncio
 
-from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeTask
+from app.core.contracts import RoutingDecision, RuntimeContext
 from app.core.contracts.planning import TaskStatus
 from app.providers.mock import MockProvider
 from app.providers.manager import ProviderManager
@@ -14,6 +14,7 @@ from app.runtime import (
     ToolExecutor,
 )
 from app.tools import ToolManager, ToolRegistry
+from tests.conftest import approved_task
 
 def build_runtime(provider_id: str = "mock") -> RuntimeEngine:
     registry = ProviderRegistry()
@@ -45,7 +46,7 @@ def routing_decision(provider_id: str = "mock") -> RoutingDecision:
 def test_runtime_engine_executes_provider_task() -> None:
     async def run_test() -> None:
         engine = build_runtime()
-        task = RuntimeTask(
+        task = approved_task(
             task_id="task-1",
             title="Generate text",
             description="Generate a test response.",
@@ -81,7 +82,7 @@ def test_provider_executor_fails_for_unknown_provider() -> None:
     async def run_test() -> None:
         registry = ProviderRegistry()
         executor = ProviderExecutor(ProviderManager(registry))
-        task = RuntimeTask(
+        task = approved_task(
             task_id="task-2",
             title="Generate text",
             description="Generate a test response.",
@@ -100,7 +101,7 @@ def test_provider_executor_fails_for_unknown_provider() -> None:
 def test_unknown_task_type_fails_safely() -> None:
     async def run_test() -> None:
         engine = build_runtime()
-        task = RuntimeTask(
+        task = approved_task(
             task_id="task-3",
             title="Unknown task",
             description="Use an unknown action type.",
@@ -118,7 +119,7 @@ def test_unknown_task_type_fails_safely() -> None:
 def test_tool_execution_returns_controlled_failure() -> None:
     async def run_test() -> None:
         engine = build_runtime()
-        task = RuntimeTask(
+        task = approved_task(
             task_id="task-4",
             title="Run tool",
             description="Attempt tool execution.",

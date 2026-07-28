@@ -163,7 +163,7 @@ def test_planner_does_not_import_forbidden_modules() -> None:
         "ToolExecutor",
         "ProviderExecutor",
         "Runtime",
-        "WorkflowEngine.execute",  # It uses WorkflowEngine for build, but not execute
+        "PlanBuilder.execute",  # It uses PlanBuilder for build, but not execute
     ]
     for symbol in forbidden:
         assert symbol not in source, (

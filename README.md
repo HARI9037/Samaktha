@@ -1,12 +1,13 @@
 # Samaktha Core
 
-**Current Stable Release:** Samaktha Core v0.3
+**Current Stable Release:** Samaktha Core v0.5
 
 **Phase Status:**
 - ✅ Phase 1 Complete
 - ✅ Phase 2 Complete
 - ✅ Phase 3 Complete
-- ⬜ Phase 4 Planned
+- ✅ Phase 4 Complete
+- ✅ Phase 5 Complete
 
 ---
 
@@ -122,6 +123,10 @@ pytest
 - Tool capability sandboxing.
 - **Deterministic cognitive learning (Skill extraction and persistence).**
 - **Automated skill lifecycle management (Decay, deprecation, archival).**
+- **Multimodal data injection (Image, Audio, Video context)**
+- **Deterministic streaming execution (SSE chunks)**
+- **Deterministic tool composition (Tool chains)**
+- **Security & Privacy Layer (Input filtering, Output redaction, ToolGuard)**
 
 ## Completed Phase 1
 - Initial framework scaffolding.
@@ -143,13 +148,11 @@ pytest
 
 ## Current Limitations
 - Memory relies on keyword-based retrieval rather than semantic vector embeddings.
-- Metrics are independently tracked rather than unified under a core observable interface.
-- GAMBIT does not currently support recursive, goal-seeking execution loops (background agents).
-
-## Roadmap
-**Phase 4 (Next Phase):**
-- Distributed execution scaling.
-- Advanced multi-agent orchestration.
+- Metrics are independently tracked rather than unified under- **Phase 1**: Governance (CAP) & Cognitive Isolation (GAMBIT).
+- **Phase 2**: Deterministic Orchestration, Runtime Observability, & Boundary Verification.
+- **Phase 3**: Reflection, Analytical Learning, and Persistence-Only Skill Memory.
+- **Phase 4**: Parallel Execution, Multi-Agent Orchestration, Distributed State, Semantic Memory, and Unified Telemetry.
+- **Phase 5**: Advanced Provider APIs, Multi-Modal orchestration, Streaming Responses, Tool Composition, and Security Layer.
 - Long-term continuous learning systems.
 - Upgrading the memory system with Semantic Vectors / RAG.
 

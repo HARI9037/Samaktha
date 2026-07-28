@@ -2,6 +2,7 @@ import asyncio
 
 from app.core.cap import ContextEngine
 from app.core.contracts import ExecutionPlan, Goal, RouterRequest, RuntimeContext, RuntimeResult, RuntimeTask, RoutingDecision
+from tests.conftest import approved_task
 from app.core.contracts.planning import GoalComplexity, PlanTask, TaskKind, TaskStatus, WorkflowStage, WorkflowStep
 from app.core.gambit import Planner
 from app.core.orchestrator import SamakthaOrchestrator
@@ -36,6 +37,7 @@ def build_plan(task_count: int = 1) -> ExecutionPlan:
             kind=TaskKind.EXECUTE_VIA_RUNTIME,
             description=f"Execute step {index + 1}",
             router_request=router_request,
+            dependencies=[f"task-{index}"] if index > 0 else [],
         )
         tasks.append(task)
         steps.append(
@@ -151,9 +153,11 @@ def test_workflow_returns_partial_progress() -> None:
 
         result = await engine.execute(plan, runtime=runtime, router=router, context=RuntimeContext(request_id="req-4"))
 
-        assert len(result.outputs) == 2
+        assert len(result.outputs) == 3
         assert result.workflow_state.results[0].task_id == "task-1"
         assert result.workflow_state.results[1].task_id == "task-2"
+        assert result.workflow_state.results[2].task_id == "task-3"
+        assert result.workflow_state.results[2].status == TaskStatus.BLOCKED_BY_DEPENDENCY
 
     asyncio.run(run_test())
 
@@ -240,7 +244,7 @@ def test_runtime_unchanged() -> None:
 
         result = await runtime.run(
             RuntimeContext(request_id="req-7"),
-            RuntimeTask(
+            approved_task(
                 task_id="task-runtime",
                 title="Generate text",
                 description="Generate a test response.",

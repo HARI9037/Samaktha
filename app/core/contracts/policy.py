@@ -129,3 +129,12 @@ class PermissionRecord(BaseModel):
     resource: str
     scope: PermissionScope
     decision: PermissionDecision
+
+
+class ExecutionPermit(BaseModel):
+    """Artifact proving CAP approval for an action."""
+
+    action_id: str
+    decision: ApprovalDecision
+    reasons: list[str] = Field(default_factory=list)
+    issued_by: str = "cap.approval_engine"

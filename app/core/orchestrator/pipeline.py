@@ -12,6 +12,8 @@ from app.core.contracts import (
 from app.runtime.report import ExecutionReport
 
 
+from app.workflow.state import WorkflowState
+
 class PipelineState(BaseModel):
     """State captured while the orchestrator coordinates one request."""
 
@@ -22,3 +24,14 @@ class PipelineState(BaseModel):
     routing_decision: RoutingDecision | None = None
     runtime_result: RuntimeResult | None = None
     execution_report: ExecutionReport | None = None
+    workflow_state: WorkflowState | None = None
+
+from typing import Any
+from app.core.contracts.pause import ExecutionPause
+
+class PipelineEvent(BaseModel):
+    """Event emitted by the orchestrator (e.g. for a requested pause)."""
+    type: str
+    pause: ExecutionPause | None = None
+    task_id: str | None = None
+    data: dict[str, Any] = {}

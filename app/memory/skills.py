@@ -19,6 +19,7 @@ from typing import Optional
 from app.core.contracts.learning import SkillConfidence
 from app.core.contracts.skills import SkillLifecycleState, SkillRecord, SkillSearchResult
 from app.memory.skill_metrics import SkillMetricsCollector
+from app.memory.semantic_index import SemanticIndex
 
 # ---------------------------------------------------------------------------
 # Constants for lifecycle maintenance thresholds
@@ -34,6 +35,8 @@ class SkillMemoryStore:
     def __init__(self) -> None:
         self._skills: dict[str, SkillRecord] = {}
         self._metrics = SkillMetricsCollector()
+        # Phase 4.5: semantic index over skill name + description
+        self._skill_index = SemanticIndex()
 
     # ------------------------------------------------------------------
     # Metrics
@@ -61,9 +64,20 @@ class SkillMemoryStore:
         if existing:
             self._merge_duplicate(existing, skill)
             self._metrics.record_duplicate_merge()
+            # Re-index merged skill
+            self._skill_index.index(
+                existing.skill_id,
+                f"{existing.name} {existing.description} {' '.join(existing.tags)}",
+                {"category": existing.category},
+            )
         else:
             self._skills[skill.skill_id] = skill
             self._metrics.record_saved()
+            self._skill_index.index(
+                skill.skill_id,
+                f"{skill.name} {skill.description} {' '.join(skill.tags)}",
+                {"category": skill.category},
+            )
 
     def update_skill(self, skill: SkillRecord) -> None:
         """Update an existing skill."""
@@ -71,11 +85,17 @@ class SkillMemoryStore:
             skill.updated_at = datetime.utcnow()
             self._skills[skill.skill_id] = skill
             self._metrics.record_updated()
+            self._skill_index.index(
+                skill.skill_id,
+                f"{skill.name} {skill.description} {' '.join(skill.tags)}",
+                {"category": skill.category},
+            )
 
     def delete_skill(self, skill_id: str) -> None:
         """Permanently delete a skill by ID (prefer archive instead)."""
         if skill_id in self._skills:
             del self._skills[skill_id]
+            self._skill_index.remove(skill_id)
 
     def get_skill(self, skill_id: str) -> Optional[SkillRecord]:
         """Retrieve a skill by exact ID."""
@@ -238,17 +258,16 @@ class SkillMemoryStore:
     # ------------------------------------------------------------------
 
     def search_by_name(self, query: str) -> list[SkillSearchResult]:
-        """Search ACTIVE skills by substring match in name or description."""
-        query_lower = query.lower()
+        """Search ACTIVE skills by semantic similarity on name/description/tags."""
+        # Semantic search gives (skill_id, score, matched_tokens)
+        semantic_hits = {item_id: score for item_id, score, _ in
+                         self._skill_index.search(query, top_k=50)}
+
         results: list[SkillSearchResult] = []
         for skill in self._skills.values():
             if not skill.is_active:
                 continue
-            score = 0.0
-            if query_lower in skill.name.lower():
-                score += 1.0
-            if query_lower in skill.description.lower():
-                score += 0.5
+            score = semantic_hits.get(skill.skill_id, 0.0)
             if score > 0:
                 results.append(SkillSearchResult(skill=skill, score=score))
         return sorted(results, key=lambda x: x.score, reverse=True)
@@ -281,27 +300,25 @@ class SkillMemoryStore:
         category: Optional[str] = None,
         tags: Optional[list[str]] = None,
     ) -> list[SkillSearchResult]:
-        """Deterministically rank and filter ACTIVE skills based on relevance."""
-        goal_lower = goal.lower()
+        """Deterministically rank ACTIVE skills by semantic + multi-factor relevance."""
         cat_lower = category.lower() if category else None
         tag_set = {t.lower() for t in (tags or [])}
 
+        # Phase 4.5: semantic similarity for goal match
+        semantic_scores = {item_id: score for item_id, score, _ in
+                           self._skill_index.search(goal, top_k=100)}
+
         results: list[SkillSearchResult] = []
         for skill in self._skills.values():
-            # Only ACTIVE skills are considered for planning
             if not skill.is_active:
                 self._metrics.record_planner_rejection()
                 continue
 
             score = 0.0
 
-            # 1. Goal match
-            if goal_lower in skill.name.lower():
-                score += 2.0
-            elif skill.name.lower() in goal_lower:
-                score += 1.0
-            if goal_lower in skill.description.lower():
-                score += 1.0
+            # 1. Semantic goal match (replaces substring matching)
+            sem_score = semantic_scores.get(skill.skill_id, 0.0)
+            score += sem_score * 3.0  # weight semantic match heavily
 
             # 2. Category match
             if cat_lower and skill.category.lower() == cat_lower:

@@ -1,6 +1,6 @@
 """Provider interfaces and test providers."""
 
-from app.providers.base import Provider
+from app.providers.base import BaseProvider
 from app.providers.config import ProviderSettings
 from app.providers.cost import CostEstimate, CostEstimator
 from app.providers.groq_provider import GroqProvider
@@ -24,7 +24,7 @@ __all__ = [
     "MockProvider",
     "OpenAIProvider",
     "OpenRouterProvider",
-    "Provider",
+    "BaseProvider",
     "ProviderHealthChecker",
     "ProviderInfo",
     "ProviderManager",

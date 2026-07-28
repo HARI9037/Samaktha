@@ -1,7 +1,10 @@
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
-from app.providers.base import Provider
+from app.core.contracts.streaming import StreamChunk, StreamEventType, StreamRequest
+
+from app.providers.base import BaseProvider
 from app.providers.config import ProviderSettings
 from app.providers.metrics import ProviderMetrics, ProviderMetricsStore
 from app.providers.health import ProviderHealthChecker, ProviderStatus
@@ -30,13 +33,71 @@ class ProviderManager:
         self._cooldowns: dict[str, datetime] = {}
         self._metrics = ProviderMetricsStore()
 
-    def resolve_provider(self, provider_id: str) -> Optional[Provider]:
+    def resolve_provider(self, provider_id: str) -> Optional[BaseProvider]:
         """Resolve a provider from the registry."""
         return self._registry.get_provider(provider_id)
 
     def list_providers(self) -> list:
         """List all available providers."""
         return self._registry.list_providers()
+
+    async def stream_provider(
+        self,
+        request: StreamRequest,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream a response incrementally from the provider.
+        
+        Validates the provider exists and supports the required capabilities,
+        then forwards the StreamRequest to the underlying provider.
+        """
+        provider_id = request.provider_id
+        selected = self._registry.get_info(provider_id)
+        if selected is None:
+            raise ValueError(f"Provider '{provider_id}' is not registered.")
+            
+        if not self.get_provider_status(provider_id).available:
+            raise RuntimeError(f"Provider '{provider_id}' is currently unavailable.")
+
+        # Empty capabilities implies unconstrained (legacy). 
+        # If strict capabilities are provided, validate them.
+        if selected.capabilities and request.capabilities:
+            missing = set(request.capabilities) - set(selected.capabilities)
+            if missing:
+                raise ValueError(f"Provider '{provider_id}' missing capabilities: {missing}")
+
+        provider = self._registry.get_provider(provider_id)
+        if provider is None:
+            raise ValueError(f"Provider '{provider_id}' instance not found.")
+
+        stream_id = f"stream-{request.request_id}"
+        yield StreamChunk(
+            stream_id=stream_id,
+            event_type=StreamEventType.STARTED,
+            content="",
+            timestamp=time.time(),
+            sequence_number=1,
+        )
+        stream_payload = {
+            "prompt": request.prompt,
+            "model_id": request.metadata.get("model_id") or self._default_model(selected),
+        }
+        sequence_number = 2
+        async for token in provider.execute_stream(stream_payload):
+            yield StreamChunk(
+                stream_id=stream_id,
+                event_type=StreamEventType.TOKEN,
+                content=token,
+                timestamp=time.time(),
+                sequence_number=sequence_number,
+            )
+            sequence_number += 1
+        yield StreamChunk(
+            stream_id=stream_id,
+            event_type=StreamEventType.COMPLETED,
+            content="",
+            timestamp=time.time(),
+            sequence_number=sequence_number,
+        )
 
     def get_provider_status(self, provider_id: str) -> ProviderStatus:
         """Inspect provider health using local configuration only."""

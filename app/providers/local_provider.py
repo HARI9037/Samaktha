@@ -4,13 +4,14 @@ from typing import Any
 
 import httpx
 
-from app.providers.base import Provider
+from app.core.contracts.provider import ProviderCapability
+from app.providers.base import BaseProvider
 from app.providers.config import ProviderSettings
 from app.providers.models import ProviderResponse
 from app.providers.usage import UsageTracker
 
 
-class LocalProvider(Provider):
+class LocalProvider(BaseProvider):
     """Provider implementation for Local inference servers (e.g., Ollama)."""
 
     def __init__(self, settings: ProviderSettings) -> None:
@@ -149,3 +150,16 @@ class LocalProvider(Provider):
             latency_ms=(time.perf_counter() - started) * 1000,
             metadata=metadata or {},
         )
+
+    def supports(self, capability: ProviderCapability) -> bool:
+        return capability == ProviderCapability.TEXT_GENERATION
+
+    async def health_check(self) -> bool:
+        if not self._settings.local_base_url:
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(self._settings.local_base_url)
+                return response.status_code == 200
+        except Exception:
+            return False

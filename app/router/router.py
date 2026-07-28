@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Optional
+import logging
+from typing import Optional, TYPE_CHECKING
+
+log = logging.getLogger(__name__)
 
 from app.core.contracts import RouterRequest, RoutingDecision
 from app.models import ModelManager
@@ -10,6 +13,9 @@ from app.router.policy import RoutingPolicy
 from app.router.registry import RouterRegistry
 from app.router.metrics import RouterMetricsCollector, RouterMetricsSnapshot
 from app.router.scoring import ScoringEngine
+
+if TYPE_CHECKING:
+    from app.providers.health import ProviderHealthChecker
 
 
 class ModelRouter(Router):
@@ -28,20 +34,41 @@ class ModelRouter(Router):
         capability_registry: Optional[CapabilityRegistry] = None,
         policy: Optional[RoutingPolicy] = None,
         model_manager: Optional[ModelManager] = None,
+        health_checker: Optional["ProviderHealthChecker"] = None,
+        preferred_provider: str | None = None,
     ) -> None:
         self._registry = registry
         self._capability_registry = capability_registry
         self._policy = policy or RoutingPolicy()
         self._scoring = ScoringEngine()
         self._model_manager = model_manager
+        self._health_checker = health_checker
+        self._preferred_provider = preferred_provider
         self._metrics = RouterMetricsCollector()
 
     def get_metrics(self) -> RouterMetricsSnapshot:
         return self._metrics.get_metrics()
 
-    async def route(self, request: RouterRequest) -> RoutingDecision:
+    async def route(self, request: RouterRequest, context: Optional["RuntimeContext"] = None) -> RoutingDecision:
+        if context and context.trace:
+            context.trace.add_event(
+                source="router",
+                event_type="provider.selection.started",
+                purpose=request.purpose,
+            )
+
         capability = self._capability_from_request(request)
         candidates = self._registry.candidates(capability)
+
+        # Filter unhealthy providers if health checker is provided
+        if self._health_checker:
+            healthy_candidates = []
+            for candidate in candidates:
+                status = self._health_checker.get_status(candidate.provider_id)
+                # Assume healthy if no status is available yet, or if it's explicitly available
+                if status is None or status.available:
+                    healthy_candidates.append(candidate)
+            candidates = healthy_candidates
 
         # ModelRegistry is authoritative for model capabilities. A model with
         # coding metadata can satisfy a code request even when legacy router
@@ -77,13 +104,42 @@ class ModelRouter(Router):
 
         if not candidates:
             self._metrics.record_decision(successful=False)
-            return RoutingDecision(
+            decision = RoutingDecision(
                 provider_id="",
                 model_id="",
                 reasoning_summary=f"No registered provider supports capability: {capability}",
                 constraints=[f"missing_capability:{capability}"],
                 metadata={"capability": capability},
             )
+            if context and context.trace:
+                context.trace.add_event(
+                    source="router",
+                    event_type="provider.selection.completed",
+                    success=False
+                )
+            return decision
+
+        # Honor the configured provider when it is an eligible candidate.  The
+        # scoring engine is still used when the preference is unavailable or
+        # incompatible with the request.
+        if self._preferred_provider:
+            preferred = next(
+                (candidate for candidate in candidates
+                 if candidate.provider_id == self._preferred_provider),
+                None,
+            )
+            if preferred is not None:
+                self._metrics.record_decision(successful=True)
+                return RoutingDecision(
+                    provider_id=preferred.provider_id,
+                    model_id=preferred.model_id,
+                    reasoning_summary=(
+                        f"Configured provider selected: "
+                        f"{preferred.provider_id}/{preferred.model_id}"
+                    ),
+                    constraints=[],
+                    metadata={"capability": capability, **preferred.metadata},
+                )
 
         # v0.2: score candidates when capability data is available
         if self._capability_registry is not None or self._model_manager is not None:
@@ -104,7 +160,7 @@ class ModelRouter(Router):
                         candidates[0],
                     )
                     self._metrics.record_decision(successful=True)
-                    return RoutingDecision(
+                    decision = RoutingDecision(
                         provider_id=matched.provider_id,
                         model_id=matched.model_id,
                         reasoning_summary=(
@@ -132,19 +188,44 @@ class ModelRouter(Router):
                             **matched.metadata,
                         },
                     )
+                    log.info(
+                        "Selected Provider : %s\n"
+                        "Selected Model : %s\n"
+                        "Reason : %s\n"
+                        "Streaming : Enabled",
+                        decision.provider_id,
+                        decision.model_id,
+                        decision.reasoning_summary,
+                    )
+                    if context and context.trace:
+                        context.trace.add_event(
+                            source="router",
+                            event_type="provider.selection.completed",
+                            provider_id=decision.provider_id,
+                            model_id=decision.model_id,
+                            success=True
+                        )
+                    return decision
                 self._metrics.record_decision(successful=False)
-                return RoutingDecision(
+                decision = RoutingDecision(
                     provider_id="",
                     model_id="",
                     reasoning_summary="No eligible model satisfies routing constraints",
                     constraints=["routing_constraints"],
                     metadata={"capability": capability},
                 )
+                if context and context.trace:
+                    context.trace.add_event(
+                        source="router",
+                        event_type="provider.selection.completed",
+                        success=False
+                    )
+                return decision
 
         # v0.1 fallback: pick first matching candidate
         selected = candidates[0]
         self._metrics.record_decision(successful=True)
-        return RoutingDecision(
+        decision = RoutingDecision(
             provider_id=selected.provider_id,
             model_id=selected.model_id,
             reasoning_summary=(
@@ -157,6 +238,15 @@ class ModelRouter(Router):
                 **selected.metadata,
             },
         )
+        if context and context.trace:
+            context.trace.add_event(
+                source="router",
+                event_type="provider.selection.completed",
+                provider_id=decision.provider_id,
+                model_id=decision.model_id,
+                success=True
+            )
+        return decision
 
     def _model_is_eligible(self, model_id: str, request: RouterRequest) -> bool:
         model = self._model_manager.resolve_model(model_id)

@@ -13,7 +13,7 @@ class ProviderSettings(BaseSettings):
         extra="ignore",
     )
 
-    default_provider: str = "mock"
+    default_provider: str = "groq"
     openai_enabled: bool = True
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
@@ -37,3 +37,10 @@ class ProviderSettings(BaseSettings):
     fallback_enabled: bool = True
     default_model: str = "mock-model"
     max_output_tokens: int = 1024
+
+    def model_post_init(self, __context) -> None:
+        """Use mock only when the configured Groq default has no key."""
+        if self.default_provider == "groq" and (
+            not self.groq_enabled or not self.groq_api_key
+        ):
+            self.default_provider = "mock"

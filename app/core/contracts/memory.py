@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from app.core.contracts.policy import PrivacyCategory
+from app.core.contracts.security import SecurityLevel
 
 
 class MemoryDomainCategory(StrEnum):
@@ -15,6 +18,40 @@ class MemoryDomainCategory(StrEnum):
     CONVERSATION = "conversation"
     PREFERENCE = "preference"
     WORKFLOW = "workflow"
+
+
+class MemoryType(StrEnum):
+    """Semantic category for typed memory items (Phase 4.5)."""
+
+    SKILL = "skill"
+    EXECUTION = "execution"
+    CONTEXT = "context"
+    FAILURE_PATTERN = "failure_pattern"
+
+
+class MemoryItem(BaseModel):
+    """A richly typed memory item used for semantic indexing and retrieval (Phase 4.5)."""
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    content: str
+    category: MemoryType = MemoryType.CONTEXT
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    
+    # Phase 5.5 - Privacy extensions
+    privacy_level: SecurityLevel = SecurityLevel.LOW
+    sensitive: bool = False
+    retention_policy: str = "normal"  # "private", "normal", "temporary"
+    
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MemorySearchResult(BaseModel):
+    """Ranked semantic search result wrapping a MemoryItem (Phase 4.5)."""
+
+    item: MemoryItem
+    score: float
+    matched_features: list[str] = Field(default_factory=list)
 
 
 class MemoryRecord(BaseModel):

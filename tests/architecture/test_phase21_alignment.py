@@ -14,7 +14,8 @@ from app.core.contracts import (
     RuntimeTask,
     RouterRequest,
 )
-from app.core.contracts.planning import PlanTask, TaskKind, TaskStatus
+from app.core.contracts.planning import GoalIntent, PlanTask, TaskKind, TaskStatus
+from app.core.gambit import GoalParser, TaskDecomposer
 from app.core.orchestrator import SamakthaOrchestrator
 from app.models import ModelInfo, ModelManager, ModelRegistry
 from app.providers import MockProvider, ProviderInfo, ProviderManager, ProviderRegistry
@@ -137,6 +138,43 @@ def test_workflow_preserves_planned_execution_action_type():
     workflow_task = WorkflowEngine._workflow_tasks(plan)[0]
 
     assert workflow_task.runtime_task.action_type == "tool_execution"
+
+
+@pytest.mark.parametrize("user_request", ["list desktop", "browse desktop", "dir desktop", "ls desktop"])
+def test_directory_listing_action_reaches_runtime_task_arguments(user_request):
+    goal = GoalParser().parse(user_request)
+    assert goal.intent == GoalIntent.LIST_DIRECTORY
+
+    task = next(
+        task
+        for task in TaskDecomposer().decompose(goal, skill_matches=[])
+        if task.execution_action_type == "tool"
+    )
+    assert task.metadata["tool"] == "resolver"
+    assert task.metadata["action"] == "list"
+
+    plan = ExecutionPlan(
+        plan_id="plan",
+        goal=goal,
+        tasks=[task],
+        workflow=[],
+        router_request=RouterRequest(
+            purpose="directory_listing",
+            complexity=GoalComplexity.LOW,
+            estimated_context_tokens=10,
+            requires_local_model=False,
+            requires_code=False,
+            requires_reasoning=False,
+        ),
+    )
+
+    runtime_task = WorkflowEngine._workflow_tasks(plan)[0].runtime_task
+
+    assert runtime_task.action_type == "tool"
+    assert runtime_task.metadata["tool"] == "resolver"
+    assert runtime_task.metadata["action"] == "list"
+    assert runtime_task.inputs["action"] == "list"
+    assert runtime_task.inputs["path"] == goal.target_path
 
 
 @pytest.mark.asyncio

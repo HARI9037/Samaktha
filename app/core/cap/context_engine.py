@@ -105,13 +105,16 @@ class ContextEngine:
 
         records: list[MemoryRecord] = []
         for key in keys:
-            value = await self._memory_reader.read(key)
-            if value is None:
+            record = await self._memory_reader.read(key)
+            if not record:
                 continue
-            if isinstance(value, MemoryRecord):
-                records.append(value)
-            else:
-                records.append(MemoryRecord(key=key, content=str(value)))
+
+            # Extract content from MemoryRecord
+            content = getattr(record, "content", str(record))
+            if not content:
+                continue
+
+            records.append(MemoryRecord(key=key, content=str(content)))
         return records
 
     @staticmethod

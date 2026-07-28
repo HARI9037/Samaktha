@@ -44,7 +44,11 @@ class ToolManager:
 
     def list_tools_by_capability(self, capability: str) -> List[ToolInfo]:
         """Discover registered tools by declared capability."""
-        return self._registry.list_by_capability(capability)
+        return self._registry.find_tools_by_capability(capability)
+
+    def find_tools_by_capability(self, capability: str) -> List[ToolInfo]:
+        """List all tools declaring a specific capability."""
+        return self._registry.find_tools_by_capability(capability)
 
     def validate_tool_capabilities(
         self,

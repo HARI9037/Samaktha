@@ -69,9 +69,9 @@ async def test_filesystem_tool_list_directory():
         
         list_result = await tool.run({"action": "list_directory", "path": ""})
         assert list_result.ok is True
-        files = list_result.data["files"]
-        assert len(files) == 2
-        file_names = {f["name"] for f in files}
+        items = list_result.data["items"]
+        assert len(items) == 2
+        file_names = {f["name"] for f in items}
         assert "test1.txt" in file_names
         assert "dir" in file_names
 

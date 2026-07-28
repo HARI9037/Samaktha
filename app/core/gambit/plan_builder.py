@@ -5,7 +5,7 @@ from uuid import uuid4
 from app.core.contracts.planning import PlanTask, TaskKind, WorkflowStage, WorkflowStep
 
 
-class WorkflowEngine:
+class PlanBuilder:
     """Builds staged runtime workflows from decomposed tasks."""
 
     _stage_by_kind = {

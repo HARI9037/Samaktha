@@ -122,6 +122,7 @@ class PolicyEngine:
                 PermissionScope.DELETE,
                 PermissionScope.EXECUTE,
                 PermissionScope.NETWORK,
+                PermissionScope.READ,
             )
         )
 

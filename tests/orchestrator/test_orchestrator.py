@@ -36,9 +36,9 @@ class TrackingPlanner(Planner):
         super().__init__()
         self.called = False
 
-    async def plan(self, request: str):
+    async def plan_with_capability_check(self, request: str):
         self.called = True
-        return await super().plan(request)
+        return await super().plan_with_capability_check(request)
 
 
 class TrackingRouter(ModelRouter):
@@ -80,6 +80,10 @@ class TrackingRuntime(RuntimeEngine):
     async def run(self, context, task, routing):
         self.called = True
         return await super().run(context, task, routing)
+
+    async def run_batch(self, context, tasks_and_routings):
+        self.called = True
+        return await super().run_batch(context, tasks_and_routings)
 
 
 def test_orchestrator_coordinates_cap_gambit_router_and_runtime() -> None:

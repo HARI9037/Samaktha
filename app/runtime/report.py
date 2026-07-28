@@ -18,6 +18,7 @@ class ExecutionReport(BaseModel):
     duration_ms: int = 0
     completed_tasks: int = 0
     failed_tasks: int = 0
+    blocked_tasks: int = 0
     results: list[Any] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     trace: ExecutionTrace | None = None

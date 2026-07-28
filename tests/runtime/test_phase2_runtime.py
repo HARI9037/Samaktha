@@ -1,6 +1,7 @@
 import pytest
 
-from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeTask
+from app.core.contracts import RoutingDecision, RuntimeContext
+from tests.conftest import approved_task
 from app.core.contracts.planning import TaskStatus
 from app.providers import MockProvider, ProviderInfo, ProviderManager, ProviderRegistry
 from app.runtime import ProviderExecutor, RuntimeDispatcher, RuntimeEngine, RuntimeRegistry
@@ -20,7 +21,7 @@ async def test_runtime_adds_timing_and_diagnostics_metadata():
 
     result = await runtime.run(
         RuntimeContext(request_id="phase2"),
-        RuntimeTask(
+        approved_task(
             task_id="task", title="Task", description="Task",
             action_type="text_generation",
         ),

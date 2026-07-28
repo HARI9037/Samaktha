@@ -1,7 +1,7 @@
 [project]
 name = "samaktha-core"
-version = "0.3.0"
-description = "Samaktha Core v0.3 backend foundation"
+version = "0.5.0"
+description = "Samaktha Core v0.5 backend foundation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,6 +9,12 @@ dependencies = [
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
     "uvicorn>=0.30.0",
+    "faster-whisper",
+    "sounddevice",
+    "soundfile",
+    "numpy",
+    "openwakeword",
+    "docling>=2.15.0",
 ]
 
 [dependency-groups]
