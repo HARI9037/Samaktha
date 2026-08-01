@@ -5,6 +5,7 @@ from app.api.schemas import ExecuteRequest
 from app.core.cap import ContextEngine
 from app.core.gambit import Planner
 from app.core.contracts import (
+    ApprovedRuntimeTask,
     ExecutionPlan,
     Goal,
     GoalComplexity,
@@ -14,9 +15,11 @@ from app.core.contracts import (
     RuntimeTask,
     RouterRequest,
 )
+from app.core.contracts.pause import ExecutionPause
 from app.core.contracts.planning import GoalIntent, PlanTask, TaskKind, TaskStatus
 from app.core.gambit import GoalParser, TaskDecomposer
 from app.core.orchestrator import SamakthaOrchestrator
+from app.core.orchestrator.pipeline import PipelineState, PipelineEvent
 from app.models import ModelInfo, ModelManager, ModelRegistry
 from app.providers import MockProvider, ProviderInfo, ProviderManager, ProviderRegistry
 from app.router import (
@@ -27,15 +30,44 @@ from app.router import (
     RouterRegistry,
 )
 from app.runtime import ProviderExecutor
+from app.runtime.base import Runtime
 from app.workflow.engine import WorkflowEngine
+from app.workflow.pause import PauseManager
 
 
-class RecordingRuntime:
+class RecordingRuntime(Runtime):
     def __init__(self):
         self.called = False
 
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
     async def run(self, context, task, routing):
         self.called = True
+        if isinstance(task, ApprovedRuntimeTask) and task.permit is not None:
+            if task.permit.decision == "ask_user":
+                return RuntimeResult(
+                    task_id=task.task_id,
+                    status=TaskStatus.PAUSED,
+                    routing=routing,
+                    pause=ExecutionPause(
+                        reason="cap_approval",
+                        metadata={"action_type": task.action_type},
+                    ),
+                    error="approval required: CAP governance requests user confirmation",
+                    metadata={"diagnostic": "approval_required"},
+                )
+            if task.permit.decision != "allow":
+                return RuntimeResult(
+                    task_id=task.task_id,
+                    status=TaskStatus.FAILED,
+                    routing=routing,
+                    error="approval required: CAP governance blocked user request",
+                    metadata={"diagnostic": "approval_blocked"},
+                )
         return RuntimeResult(
             task_id=task.task_id,
             status=TaskStatus.COMPLETED,
@@ -55,7 +87,8 @@ def _router():
 
 
 @pytest.mark.asyncio
-async def test_cap_governance_blocks_sensitive_runtime_execution():
+async def test_cap_governance_pauses_sensitive_runtime_execution():
+    """Sensitive operations pause for approval instead of hard-failing."""
     runtime = RecordingRuntime()
     orchestrator = SamakthaOrchestrator(
         context_engine=ContextEngine(),
@@ -69,9 +102,10 @@ async def test_cap_governance_blocks_sensitive_runtime_execution():
         runtime_context=RuntimeContext(request_id="cap-test"),
     )
 
-    assert result.status == TaskStatus.FAILED
-    assert result.metadata["governance_decision"] == "ask_user"
-    assert runtime.called is False
+    assert result.status == TaskStatus.PAUSED
+    assert result.pause is not None
+    assert result.pause.reason == "cap_approval"
+    assert runtime.called is True
 
 
 @pytest.mark.asyncio
@@ -298,3 +332,79 @@ async def test_provider_executor_uses_real_manager_with_mock_provider():
     )
 
     assert result.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_approval_lifecycle_user_approves_execution_resumes():
+    """ASK_USER → user approves → pipeline resumes and completes."""
+    runtime = RecordingRuntime()
+    pause_manager = PauseManager()
+    orchestrator = SamakthaOrchestrator(
+        context_engine=ContextEngine(),
+        planner=Planner(),
+        router=_router(),
+        runtime=runtime,
+        workflow_engine=WorkflowEngine(pause_manager=pause_manager),
+    )
+
+    context = RuntimeContext(request_id="approve-test")
+    state = await orchestrator.run_pipeline(
+        request="process my bank details",
+        runtime_context=context,
+    )
+
+    assert state.workflow_state is not None
+    assert state.workflow_state.status == "paused"
+    assert state.execution_plan is not None
+
+    paused_task_id = state.workflow_state.results[-1].task_id
+
+    resume_context = RuntimeContext(request_id="approve-test-resume")
+    resumed_state = await orchestrator.resume_pipeline(
+        state=state,
+        runtime_context=resume_context,
+        task_id=paused_task_id,
+        updates={"permit": {"decision": "allow", "reasons": ["User approved via test"]}},
+    )
+
+    assert resumed_state.runtime_result is not None
+    assert resumed_state.runtime_result.status == TaskStatus.COMPLETED
+    assert resumed_state.workflow_state.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_approval_lifecycle_user_denies_execution_blocked():
+    """ASK_USER → user denies → pipeline fails and execution remains blocked."""
+    runtime = RecordingRuntime()
+    pause_manager = PauseManager()
+    orchestrator = SamakthaOrchestrator(
+        context_engine=ContextEngine(),
+        planner=Planner(),
+        router=_router(),
+        runtime=runtime,
+        workflow_engine=WorkflowEngine(pause_manager=pause_manager),
+    )
+
+    context = RuntimeContext(request_id="deny-test")
+    state = await orchestrator.run_pipeline(
+        request="process my bank details",
+        runtime_context=context,
+    )
+
+    assert state.workflow_state is not None
+    assert state.workflow_state.status == "paused"
+    assert state.execution_plan is not None
+
+    paused_task_id = state.workflow_state.results[-1].task_id
+
+    resume_context = RuntimeContext(request_id="deny-test-resume")
+    resumed_state = await orchestrator.resume_pipeline(
+        state=state,
+        runtime_context=resume_context,
+        task_id=paused_task_id,
+        updates={"permit": {"decision": "deny", "reasons": ["User denied via test"]}},
+    )
+
+    assert resumed_state.runtime_result is not None
+    assert resumed_state.runtime_result.status == TaskStatus.FAILED
+    assert "approval required" in (resumed_state.runtime_result.error or "")

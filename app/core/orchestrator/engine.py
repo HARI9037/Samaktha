@@ -6,6 +6,8 @@ import tempfile
 log = logging.getLogger(__name__)
 
 from app.core.cap import ApprovalEngine, ContextEngine, PolicyEngine
+from app.memory.controller.facade import MemoryController
+from app.memory.formation.engine import MemoryFormationEngine
 from app.core.contracts import (
     ContextRequest,
     ConversationMessage,
@@ -14,6 +16,7 @@ from app.core.contracts import (
     RuntimeResult,
     RuntimeTask,
 )
+
 from app.core.contracts.policy import (
     ApprovalDecision,
     ApprovalRequest,
@@ -29,7 +32,7 @@ from app.core.contracts.trace import ExecutionTrace
 from app.workflow import WorkflowEngine
 from app.core.orchestrator.pipeline import PipelineEvent
 from app.agent.prompts import CAPABILITY_UNAVAILABLE_MESSAGE
-from typing import Callable
+from typing import Any, Callable, Optional
 
 
 class SamakthaOrchestrator:
@@ -46,6 +49,9 @@ class SamakthaOrchestrator:
         policy_engine: PolicyEngine | None = None,
         approval_engine: ApprovalEngine | None = None,
         event_callback: Callable[[PipelineEvent], None] | None = None,
+        memory_manager: Any = None,
+        memory_controller: MemoryController | None = None,
+        memory_formation_engine: Any = None,
     ) -> None:
         self._context_engine = context_engine
         self._planner = planner
@@ -57,9 +63,24 @@ class SamakthaOrchestrator:
         self._approval_engine = approval_engine or ApprovalEngine()
         self._metrics = OrchestratorMetricsCollector()
         self._event_callback = event_callback
+        self._memory_manager = memory_manager
+        self._memory_controller = memory_controller or (
+            MemoryController(memory_manager) if memory_manager else None
+        )
+        # Phase 8.2 — autonomous memory formation after each completed interaction.
+        self._memory_formation = memory_formation_engine or (
+            MemoryFormationEngine(self._memory_controller)
+            if self._memory_controller is not None
+            else None
+        )
 
     def get_metrics(self) -> OrchestratorMetricsSnapshot:
         return self._metrics.get_metrics()
+
+    @property
+    def memory_formation(self) -> Any:
+        """The Phase 8.2 autonomous memory formation engine (or None)."""
+        return self._memory_formation
 
     async def run(
         self,
@@ -123,7 +144,7 @@ class SamakthaOrchestrator:
             subject_id=runtime_context.user_id or runtime_context.request_id,
         )
         
-        if approval.decision in (ApprovalDecision.DENY, ApprovalDecision.ASK_USER):
+        if approval.decision == ApprovalDecision.DENY:
             state.runtime_result = RuntimeResult(
                 task_id=runtime_context.request_id,
                 status=TaskStatus.FAILED,
@@ -154,6 +175,11 @@ class SamakthaOrchestrator:
             )
         )
         
+        # 3b. Retrieve memory context for this request
+        state.memory_context = await self._retrieve_memory_context(request)
+        if state.memory_context:
+            log.info("Orchestrator: memory context retrieved (%d chars)", len(state.memory_context))
+        
         # 4. GAMBIT Planner — with Capability Registry gate
         planner_result = await self._planner.plan_with_capability_check(request)
 
@@ -174,6 +200,11 @@ class SamakthaOrchestrator:
         log.info("Orchestrator: plan has %d tasks", len(state.execution_plan.tasks))
         for t in state.execution_plan.tasks:
             log.info("Orchestrator: task — id=%s kind=%s tool=%s action=%s args=%s", t.task_id, t.kind, t.metadata.get("tool"), t.metadata.get("action"), t.metadata.get("args"))
+        
+        # 4b. Inject memory context into plan task metadata
+        if state.memory_context:
+            for t in state.execution_plan.tasks:
+                t.metadata["memory_context"] = state.memory_context
         
         # 5. CAP evaluates execution plan tasks
         from app.core.contracts.policy import ExecutionPermit
@@ -219,6 +250,10 @@ class SamakthaOrchestrator:
         state.execution_report = workflow_result.execution_report
         log.info("Orchestrator: workflow completed — success=%s errors=%s", workflow_result.success, workflow_result.errors)
         
+        # 6b. Persist document reads to memory
+        if self._memory_manager and workflow_result.outputs:
+            await self._persist_documents_to_memory(workflow_result.outputs, request)
+        
         if state.runtime_result and state.runtime_result.output:
             content = state.runtime_result.output.get("content", "")
             if isinstance(content, str) and content:
@@ -229,7 +264,18 @@ class SamakthaOrchestrator:
                     if "governance_reasons" not in state.runtime_result.metadata:
                         state.runtime_result.metadata["governance_reasons"] = []
                     state.runtime_result.metadata["governance_reasons"].extend(privacy.reasons)
-                    
+                     
+        # 7. Autonomous memory formation — every completed interaction is
+        # inspected and anything worth remembering is persisted (Phase 8.2).
+        if state.runtime_result and state.runtime_result.output:
+            response_content = self._response_content(state.runtime_result.output)
+            if response_content:
+                await self._form_memory_after_interaction(
+                    request=request,
+                    response=response_content,
+                    session_id=runtime_context.session_id,
+                )
+        
         # Check for pause
         from app.core.contracts.state import ExecutionStatus
         if state.workflow_state and state.workflow_state.status == ExecutionStatus.PAUSED and state.runtime_result and state.runtime_result.pause:
@@ -279,6 +325,16 @@ class SamakthaOrchestrator:
             overrides={task_id: updates}
         )
         
+        # Retrieve memory context for resume
+        if not state.memory_context and self._memory_manager:
+            state.memory_context = await self._retrieve_memory_context(state.request or "")
+        
+        # Inject memory context into each task that doesn't already have it
+        if state.memory_context and state.execution_plan:
+            for t in state.execution_plan.tasks:
+                if "memory_context" not in t.metadata:
+                    t.metadata["memory_context"] = state.memory_context
+        
         # Make sure the resume_state is passed to context
         runtime_context.metadata["resume_state"] = state.workflow_state
         
@@ -305,6 +361,21 @@ class SamakthaOrchestrator:
                         state.runtime_result.metadata["governance_reasons"] = []
                     state.runtime_result.metadata["governance_reasons"].extend(privacy.reasons)
                     
+        # Persist document reads + autonomously form memory for the resumed
+        # (now completed) interaction (Phase 8.2).
+        if self._memory_manager and workflow_result.outputs:
+            await self._persist_documents_to_memory(
+                workflow_result.outputs, state.request or ""
+            )
+        if state.runtime_result and state.runtime_result.output:
+            response_content = self._response_content(state.runtime_result.output)
+            if response_content:
+                await self._form_memory_after_interaction(
+                    request=state.request or "",
+                    response=response_content,
+                    session_id=runtime_context.session_id,
+                )
+
         # Check for pause
         from app.core.contracts.state import ExecutionStatus
         if state.workflow_state and state.workflow_state.status == ExecutionStatus.PAUSED and state.runtime_result and state.runtime_result.pause:
@@ -342,6 +413,139 @@ class SamakthaOrchestrator:
         messages.append(ConversationMessage(
             role=MessageRole.USER, content=request))
         return messages
+
+    async def _retrieve_memory_context(self, request: str) -> str:
+        """Query memory controller for context relevant to this request."""
+        if not self._memory_controller:
+            return ""
+        parts: list[str] = []
+        try:
+            results = self._memory_controller.retrieve(
+                query=request,
+                top_k=8,
+                include_recent=True,
+                include_semantic=True,
+                include_skills=True,
+                include_preferences=True,
+            )
+            for item, score in results:
+                if hasattr(item, "content") and item.content:
+                    prefix = "Relevant" if score > 0.5 else "Recent"
+                    parts.append(f"[{prefix}] {item.content}")
+                elif hasattr(item, "summary") and item.summary:
+                    prefix = "Relevant" if score > 0.5 else "Recent"
+                    text = f"Document: {item.name}\nSummary: {item.summary}"
+                    parts.append(f"[{prefix}] {text}")
+                    log.debug("Orchestrator: injected DocumentRecord into memory_context: %s", item.name)
+        except Exception:
+            log.warning("Memory controller retrieval failed", exc_info=True)
+        if parts:
+            log.debug("Orchestrator: memory_context has %d parts", len(parts))
+            return "\n".join(parts)
+        return ""
+
+    async def _persist_conversation_to_memory(
+        self,
+        request: str,
+        response: str,
+    ) -> None:
+        """Save user request and assistant response to memory.
+
+        Legacy fallback used when no Memory Formation Engine is configured.
+        The Phase 8.2 engine supersedes this path (it also classifies typed
+        memories and attaches session metadata).
+        """
+        if not self._memory_controller:
+            return
+        try:
+            self._memory_controller.write_conversation(
+                content=f"User: {request}\nAssistant: {response}",
+                tags=["auto-saved"],
+            )
+        except Exception:
+            log.warning("Failed to persist conversation to memory", exc_info=True)
+
+    async def _form_memory_after_interaction(
+        self,
+        request: str,
+        response: str,
+        session_id: str | None = None,
+    ) -> None:
+        """Run autonomous memory formation for a completed interaction.
+
+        The formation engine persists the conversation turn and classifies
+        any typed memories (preference, project, workflow, tool, knowledge).
+        Falls back to legacy conversation persistence when the engine is
+        unavailable.
+        """
+        if not self._memory_controller:
+            return
+        if self._memory_formation is not None:
+            try:
+                self._memory_formation.ingest(
+                    user_message=request,
+                    assistant_response=response,
+                    session_id=session_id,
+                    metadata={},
+                )
+            except Exception:
+                log.warning("Failed to form memories for interaction", exc_info=True)
+            return
+        await self._persist_conversation_to_memory(request, response)
+
+    @staticmethod
+    def _response_content(output: Any) -> str:
+        """Extract the assistant's response text from a runtime output dict."""
+        if not isinstance(output, dict):
+            return ""
+        content = output.get("content", "")
+        if isinstance(content, str) and content:
+            return content
+        response = output.get("response", "")
+        return response if isinstance(response, str) else ""
+
+    async def _persist_documents_to_memory(
+        self,
+        outputs: list[Any],
+        request: str,
+    ) -> None:
+        """Store documents read during workflow into DocumentMemoryStore + ContextMemoryStore."""
+        if not self._memory_controller:
+            return
+        import os as _os
+        from app.memory.documents import DocumentRecord
+        from app.core.contracts.multimodal import MediaType
+        for output in outputs:
+            data = getattr(output, "output", None) or {}
+            if not isinstance(data, dict):
+                continue
+            path = data.get("path", "")
+            result = data.get("result", {}) if isinstance(data.get("result"), dict) else {}
+            text = result.get("text", "")
+            if not path or not text:
+                continue
+            try:
+                doc_name = _os.path.basename(path)
+                ext = _os.path.splitext(doc_name)[1].lower()
+                mt = MediaType.IMAGE if ext in (".png", ".jpg", ".jpeg", ".tiff", ".bmp") else MediaType.DOCUMENT
+                record = DocumentRecord(
+                    name=doc_name,
+                    media_type=mt,
+                    source=path,
+                    summary=text[:500],
+                    tags=["read", ext.replace(".", "")],
+                )
+                stored = self._memory_controller.memory_manager.store_document(record)
+                mem_item = self._memory_controller.write_document(
+                    content=f"Document: {doc_name}\nSummary: {text[:1000]}",
+                    source_path=path,
+                    doc_name=doc_name,
+                    tags=[ext.replace(".", "")],
+                )
+                self._memory_controller.memory_manager.link_document_context(stored.document_id, mem_item.id)
+                log.debug("Stored document in memory: %s (id=%s)", doc_name, stored.document_id)
+            except Exception:
+                log.warning("Failed to persist document output to memory", exc_info=True)
 
     @staticmethod
     def _select_runtime_plan_task(plan: ExecutionPlan) -> PlanTask:

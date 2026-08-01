@@ -67,19 +67,19 @@ SamakthaHeader {{
 }}
 
 #status-panel {{
-    height: 2;
+    height: 1;
     width: 1fr;
     padding: 0 2;
     background: {SAMAKTHA_BLACK};
 }}
 
 #status-panel > Horizontal {{
-    height: 2;
+    height: 1;
     width: 1fr;
     align: left middle;
 }}
 
-.status-card {{
+#card-status {{
     width: auto;
     height: 1;
     margin-right: 2;
@@ -92,6 +92,15 @@ SamakthaHeader {{
 #agent-state-badge {{
     width: auto;
     color: {SAMAKTHA_AMBER};
+}}
+
+#voice-status-badge {{
+    width: auto;
+    height: 1;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: {SAMAKTHA_DIM};
 }}
 
 #conversation {{

@@ -350,13 +350,15 @@ def create_orchestrator() -> SamakthaOrchestrator:
 
     orchestrator = SamakthaOrchestrator(
         context_engine=ContextEngine(memory_reader=memory_manager),
-        planner=Planner(),
+        planner=Planner(memory_manager=memory_manager),
         router=model_router,
         runtime=runtime,
         workflow_engine=WorkflowEngine(),
+        memory_manager=memory_manager,
     )
     # Expose existing runtime streaming as a connection point for frontends;
     # this does not alter the orchestrator's synchronous workflow path.
     orchestrator.streaming_executor = StreamingExecutor(provider_manager)
     orchestrator.provider_settings = provider_settings
+    orchestrator.memory_manager = memory_manager
     return orchestrator

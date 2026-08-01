@@ -195,6 +195,9 @@ class MainScreen(Screen):
             conv.advance_pipeline("generating")
 
         # --- Lifecycle notifications ---
+        elif event == AgentEvent.MODEL_SELECTED:
+            provider = data.get("provider", "Local")
+            notifs.notify_tui(f"Provider: {provider.capitalize()}", NotificationKind.INFO, duration=3.0)
         elif event == AgentEvent.SESSION_CREATED:
             notifs.notify_tui("Connected", NotificationKind.SUCCESS)
         elif event == AgentEvent.STREAM_FINISHED:

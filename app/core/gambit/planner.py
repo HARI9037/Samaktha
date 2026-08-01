@@ -126,6 +126,38 @@ class Planner:
         # Capability is available (or not required) — build the full plan.
         skill_matches = await self._skill_registry.search(goal.raw_request)
         tasks = self._task_decomposer.decompose(goal, skill_matches)
+
+        used_skill_ids: list[str] = []
+        used_skill_names: list[str] = []
+        planner_reasoning: list[str] = []
+
+        if self._memory_manager:
+            try:
+                relevant = self._memory_manager.find_relevant_skills(request)
+                limit = 3
+                for result in relevant[:limit]:
+                    skill = result.skill
+                    if skill.confidence == SkillConfidence.LOW or not skill.is_active:
+                        continue
+                    skill_task = PlanTask(
+                        task_id=f"skill-{skill.skill_id}",
+                        title=skill.name,
+                        kind=TaskKind.RETRIEVE_CONTEXT,
+                        description=f"Execute learned skill: {skill.description}",
+                        origin="skill_memory",
+                    )
+                    tasks.insert(0, skill_task)
+                    used_skill_ids.append(skill.skill_id)
+                    used_skill_names.append(skill.name)
+                if used_skill_ids:
+                    planner_reasoning.append(f"Injected {len(used_skill_ids)} relevant skills from memory.")
+                else:
+                    planner_reasoning.append("Capability registry check passed; no relevant skills found.")
+            except Exception:
+                planner_reasoning.append("Capability registry check passed; memory skill injection failed.")
+        else:
+            planner_reasoning.append("Capability registry check passed.")
+
         workflow = self._plan_builder.build(tasks)
 
         plan = ExecutionPlan(
@@ -140,9 +172,9 @@ class Planner:
                 "Every runtime action must pass through CAP before execution.",
                 "Model selection must be requested through the Router.",
             ],
-            used_skill_ids=[],
-            used_skill_names=[],
-            planner_reasoning=["Capability registry check passed."],
+            used_skill_ids=used_skill_ids,
+            used_skill_names=used_skill_names,
+            planner_reasoning=planner_reasoning,
         )
         log.debug("Planner generated ExecutionPlan with %d tasks.", len(tasks))
         return PlannerResult(status=PlannerStatus.OK, plan=plan)

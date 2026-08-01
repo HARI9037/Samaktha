@@ -1,8 +1,9 @@
-"""Tests for Phase 6.2 TUI Status panel."""
+"""Tests for Phase 6.2 TUI Status panel — transient-only redesign."""
 
 import pytest
 from app.agent.models import AgentEvent
 from app.tui.status_panel import StatusPanel
+from app.tui.mascot_state import MascotState
 from textual.app import App, ComposeResult
 
 
@@ -12,26 +13,25 @@ class StatusApp(App):
 
 
 @pytest.mark.asyncio
-async def test_status_panel_busy_events():
-    """Busy-class events should set a precise status label (not generic 'Active')."""
+async def test_status_panel_transient_label():
+    """Busy events set a transient status label; idle clears it."""
     app = StatusApp()
     async with app.run_test():
         status = app.query_one("#status", StatusPanel)
+        # Initially empty (no permanent "Ready")
+        assert status._status_label == ""
         status.update_event(AgentEvent.PLAN_STARTED, {})
-        # Phase 6.7: status labels are now precise per MascotState mapping
         assert status._status_label == "Planning"
-
-
-def test_status_panel_instantiation():
-    """Ensure it instantiates."""
-    panel = StatusPanel.__new__(StatusPanel)
-    assert panel is not None
+        status.update_event(AgentEvent.PLAN_FINISHED, {})
+        assert status._status_label == ""
 
 
 @pytest.mark.asyncio
-async def test_status_panel_update():
+async def test_status_panel_no_permanent_provider():
+    """MODEL_SELECTED does not store a permanent provider label."""
     app = StatusApp()
     async with app.run_test():
         status = app.query_one("#status", StatusPanel)
+        assert not hasattr(status, "_provider")
         status.update_event(AgentEvent.MODEL_SELECTED, {"provider": "openai"})
-        assert "Openai" in status._provider
+        assert status._mascot_ctrl.state == MascotState.THINKING

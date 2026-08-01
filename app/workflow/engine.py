@@ -457,7 +457,11 @@ class WorkflowEngine:
                             "plan_task_id": task.task_id,
                             "plan_task_kind": task.kind.value,
                             **task_args,
-                        },
+                        } | (
+                            {"memory_context": task.metadata["memory_context"]}
+                            if task.metadata.get("memory_context")
+                            else {}
+                        ),
                         dependencies=task.dependencies,
                         metadata={
                             **deepcopy(task.metadata),

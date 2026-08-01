@@ -1,3 +1,7 @@
+import json
+import logging
+import os
+import re
 import uuid
 from datetime import datetime
 from typing import Any, List, Optional, Union
@@ -7,12 +11,37 @@ from app.core.contracts.skills import SkillRecord, SkillSearchResult
 from app.memory.base import Memory
 from app.memory.categories import normalize_category, normalize_category_for_storage
 from app.memory.context import ContextMemoryStore
+from app.memory.documents import DocumentMemoryStore, DocumentRecord
 from app.memory.metrics import MemoryMetricsCollector, MemoryMetricsSnapshot
 from app.memory.models import MemoryEntry
 from app.memory.repository import MemoryRepository
 from app.memory.search import search_entries
 from app.memory.skills import SkillMemoryStore
 from app.memory.store import InMemoryStore
+
+log = logging.getLogger(__name__)
+
+_ENGLISH_STOP_WORDS: set[str] = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "but", "if", "or", "because",
+    "as", "until", "while", "of", "at", "by", "for", "with", "about",
+    "against", "between", "into", "through", "during", "before", "after",
+    "above", "below", "to", "from", "up", "down", "in", "out", "on", "off",
+    "over", "under", "again", "further", "then", "once", "here", "there",
+    "when", "where", "why", "how", "all", "each", "every", "both", "few",
+    "more", "most", "other", "some", "such", "no", "nor", "not", "only",
+    "own", "same", "so", "than", "too", "very", "just", "and", "we", "you",
+    "he", "she", "it", "they", "me", "him", "her", "us", "them", "my",
+    "your", "his", "its", "our", "their", "this", "that", "these", "those",
+    "i", "what", "which", "who", "whom", "would", "could", "should", "may",
+    "might", "shall", "can", "need", "dare", "ought", "used", "will",
+    "also", "am",
+}
+
+_SCORE_NAME_MATCH = 5
+_SCORE_TAG_MATCH = 3
+_SCORE_SUMMARY_MATCH = 2
+_SCORE_METADATA_MATCH = 2
 
 
 class MemoryManager(Memory):
@@ -31,10 +60,12 @@ class MemoryManager(Memory):
         elif isinstance(store, InMemoryStore):
             self._repo = MemoryRepository(store=store)
         else:
-            self._repo = MemoryRepository()
+            self._repo = MemoryRepository(store=InMemoryStore())
         self._metrics = MemoryMetricsCollector()
         self._skill_store = SkillMemoryStore()
         self._context_store = ContextMemoryStore()  # Phase 4.5
+        self._document_store = DocumentMemoryStore()  # Phase 5.2
+        self._load_persisted_memories()
 
     def get_metrics(self) -> MemoryMetricsSnapshot:
         return self._metrics.get_metrics()
@@ -74,6 +105,48 @@ class MemoryManager(Memory):
         self._metrics.record_delete()
         self._repo.delete(key)
 
+    def _load_persisted_memories(self) -> None:
+        """Restore context items, documents, and skills from SQLite on startup."""
+        try:
+            entries = self._repo.list_all()
+        except Exception:
+            return
+        for entry in entries:
+            try:
+                if entry.key.startswith("mem:"):
+                    raw = entry.metadata.get("_memory_item", "")
+                    if isinstance(raw, str) and raw:
+                        from app.core.contracts.memory import MemoryItem as MI
+                        data = json.loads(raw)
+                        item = MI(**data)
+                        self._context_store._items[item.id] = item
+                        self._context_store._index.index(
+                            item.id,
+                            item.content,
+                            {"category": item.category.value, **item.metadata},
+                        )
+                elif entry.key.startswith("doc:"):
+                    raw = entry.value
+                    if isinstance(raw, str) and raw:
+                        data = json.loads(raw)
+                        from app.memory.documents import DocumentRecord as DR
+                        record = DR(**data)
+                        self._document_store._documents[record.document_id] = record
+                elif entry.key.startswith("skill:"):
+                    raw = entry.value
+                    if isinstance(raw, str) and raw:
+                        from app.core.contracts.skills import SkillRecord as SR
+                        data = json.loads(raw)
+                        skill = SR(**data)
+                        self._skill_store._skills[skill.skill_id] = skill
+                        self._skill_store._skill_index.index(
+                            skill.skill_id,
+                            f"{skill.name} {skill.description} {' '.join(skill.tags)}",
+                            {"category": skill.category},
+                        )
+            except Exception:
+                continue
+
     async def search(self, query: str = "", category: Optional[str] = None) -> List[MemoryRecord]:
         self._metrics.record_search()
         entries = self._repo.list_all()
@@ -89,6 +162,15 @@ class MemoryManager(Memory):
 
     def save_skill(self, skill: SkillRecord) -> None:
         self._skill_store.save_skill(skill)
+        entry = MemoryEntry(
+            id=skill.skill_id,
+            key=f"skill:{skill.skill_id}",
+            value=skill.model_dump_json(),
+            category="skill",
+            created_at=skill.created_at,
+            updated_at=skill.updated_at,
+        )
+        self._repo.save(entry)
 
     def update_skill(self, skill: SkillRecord) -> None:
         self._skill_store.update_skill(skill)
@@ -160,6 +242,16 @@ class MemoryManager(Memory):
     def store_memory(self, item: MemoryItem) -> None:
         """Store a typed MemoryItem in the semantic context store."""
         self._context_store.save_context(item)
+        entry = MemoryEntry(
+            id=item.id,
+            key=f"mem:{item.id}",
+            value=item.content,
+            category=item.category.value,
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+            metadata={"_memory_item": item.model_dump_json()},
+        )
+        self._repo.save(entry)
 
     def search_memory(
         self,
@@ -181,6 +273,103 @@ class MemoryManager(Memory):
     def get_recent_context(self, n: int = 10) -> list[MemoryItem]:
         """Return the n most recently stored context items."""
         return self._context_store.get_recent_context(n)
+
+    # ------------------------------------------------------------------
+    # Document Memory APIs — Phase 5.2
+    # ------------------------------------------------------------------
+
+    def store_document(self, record: DocumentRecord) -> DocumentRecord:
+        """Persist a document metadata record."""
+        stored = self._document_store.store(record)
+        entry = MemoryEntry(
+            id=record.document_id,
+            key=f"doc:{record.document_id}",
+            value=record.model_dump_json(),
+            category="document",
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+        self._repo.save(entry)
+        return stored
+
+    def get_document(self, document_id: str) -> Optional[DocumentRecord]:
+        """Retrieve a document record by ID."""
+        return self._document_store.get(document_id)
+
+    def search_documents(self, query: str = "") -> list[DocumentRecord]:
+        """Search stored documents by keyword scoring across name, tags, summary, and metadata.
+
+        Extracts meaningful keywords from the query (ignoring stop words),
+        computes a relevance score per document, and returns documents
+        sorted by score descending.
+
+        Falls back to returning all documents (by recency) when the query
+        contains document-related terms (doc, file, pdf) but no keywords
+        match any specific document.
+        """
+        query_lower = query.lower().strip()
+        if not query_lower:
+            return self._document_store.list_all()
+
+        tokens = [
+            t for t in re.findall(r"[a-z0-9]+", query_lower)
+            if t not in _ENGLISH_STOP_WORDS and len(t) > 1
+        ]
+
+        if not tokens:
+            return self._document_store.list_all()
+
+        scored: list[tuple[DocumentRecord, int]] = []
+        for doc in self._document_store.list_all():
+            doc_name_lower = doc.name.lower()
+            doc_stem = os.path.splitext(doc_name_lower)[0]
+            doc_ext = os.path.splitext(doc_name_lower)[1].lstrip(".")
+
+            score = 0
+            for token in tokens:
+                if token == doc_name_lower or token == doc_stem:
+                    score += _SCORE_NAME_MATCH
+                elif token in doc_stem:
+                    score += _SCORE_NAME_MATCH
+
+                if token == doc_ext:
+                    score += _SCORE_TAG_MATCH
+
+                if any(token in t.lower() for t in doc.tags):
+                    score += _SCORE_TAG_MATCH
+
+                if token in doc.summary.lower():
+                    score += _SCORE_SUMMARY_MATCH
+
+                for v in doc.metadata.values():
+                    if isinstance(v, str) and token in v.lower():
+                        score += _SCORE_METADATA_MATCH
+                        break
+
+            if score > 0:
+                scored.append((doc, score))
+                log.debug("search_documents: doc=%s score=%d", doc.name, score)
+
+        if scored:
+            scored.sort(key=lambda x: -x[1])
+            results = [doc for doc, _ in scored]
+            log.debug("search_documents: query=%r tokens=%s scored=%d", query, tokens, len(results))
+            return results
+
+        # Fallback: if the query contains document-related terms but no
+        # keywords matched, return all documents sorted by recency.
+        doc_terms = {"doc", "document", "file", "pdf", "read", "open", "show", "list", "history", "recent", "last", "analyse", "analyze", "summarize", "summarise"}
+        if doc_terms & set(tokens):
+            all_docs = self._document_store.list_all()
+            log.debug("search_documents: no keyword match, fallback to %d recent docs for %r", len(all_docs), query)
+            return all_docs
+
+        log.debug("search_documents: no results for query=%r tokens=%s", query, tokens)
+        return []
+
+    def link_document_context(self, document_id: str, context_id: str) -> bool:
+        """Associate a context memory item with a document."""
+        return self._document_store.link_context(document_id, context_id)
 
     # ------------------------------------------------------------------
     # Private Helpers

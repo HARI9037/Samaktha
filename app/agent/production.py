@@ -55,6 +55,9 @@ class _StreamingRuntimeBridge(Runtime):
             return result
 
         prompt = task.inputs.get("prompt", task.description)
+        memory_ctx = task.inputs.get("memory_context", "")
+        if memory_ctx:
+            prompt = f"[Relevant prior context]\n{memory_ctx}\n\n[User request]\n{prompt}"
         request = StreamRequest(
             request_id=context.request_id,
             provider_id=routing.provider_id,
@@ -128,6 +131,7 @@ class ProductionAgentRuntime:
             policy_engine=self._base._policy_engine,
             approval_engine=self._base._approval_engine,
             event_callback=self._orchestrator_event_handler,
+            memory_manager=getattr(self._base, "memory_manager", None),
         )
         context = RuntimeContext(
             request_id=f"tui-{uuid4().hex}",
@@ -172,6 +176,7 @@ class ProductionAgentRuntime:
             policy_engine=self._base._policy_engine,
             approval_engine=self._base._approval_engine,
             event_callback=self._orchestrator_event_handler,
+            memory_manager=getattr(self._base, "memory_manager", None),
         )
         context = RuntimeContext(
             request_id=f"tui-resume-{uuid4().hex}",
