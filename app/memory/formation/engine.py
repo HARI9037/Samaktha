@@ -74,10 +74,12 @@ class MemoryFormationEngine:
         self,
         memory_controller: MemoryController,
         classifier: MemoryClassifier | None = None,
+        session_manager: Any | None = None,
     ) -> None:
         self._controller = memory_controller
         self._memory_manager = getattr(memory_controller, "memory_manager", None)
         self._classifier = classifier or MemoryClassifier()
+        self._session_manager = session_manager
         self._formed = 0
         self._skipped = 0
 
@@ -103,6 +105,10 @@ class MemoryFormationEngine:
         conversation_id: str | None = None,
         metadata: dict | None = None,
         persist_conversation: bool = True,
+        execution_report: Any | None = None,
+        workflow_result: Any | None = None,
+        approval_result: Any | None = None,
+        runtime_summary: str | None = None,
     ) -> list[MemoryFormationResult]:
         """Analyze one completed interaction and persist what is worth remembering.
 
@@ -118,6 +124,8 @@ class MemoryFormationEngine:
             Optional extra metadata (e.g. workflow outputs) — informational only.
         persist_conversation:
             When True (default) every turn is stored as a conversation memory.
+        execution_report / workflow_result / approval_result / runtime_summary:
+            Strongly typed runtime artifacts used strictly by SessionBuilder.
 
         Returns
         -------
@@ -131,6 +139,18 @@ class MemoryFormationEngine:
         assistant_response = (assistant_response or "").strip()
         metadata = metadata or {}
 
+        # Phase 12.10 — internet-sourced interactions are TRANSIENT. Unless the
+        # user explicitly asked to remember the content (``explicit_memory``),
+        # neither the conversation turn nor any typed memory derived from an
+        # internet lookup may be auto-persisted. The interaction stays in the
+        # short-lived session working memory only.
+        if metadata.get("internet_sourced") and not metadata.get("explicit_memory"):
+            log.info(
+                "MemoryFormationEngine: skipping persistence — "
+                "internet-sourced interaction is transient"
+            )
+            return results
+
         # 1. Every conversation turn persists automatically.
         if persist_conversation:
             results.append(
@@ -138,6 +158,59 @@ class MemoryFormationEngine:
                     user_message, assistant_response, session_id, conversation_id, metadata
                 )
             )
+
+        # 1b. Session Intelligence Phase 20.2 — Form structured session history
+        if self._session_manager and session_id:
+            try:
+                from app.memory.formation.session_builder import SessionBuilder
+
+                # Load session first so we can read the current turn counter.
+                session = self._session_manager.load_session(session_id)
+                base_turn = session.memory.next_turn_number
+
+                logical_id = None
+                timestamp = None
+                if execution_report is not None:
+                    if hasattr(execution_report, "plan_id"):
+                        logical_id = str(execution_report.plan_id)
+                    if hasattr(execution_report, "started_at") and execution_report.started_at:
+                        if hasattr(execution_report.started_at, "isoformat"):
+                            timestamp = execution_report.started_at.isoformat()
+                        else:
+                            timestamp = str(execution_report.started_at)
+
+                entries = SessionBuilder.build_history_entries(
+                    user_message=user_message,
+                    assistant_response=assistant_response,
+                    execution_report=execution_report,
+                    workflow_result=workflow_result,
+                    approval_result=approval_result,
+                    runtime_summary=runtime_summary,
+                    base_turn_number=base_turn,
+                    logical_id=logical_id,
+                    timestamp=timestamp,
+                )
+
+                # update_metadata mutates a copy of session.metadata in-place
+                # and returns it; pass as positional new_metadata.
+                new_metadata = SessionBuilder.update_metadata(
+                    metadata=session.metadata,
+                    history_entries=entries,
+                    execution_report=execution_report,
+                    workflow_result=workflow_result,
+                )
+
+                if hasattr(self._session_manager, "update_metadata"):
+                    self._session_manager.update_metadata(session_id, new_metadata)
+
+                if hasattr(self._session_manager, "append_history"):
+                    for entry in entries:
+                        # append_history will re-stamp turn_number with its
+                        # own counter, which is authoritative.
+                        self._session_manager.append_history(session_id, entry)
+
+            except Exception:
+                log.warning("MemoryFormationEngine: SessionBuilder failed", exc_info=True)
 
         # 2. Classify the interaction into typed memories.
         try:

@@ -19,6 +19,7 @@ class RuntimeContext(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     trace: ExecutionTrace | None = None
+    event_bus: Any | None = Field(default=None, description="Injected RuntimeEventBus for publishing events.")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

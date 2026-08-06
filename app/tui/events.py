@@ -7,7 +7,6 @@ Dots dim automatically after a brief display period.
 from __future__ import annotations
 
 import asyncio
-from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.widget import Widget
@@ -65,7 +64,7 @@ class AgentEventDisplay(Widget):
             return
 
         dot.update(f"[bold {SAMAKTHA_ORANGE}]{label_str}[/]")
-        asyncio.get_event_loop().call_later(
+        asyncio.get_running_loop().call_later(
             _FLASH_DURATION,
             lambda: dot.update(f"[{SAMAKTHA_DIM}]{label_str}[/]"),
         )

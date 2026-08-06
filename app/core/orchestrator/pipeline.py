@@ -19,7 +19,9 @@ class PipelineState(BaseModel):
 
     request: str
     context: PreparedContext | None = None
-    memory_context: str = ""
+    personality_evaluation: Any = None
+    prompt_composition: Any = None
+    reflection_report: Any = None
     execution_plan: ExecutionPlan | None = None
     runtime_task: RuntimeTask | None = None
     routing_decision: RoutingDecision | None = None

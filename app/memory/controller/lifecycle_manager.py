@@ -12,12 +12,13 @@ MemoryManager and the existing stores.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
-from typing import Any, Callable
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from app.memory.controller.cache import MemoryCache
 from app.memory.controller.consolidator import MemoryConsolidator
 from app.memory.manager import MemoryManager
+from app.memory.time_utils import normalize_datetime
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class LifecycleManager:
 
         Returns number of items removed.
         """
-        now = now or datetime.utcnow()
+        now = now or datetime.now(timezone.utc)
         removed = 0
         items = self._memory_manager.get_recent_context(n=1000)
 
@@ -78,9 +79,8 @@ class LifecycleManager:
             created = meta.get("created_at")
             if not created:
                 continue
-            try:
-                created_dt = datetime.fromisoformat(created)
-            except (ValueError, TypeError):
+            created_dt = normalize_datetime(created)
+            if created_dt is None:
                 continue
 
             if (now - created_dt) > timedelta(days=max_days):
@@ -107,7 +107,7 @@ class LifecycleManager:
                 meta = self._get_meta(item)
                 meta["retention_policy"] = "private"
                 meta["archived"] = True
-                meta["updated_at"] = datetime.utcnow().isoformat()
+                meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                 log.debug("LifecycleManager: archived memory %s", item_id)
                 return True
         return False
@@ -116,7 +116,7 @@ class LifecycleManager:
         self, stale_days: int = 60
     ) -> list[Any]:
         """List memories that haven't been accessed in stale_days."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=stale_days)
         archivable: list[Any] = []
         items = self._memory_manager.get_recent_context(n=1000)
@@ -126,9 +126,8 @@ class LifecycleManager:
             last = meta.get("last_accessed") or meta.get("created_at")
             if not last:
                 continue
-            try:
-                last_dt = datetime.fromisoformat(last)
-            except (ValueError, TypeError):
+            last_dt = normalize_datetime(last)
+            if last_dt is None:
                 continue
 
             if last_dt < cutoff and meta.get("retention_policy") != "private":
@@ -144,8 +143,16 @@ class LifecycleManager:
         """Permanently delete a memory by ID.
 
         Delegates to MemoryManager.delete_memory and removes from cache.
+        Returns True only when a matching memory existed and was removed, so
+        callers never mistake a no-op for a successful deletion.
         """
         try:
+            items = self._memory_manager.get_recent_context(
+                n=1000, allow_private=True
+            )
+            if not any(item.id == item_id for item in items):
+                log.debug("LifecycleManager: memory %s not found; nothing deleted", item_id)
+                return False
             self._memory_manager.delete_memory(item_id)
             self._cache.store_recent_memory(item_id, None)
             log.debug("LifecycleManager: deleted memory %s", item_id)
@@ -157,10 +164,13 @@ class LifecycleManager:
     def delete_by_type(self, memory_type: str) -> int:
         """Delete all memories of a given type.
 
-        Returns number of items deleted.
+        Returns number of items deleted. Explicit user-requested deletion
+        includes ``private`` items (they are only exempt from auto-expiry).
         """
         deleted = 0
-        items = self._memory_manager.get_recent_context(n=1000)
+        items = self._memory_manager.get_recent_context(
+            n=1000, allow_private=True
+        )
         for item in items:
             meta = self._get_meta(item)
             if meta.get("memory_type") == memory_type:
@@ -190,7 +200,7 @@ class LifecycleManager:
                     # Bump by 0.1
                     current = meta.get("importance", 0.3)
                     meta["importance"] = min(1.0, current + 0.1)
-                meta["updated_at"] = datetime.utcnow().isoformat()
+                meta["updated_at"] = datetime.now(timezone.utc).isoformat()
                 log.debug("LifecycleManager: promoted memory %s to %.2f", item_id, meta["importance"])
                 return True
         return False

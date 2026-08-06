@@ -43,6 +43,10 @@ class MemoryView:
     importance: float
     created_at: str
     last_accessed: str
+    provenance: str = ""
+    session_id: str = ""
+    confidence: float = 0.0
+    freshness: str = ""
 
     def is_project(self) -> bool:
         """Project memories are stored as knowledge tagged as a project."""
@@ -99,6 +103,10 @@ def normalize_item(item: Any) -> MemoryView | None:
         importance=_to_float(meta.get("importance", 0.0)),
         created_at=str(meta.get("created_at", "") or ""),
         last_accessed=str(meta.get("last_accessed", "") or ""),
+        provenance=str(meta.get("provenance", "") or ""),
+        session_id=str(meta.get("session_id", "") or ""),
+        confidence=_to_float(meta.get("confidence", 0.0)),
+        freshness=str(meta.get("freshness", "") or ""),
     )
 
 

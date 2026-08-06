@@ -113,7 +113,7 @@ def test_orchestrator_coordinates_cap_gambit_router_and_runtime() -> None:
         assert state.routing_decision is not None
         assert state.runtime_result is not None
         assert state.runtime_result.status == TaskStatus.COMPLETED
-        assert state.runtime_result.output == {"response": "Mock provider response"}
+        assert state.runtime_result.output == {"response": "Hey. Good to see you again."}
 
     asyncio.run(run_test())
 
@@ -134,6 +134,6 @@ def test_orchestrator_returns_final_runtime_result() -> None:
         )
 
         assert result.status == TaskStatus.COMPLETED
-        assert result.output == {"response": "Mock provider response"}
+        assert result.output == {"response": "Hey. Good to see you again."}
 
     asyncio.run(run_test())

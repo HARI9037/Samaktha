@@ -107,6 +107,11 @@ dist/
 # Empty or user-created scratch directories. Not project source.
 dummy/
 workspace/
+scratch/
+
+# --- Runtime Session Data ----------------------------------------------------
+# Auto-generated per-session transcripts and indexes. Contains user/runtime data.
+data/session_memory/
 
 # Runtime data
 data/*.db

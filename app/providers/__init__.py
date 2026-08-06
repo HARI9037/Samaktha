@@ -1,7 +1,7 @@
 """Provider interfaces and test providers."""
 
 from app.providers.base import BaseProvider
-from app.providers.config import ProviderSettings
+from app.providers.config import ProviderSettings, ProviderStartupError
 from app.providers.cost import CostEstimate, CostEstimator
 from app.providers.groq_provider import GroqProvider
 from app.providers.health import ProviderHealthChecker, ProviderStatus
@@ -33,6 +33,7 @@ __all__ = [
     "ProviderRegistry",
     "ProviderResponse",
     "ProviderSettings",
+    "ProviderStartupError",
     "ProviderStatus",
     "ProviderSelectionEngine",
     "TokenUsage",

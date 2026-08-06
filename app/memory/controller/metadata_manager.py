@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
@@ -96,7 +96,7 @@ def build_metadata(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a standardised metadata dict for a memory item."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     meta: dict[str, Any] = {
         "memory_type": memory_type.value,
         "source": source,
@@ -122,7 +122,7 @@ def build_metadata(
 
 def update_accessed(metadata: dict[str, Any]) -> dict[str, Any]:
     """Bump last_accessed and access_counter in-place."""
-    metadata["last_accessed"] = datetime.utcnow().isoformat()
+    metadata["last_accessed"] = datetime.now(timezone.utc).isoformat()
     metadata["access_counter"] = metadata.get("access_counter", 0) + 1
     return metadata
 

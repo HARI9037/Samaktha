@@ -19,6 +19,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from app.memory.time_utils import normalize_datetime
+
 # ---------------------------------------------------------------------------
 # Default weights — can be overridden at construction
 # ---------------------------------------------------------------------------
@@ -42,13 +44,12 @@ def _recency_score(created_at_iso: str | None) -> float:
     """Score based on how recent the memory is (exponential decay)."""
     if not created_at_iso:
         return 0.0
-    try:
-        created = datetime.fromisoformat(created_at_iso)
-        now = datetime.utcnow()
-        age_days = (now - created).total_seconds() / 86400.0
-        return max(0.0, 2.0 ** (-age_days / _HALF_LIFE_DAYS))
-    except (ValueError, TypeError):
+    created = normalize_datetime(created_at_iso)
+    if created is None:
         return 0.0
+    now = datetime.now(timezone.utc)
+    age_days = (now - created).total_seconds() / 86400.0
+    return max(0.0, 2.0 ** (-age_days / _HALF_LIFE_DAYS))
 
 
 def _frequency_score(access_counter: int) -> float:

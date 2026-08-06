@@ -18,6 +18,7 @@ from app.core.contracts import (
 from app.core.contracts.pause import ExecutionPause
 from app.core.contracts.planning import GoalIntent, PlanTask, TaskKind, TaskStatus
 from app.core.gambit import GoalParser, TaskDecomposer
+from app.personality import DENIED_BY_USER_TEXT
 from app.core.orchestrator import SamakthaOrchestrator
 from app.core.orchestrator.pipeline import PipelineState, PipelineEvent
 from app.models import ModelInfo, ModelManager, ModelRegistry
@@ -407,4 +408,9 @@ async def test_approval_lifecycle_user_denies_execution_blocked():
 
     assert resumed_state.runtime_result is not None
     assert resumed_state.runtime_result.status == TaskStatus.FAILED
-    assert "approval required" in (resumed_state.runtime_result.error or "")
+    assert resumed_state.runtime_result.error == DENIED_BY_USER_TEXT
+    assert resumed_state.execution_report is not None
+    assert any(
+        "approval required" in error
+        for error in resumed_state.execution_report.errors
+    )

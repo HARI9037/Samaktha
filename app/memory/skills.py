@@ -13,13 +13,14 @@ Phase 3.5 adds:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.core.contracts.learning import SkillConfidence
 from app.core.contracts.skills import SkillLifecycleState, SkillRecord, SkillSearchResult
 from app.memory.skill_metrics import SkillMetricsCollector
 from app.memory.semantic_index import SemanticIndex
+from app.memory.time_utils import normalize_datetime
 
 # ---------------------------------------------------------------------------
 # Constants for lifecycle maintenance thresholds
@@ -82,7 +83,7 @@ class SkillMemoryStore:
     def update_skill(self, skill: SkillRecord) -> None:
         """Update an existing skill."""
         if skill.skill_id in self._skills:
-            skill.updated_at = datetime.utcnow()
+            skill.updated_at = datetime.now(timezone.utc)
             self._skills[skill.skill_id] = skill
             self._metrics.record_updated()
             self._skill_index.index(
@@ -126,8 +127,8 @@ class SkillMemoryStore:
         skill = self._skills.get(skill_id)
         if skill and skill.is_active:
             skill.usage_count += 1
-            skill.last_used_at = datetime.utcnow()
-            skill.updated_at = datetime.utcnow()
+            skill.last_used_at = datetime.now(timezone.utc)
+            skill.updated_at = datetime.now(timezone.utc)
 
     def record_skill_success(self, skill_id: str) -> None:
         """Increment success_count and recompute success_rate."""
@@ -135,7 +136,7 @@ class SkillMemoryStore:
         if skill:
             skill.success_count += 1
             skill.recompute_success_rate()
-            skill.updated_at = datetime.utcnow()
+            skill.updated_at = datetime.now(timezone.utc)
 
     def record_skill_failure(self, skill_id: str) -> None:
         """Increment failure_count and recompute success_rate."""
@@ -143,7 +144,7 @@ class SkillMemoryStore:
         if skill:
             skill.failure_count += 1
             skill.recompute_success_rate()
-            skill.updated_at = datetime.utcnow()
+            skill.updated_at = datetime.now(timezone.utc)
             # Auto-deprecate if success rate drops below 30% with enough data
             total = skill.success_count + skill.failure_count
             if total >= 5 and skill.success_rate < 0.30:
@@ -158,7 +159,7 @@ class SkillMemoryStore:
         skill = self._skills.get(skill_id)
         if skill and not skill.is_archived:
             skill.lifecycle_state = SkillLifecycleState.DEPRECATED
-            skill.updated_at = datetime.utcnow()
+            skill.updated_at = datetime.now(timezone.utc)
             if reason:
                 skill.metadata["deprecation_reason"] = reason
 
@@ -167,7 +168,7 @@ class SkillMemoryStore:
         skill = self._skills.get(skill_id)
         if skill:
             skill.lifecycle_state = SkillLifecycleState.ARCHIVED
-            skill.updated_at = datetime.utcnow()
+            skill.updated_at = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
     # Maintenance
@@ -186,7 +187,7 @@ class SkillMemoryStore:
 
         Returns counts of skills affected.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=stale_days)
 
         decayed = 0
@@ -198,7 +199,8 @@ class SkillMemoryStore:
             if not skill.is_active:
                 continue
 
-            is_stale = skill.last_used_at is None and skill.created_at < cutoff
+            created_at = normalize_datetime(skill.created_at)
+            is_stale = skill.last_used_at is None and created_at is not None and created_at < cutoff
             if not is_stale:
                 continue
 
@@ -243,10 +245,12 @@ class SkillMemoryStore:
         primary.tags = combined_tags
 
         # Keep oldest creation date
-        if duplicate.created_at < primary.created_at:
+        primary_created = normalize_datetime(primary.created_at)
+        duplicate_created = normalize_datetime(duplicate.created_at)
+        if primary_created is None or (duplicate_created is not None and duplicate_created < primary_created):
             primary.created_at = duplicate.created_at
 
-        primary.updated_at = datetime.utcnow()
+        primary.updated_at = datetime.now(timezone.utc)
 
         # Remove duplicate
         del self._skills[duplicate_id]
@@ -367,12 +371,11 @@ class SkillMemoryStore:
     def _merge_duplicate(self, existing: SkillRecord, new_skill: SkillRecord) -> None:
         """Merge a new observation into an existing skill record."""
         existing.usage_count += 1
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = datetime.now(timezone.utc)
         combined_tags = list(dict.fromkeys(existing.tags + new_skill.tags))
         existing.tags = combined_tags
         existing.success_count += new_skill.success_count
         existing.failure_count += new_skill.failure_count
         existing.recompute_success_rate()
-
 
 

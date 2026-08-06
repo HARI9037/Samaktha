@@ -23,6 +23,7 @@ class RuntimeDispatcher:
             "pdf": "tool",
             "memory": "tool",
             "windows": "tool",
+            "internet": "tool",
             **(action_executor_map or {}),
         }
 

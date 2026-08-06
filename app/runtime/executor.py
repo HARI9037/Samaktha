@@ -10,6 +10,7 @@ from app.core.contracts.protocols import (
     ProviderManagerLike,
     ToolManagerLike,
 )
+from app.runtime.payload import build_provider_messages
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,17 @@ class ProviderExecutor:
                 provider_id=routing.provider_id if routing else task.action_type,
                 model_id=routing.model_id if routing else None
             )
+        if context and context.event_bus:
+            from app.core.events import RuntimeEventType
+            context.event_bus.publish(
+                RuntimeEventType.PROVIDER_STARTED, "provider", "started",
+                trace_id=context.request_id,
+                task_id=task.task_id,
+                payload={
+                    "provider_id": routing.provider_id if routing else task.action_type,
+                    "model_id": routing.model_id if routing else None,
+                }
+            )
             
         import time
         started_at = time.perf_counter()
@@ -58,9 +70,16 @@ class ProviderExecutor:
         )
         
         try:
+            payload = dict(task.inputs)
+            messages = build_provider_messages(task.inputs)
+            if messages is not None:
+                payload["messages"] = messages
+                payload["prompt"] = messages[-1].get("content", "")
+            else:
+                payload["prompt"] = task.inputs.get("prompt", "")
             output = await self._provider_manager.execute_provider(
                 provider_id=routing.provider_id,
-                payload=task.inputs,
+                payload=payload,
                 model_id=routing.model_id,
                 required_capabilities=[task.action_type],
             )
@@ -96,6 +115,20 @@ class ProviderExecutor:
                 duration_ms=(time.perf_counter() - started_at) * 1000,
                 task_id=task.task_id,
             )
+        if context and context.event_bus:
+            from app.core.events import RuntimeEventType
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            event_type = (
+                RuntimeEventType.PROVIDER_COMPLETED
+                if result.status == TaskStatus.COMPLETED
+                else RuntimeEventType.PROVIDER_FAILED
+            )
+            context.event_bus.publish(
+                event_type, "provider", result.status.value,
+                trace_id=context.request_id,
+                task_id=task.task_id,
+                payload={"duration_ms": duration_ms, "error": result.error}
+            )
             
         return result
 
@@ -121,6 +154,18 @@ class ToolExecutor:
                 event_type="runtime.tool.started",
                 task_id=task.task_id,
                 tool_id=tool_id
+            )
+        if context and context.event_bus:
+            from app.core.events import RuntimeEventType
+            context.event_bus.publish(
+                RuntimeEventType.TOOL_STARTED, "tool", "started",
+                trace_id=context.request_id,
+                task_id=task.task_id,
+                payload={
+                    "tool": tool_id,
+                    "action": task.inputs.get("action", ""),
+                    "args": list(task.inputs.keys()),
+                }
             )
             
         import time
@@ -171,7 +216,32 @@ class ToolExecutor:
                 duration_ms=(time.perf_counter() - started_at) * 1000,
                 task_id=task.task_id,
             )
+        if context and context.event_bus:
+            from app.core.events import RuntimeEventType
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            event_type = (
+                RuntimeEventType.TOOL_COMPLETED
+                if result.status == TaskStatus.COMPLETED
+                else RuntimeEventType.TOOL_FAILED
+            )
+            context.event_bus.publish(
+                event_type, "tool", result.status.value,
+                trace_id=context.request_id,
+                task_id=task.task_id,
+                payload={
+                    "tool": tool_id,
+                    "duration_ms": duration_ms,
+                    "error": result.error,
+                }
+            )
 
         log.info("ToolExecutor: EXIT — status=%s error=%s has_output=%s", result.status, result.error, result.output is not None)
+            
+        action = task.inputs.get("action") or task.inputs.get("Action", "")
+        result.metadata.update({
+            "tool": tool_id,
+            "action": action,
+            "args": task.inputs,
+        })
             
         return result

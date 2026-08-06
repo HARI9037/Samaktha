@@ -17,6 +17,9 @@ dependencies = [
     "docling>=2.15.0",
 ]
 
+[project.scripts]
+samaktha = "app.cli:main"
+
 [dependency-groups]
 dev = [
     "httpx>=0.27.0",

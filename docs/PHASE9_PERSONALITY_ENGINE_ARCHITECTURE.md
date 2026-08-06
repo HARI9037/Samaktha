@@ -1,6 +1,8 @@
 # Phase 9 — Personality Engine: Architecture Specification
 
-Status: **DRAFT — architecture only. No code, no prompts, no implementation.**
+Status: **IMPLEMENTED (Phases 9.1–9.5) and INTEGRATED (Phase 10A).** This document
+is the architecture specification; the deterministic vertical slice lives under
+`app/personality/` and is wired into the production orchestrator.
 Subsystem: Permanent first-class subsystem, co-equal to CAP, GAMBIT, Runtime, Memory.
 Scope: Determines **HOW Samaktha behaves and communicates**. It never reasons, never plans, never governs, never selects models, never invokes tools.
 

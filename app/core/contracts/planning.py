@@ -55,6 +55,7 @@ class GoalIntent(StrEnum):
     WRITE_RESOURCE = "write_resource"
     LIST_DIRECTORY = "list_directory"
     SEARCH_RESOURCE = "search_resource"
+    DELETE_MEMORY = "delete_memory"
     DELETE_RESOURCE = "delete_resource"
     MOVE_RESOURCE = "move_resource"
     COPY_RESOURCE = "copy_resource"
@@ -64,10 +65,20 @@ class GoalIntent(StrEnum):
     ANSWER_QUESTION = "answer_question"
     OPERATE_WINDOWS = "operate_windows"
     RUN_COMMAND = "run_command"
+    CLIPBOARD = "clipboard"
+    SEND_NOTIFICATION = "send_notification"
+    SEARCH_INTERNET = "search_internet"
     USE_BROWSER = "use_browser"
     SEND_EMAIL = "send_email"
     MANAGE_CALENDAR = "manage_calendar"
     PLAY_MEDIA = "play_media"
+    READ_EMAIL = "read_email"
+    REPLY_EMAIL = "reply_email"
+    FORWARD_EMAIL = "forward_email"
+    SEND_MESSAGE = "send_message"
+    READ_MESSAGES = "read_messages"
+    SEARCH_MESSAGES = "search_messages"
+    SEARCH_CONTACT = "search_contact"
 
 
 class Goal(BaseModel):

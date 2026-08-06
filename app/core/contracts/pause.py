@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-
-from app.core.contracts.planning import PlanTask
 
 
 class ExecutionPause(BaseModel):
@@ -20,5 +18,5 @@ class PendingPause(BaseModel):
 
     task_id: str
     pause: ExecutionPause
-    paused_at: datetime = Field(default_factory=datetime.utcnow)
+    paused_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resume_overrides: dict[str, Any] = Field(default_factory=dict)

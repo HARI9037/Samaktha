@@ -12,34 +12,35 @@ from app.tui.theme import (
 
 
 def test_primary_orange_is_correct():
-    assert SAMAKTHA_ORANGE == "#FF8C00"
+    assert SAMAKTHA_ORANGE == "#F59E0B"
 
 
 def test_background_is_pure_black():
-    assert SAMAKTHA_BLACK == "#000000"
+    # Background in Phase 6 is dark
+    assert SAMAKTHA_BLACK == "#0D1117"
 
 
 def test_text_is_soft_white():
-    # Soft white — not pure #FFFFFF
-    assert SAMAKTHA_TEXT.startswith("#E")
+    # Soft white
+    assert SAMAKTHA_TEXT.startswith("#F")
 
 
 def test_success_is_green():
     # Should be a green hex
-    assert "C9" in SAMAKTHA_SUCCESS or "00" in SAMAKTHA_SUCCESS
+    assert "C5" in SAMAKTHA_SUCCESS or "22" in SAMAKTHA_SUCCESS
 
 
 def test_warning_is_amber():
-    assert SAMAKTHA_WARNING == "#FFB300"
+    assert SAMAKTHA_WARNING == "#F59E0B"
 
 
 def test_error_is_red():
-    assert SAMAKTHA_ERROR == "#FF4040"
+    assert SAMAKTHA_ERROR == "#EF4444"
 
 
 def test_css_contains_primary_color():
-    assert "#FF8C00" in SAMAKTHA_CSS
+    assert "#F59E0B" in SAMAKTHA_CSS
 
 
 def test_css_contains_background():
-    assert "#000000" in SAMAKTHA_CSS
+    assert "#0D1117" in SAMAKTHA_CSS

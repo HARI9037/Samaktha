@@ -1,28 +1,33 @@
-"""Phase 9.1 + 9.2 — Personality Engine (deterministic vertical slice).
+"""Phase 9.1 + 9.2 + 9.3 + 9.4 — Personality Engine (deterministic vertical slice).
 
-Identity classification, greeting classification, and the deterministic
-memory-visibility gate. No tone, no emotion, no relationship, no
-communication directive, no plugins.
+Identity classification, greeting classification, the memory-visibility gate,
+and the behavior engine. No tone-in-prompts: behavior is a structured
+BehaviorDecision. No adaptive learning, no user/relationship modeling.
 
-This module also hosts the TEMPORARY Phase 9.1 adapter that converts the
-structured IdentityProfile into provider context through the existing
-personality path (PersonalityManager.get_system_prompt). It is removed in
-Phase 9.3.
+This module also hosts the backward-compatible Phase 9.1 adapter that converts
+the structured IdentityProfile into provider context for the legacy path
+(PersonalityManager.get_system_prompt). It delegates to the Phase 9.4 identity
+section builder so the two can never diverge; the PromptComposer is now the
+single source of truth for the final system prompt.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from app.personality.behavior import BehaviorEngine
 from app.personality.greeting import GreetingPolicy
 from app.personality.identity import IdentityPolicy
 from app.personality.memory_visibility import MemoryVisibilityPolicy
 from app.personality.models import (
+    CapContextView,
+    ConversationMetadataView,
     GreetingDecision,
     IdentityDecision,
     IdentityProfile,
     PersonalityEvaluation,
 )
+from app.personality.prompt_sections import build_identity_section
 
 SAMAKTHA_IDENTITY_PROFILE = IdentityProfile(
     name="Samaktha",
@@ -69,6 +74,10 @@ class PersonalityEngine:
             identity_policy=self._identity_policy,
             greeting_policy=self._greeting_policy,
         )
+        self._behavior_engine = BehaviorEngine(
+            identity_policy=self._identity_policy,
+            greeting_policy=self._greeting_policy,
+        )
 
     @property
     def profile(self) -> IdentityProfile:
@@ -79,12 +88,16 @@ class PersonalityEngine:
         self,
         message: str,
         retrieved_memories: list[Any] | None = None,
+        *,
+        cap_context: CapContextView | None = None,
+        conversation_metadata: ConversationMetadataView | None = None,
     ) -> PersonalityEvaluation:
         """Classify one user message and return the structured decisions.
 
         ``retrieved_memories`` (optional) is the output of the Memory
         Controller; the deterministic visibility gate decides which of them
-        may reach the provider.
+        may reach the provider. ``cap_context`` and ``conversation_metadata``
+        are optional structured inputs to the behavior engine.
         """
         identity = self._identity_policy.evaluate(message)
         greeting = self._greeting_policy.evaluate(message)
@@ -94,11 +107,20 @@ class PersonalityEngine:
             identity_decision=identity,
             greeting_decision=greeting,
         )
+        behavior = self._behavior_engine.evaluate(
+            message,
+            cap_context=cap_context,
+            conversation_metadata=conversation_metadata,
+            visible_memories=visibility.visible_memories,
+            greeting_decision=greeting,
+            identity_decision=identity,
+        )
         return PersonalityEvaluation(
             message=message,
             identity=identity,
             greeting=greeting,
             profile=self._profile,
+            behavior=behavior,
             visible_memories=visibility.visible_memories,
             visibility_summary=visibility.summary,
             visibility_rule=visibility.rule,
@@ -107,29 +129,12 @@ class PersonalityEngine:
 
 
 # ---------------------------------------------------------------------------
-# TEMPORARY Phase 9.1 adapter (removed in Phase 9.3).
-# Converts the structured IdentityProfile into provider context for the
-# existing personality path.
+# Backward-compatible Phase 9.1 adapter (retained for the legacy personality
+# path). Converts the structured IdentityProfile into provider-context text by
+# delegating to the Phase 9.4 identity section builder.
 # ---------------------------------------------------------------------------
 
 
 def identity_to_provider_context(profile: IdentityProfile) -> str:
     """Render the structured profile as deterministic provider-context text."""
-    lines = [f"You are {profile.name}.", ""]
-    lines.append("Mission:")
-    lines.append(profile.mission)
-    lines.append("")
-    lines.append("Description:")
-    lines.append(profile.description)
-    lines.append("")
-    lines.append("Capabilities:")
-    for capability in profile.capabilities:
-        lines.append(f"- {capability}")
-    lines.append("")
-    lines.append("Limitations:")
-    for limitation in profile.limitations:
-        lines.append(f"- {limitation}")
-    lines.append("")
-    lines.append("Philosophy:")
-    lines.append(profile.philosophy)
-    return "\n".join(lines)
+    return build_identity_section(profile)

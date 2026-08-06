@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.memory.controller.cache import MemoryCache
 from app.memory.manager import MemoryManager
+from app.memory.time_utils import normalize_datetime
 
 log = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ class MemoryConsolidator:
         primary_meta["importance"] = merged_importance
         primary_meta["entities"] = merged_entities
         primary_meta["access_counter"] = merged_counter
-        primary_meta["updated_at"] = datetime.utcnow().isoformat()
+        primary_meta["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         # Also update the stored version in MemoryManager
         try:
@@ -336,7 +337,7 @@ class MemoryConsolidator:
 
         Returns number of items decayed.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         decayed = 0
 
         for item in items:
@@ -344,11 +345,10 @@ class MemoryConsolidator:
             last = meta.get("last_accessed") or meta.get("created_at")
             if not last:
                 continue
-            try:
-                last_dt = datetime.fromisoformat(last)
-                age_days = (now - last_dt).total_seconds() / 86400.0
-            except (ValueError, TypeError):
+            last_dt = normalize_datetime(last)
+            if last_dt is None:
                 continue
+            age_days = (now - last_dt).total_seconds() / 86400.0
 
             if age_days > stale_days:
                 old_imp = meta.get("importance", 0.3)

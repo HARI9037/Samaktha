@@ -152,28 +152,25 @@ class OpenAICompatibleChatClient:
             body["max_tokens"] = payload["max_tokens"]
         elif self._settings.max_output_tokens:
             body["max_tokens"] = self._settings.max_output_tokens
-        try:
-            async with httpx.AsyncClient(timeout=self._settings.request_timeout_seconds) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self._base_url}/chat/completions",
-                    headers=self._headers(),
-                    json=body,
-                ) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        data = line.removeprefix("data: ").strip()
-                        if data == "[DONE]":
-                            break
-                        chunk = json.loads(data)
-                        delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
-                        content = delta.get("content")
-                        if content:
-                            yield content
-        except (httpx.HTTPError, json.JSONDecodeError):
-            return
+        async with httpx.AsyncClient(timeout=self._settings.request_timeout_seconds) as client:
+            async with client.stream(
+                "POST",
+                f"{self._base_url}/chat/completions",
+                headers=self._headers(),
+                json=body,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line.removeprefix("data: ").strip()
+                    if data == "[DONE]":
+                        break
+                    chunk = json.loads(data)
+                    delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
+                    content = delta.get("content")
+                    if content:
+                        yield content
 
     def _headers(self) -> dict[str, str]:
         return {

@@ -1,10 +1,11 @@
-import sqlite3
 import json
+import sqlite3
 from datetime import datetime
 from threading import Lock
 from typing import Iterator, Optional
 
 from app.memory.models import MemoryEntry
+from app.memory.time_utils import normalize_datetime
 
 _DB_PATH = 'data/memory.db'
 _TABLE_SCHEMA = '''
@@ -119,8 +120,8 @@ class SQLiteStore:
             key=row['key'],
             value=row['value'],
             category=row['category'],
-            created_at=datetime.fromisoformat(row['created_at']),
-            updated_at=datetime.fromisoformat(row['updated_at']),
+            created_at=normalize_datetime(row['created_at']) or datetime.fromisoformat(row['created_at']),
+            updated_at=normalize_datetime(row['updated_at']) or datetime.fromisoformat(row['updated_at']),
             metadata=json.loads(row['metadata'] or '{}'),
             score=float(row['score'] or 0),
         )

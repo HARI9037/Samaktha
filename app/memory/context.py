@@ -5,7 +5,9 @@ No autonomous learning loops — storage and retrieval only.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+from app.memory.time_utils import normalize_datetime
 
 from app.core.contracts.memory import MemoryItem, MemorySearchResult, MemoryType
 from app.memory.semantic_index import SemanticIndex
@@ -32,7 +34,7 @@ class ContextMemoryStore:
         if item.retention_policy == "temporary":
             return
             
-        item.updated_at = datetime.utcnow()
+        item.updated_at = datetime.now(timezone.utc)
         self._items[item.id] = item
         self._index.index(
             item_id=item.id,
@@ -85,6 +87,31 @@ class ContextMemoryStore:
         self._metrics.record_search(len(results), top_score)
         return results
 
+    def get(self, item_id: str) -> MemoryItem | None:
+        """Return a stored item by ID regardless of recency window."""
+        return self._items.get(item_id)
+
+    def get_by_type(
+        self,
+        memory_type: str,
+        n: int | None = None,
+        allow_private: bool = False,
+    ) -> list[MemoryItem]:
+        """Return stored items of a given memory_type, newest first.
+
+        Unlike ``get_recent_context`` this scans the full store, so typed
+        items written before many unrelated writes are still found.  The
+        ordering is deterministic (created_at desc, then id desc).
+        """
+        items = [
+            it
+            for it in self._items.values()
+            if (it.metadata or {}).get("memory_type") == memory_type
+            and (allow_private or it.retention_policy != "private")
+        ]
+        items.sort(key=lambda it: (normalize_datetime(getattr(it, "created_at", None)) or datetime.min.replace(tzinfo=timezone.utc), str(it.id)), reverse=True)
+        return items[:n] if n is not None else items
+
     def get_recent_context(self, n: int = 10, allow_private: bool = False) -> list[MemoryItem]:
         """Return the n most recently created memory items."""
         items = self._items.values()
@@ -93,7 +120,7 @@ class ContextMemoryStore:
             
         sorted_items = sorted(
             items,
-            key=lambda it: it.created_at,
+            key=lambda it: (normalize_datetime(getattr(it, "created_at", None)) or datetime.min.replace(tzinfo=timezone.utc), str(it.id)),
             reverse=True,
         )
         return sorted_items[:n]

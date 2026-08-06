@@ -11,7 +11,7 @@ Validates deterministic lifecycle operations:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -45,7 +45,7 @@ def _skill(
         confidence=confidence,
         source_plan="plan-x",
         tags=tags or [],
-        created_at=created_at or datetime.utcnow(),
+        created_at=created_at or datetime.now(timezone.utc),
         usage_count=usage_count,
         success_count=success_count,
         failure_count=failure_count,
@@ -193,7 +193,7 @@ def test_list_archived_skills() -> None:
 def test_lifecycle_maintenance_decays_stale_high_to_medium() -> None:
     """A HIGH-confidence skill with no usage older than threshold → MEDIUM."""
     manager = MemoryManager()
-    old_created = datetime.utcnow() - timedelta(days=60)
+    old_created = datetime.now(timezone.utc) - timedelta(days=60)
     skill = _skill(name="StaleHigh", confidence=SkillConfidence.HIGH, created_at=old_created)
     manager.save_skill(skill)
 
@@ -208,7 +208,7 @@ def test_lifecycle_maintenance_decays_stale_high_to_medium() -> None:
 def test_lifecycle_maintenance_decays_medium_to_low_and_deprecates() -> None:
     """A MEDIUM-confidence skill with no usage older than threshold → LOW → DEPRECATED."""
     manager = MemoryManager()
-    old_created = datetime.utcnow() - timedelta(days=60)
+    old_created = datetime.now(timezone.utc) - timedelta(days=60)
     skill = _skill(name="StaleMedium", confidence=SkillConfidence.MEDIUM, created_at=old_created)
     manager.save_skill(skill)
 
@@ -224,7 +224,7 @@ def test_lifecycle_maintenance_decays_medium_to_low_and_deprecates() -> None:
 def test_lifecycle_maintenance_skips_used_skills() -> None:
     """A skill with last_used_at set is not stale even if old."""
     manager = MemoryManager()
-    old_created = datetime.utcnow() - timedelta(days=60)
+    old_created = datetime.now(timezone.utc) - timedelta(days=60)
     skill = _skill(name="RecentlyUsed", confidence=SkillConfidence.HIGH, created_at=old_created)
     manager.save_skill(skill)
     # Simulate it having been used
@@ -240,7 +240,7 @@ def test_lifecycle_maintenance_skips_used_skills() -> None:
 def test_lifecycle_maintenance_skips_deprecated_skills() -> None:
     """Maintenance does not double-process already deprecated skills."""
     manager = MemoryManager()
-    old_created = datetime.utcnow() - timedelta(days=60)
+    old_created = datetime.now(timezone.utc) - timedelta(days=60)
     skill = _skill(name="AlreadyDep", confidence=SkillConfidence.LOW, created_at=old_created)
     manager.save_skill(skill)
     manager.deprecate_skill(skill.skill_id)

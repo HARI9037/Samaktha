@@ -48,22 +48,23 @@ async def test_streaming_bridge_emits_structured_tool_event_without_stringifying
 
 
 @pytest.mark.asyncio
-async def test_streaming_bridge_emits_provider_tokens_separately():
+async def test_streaming_bridge_buffers_tokens_and_returns_joined_content():
     queue = asyncio.Queue()
 
     class Streaming:
         async def stream_execute(self, request, context):
-            yield StreamChunk(
-                stream_id="stream",
-                event_type=StreamEventType.TOKEN,
-                content="PDF summary",
-                timestamp=0,
-                sequence_number=1,
-            )
+            for i, piece in enumerate(["PDF", " summary", " of", " NOR.pdf"]):
+                yield StreamChunk(
+                    stream_id="stream",
+                    event_type=StreamEventType.TOKEN,
+                    content=piece,
+                    timestamp=0,
+                    sequence_number=i,
+                )
 
     bridge = _StreamingRuntimeBridge(real_runtime=None, streaming_executor=Streaming(), output_queue=queue)
 
-    await bridge.run(
+    result = await bridge.run(
         RuntimeContext(request_id="test"),
         RuntimeTask(
             task_id="provider-task",
@@ -75,6 +76,6 @@ async def test_streaming_bridge_emits_provider_tokens_separately():
         RoutingDecision(provider_id="mock", model_id="mock-model", reasoning_summary="provider"),
     )
 
-    event = await queue.get()
-
-    assert event == {"type": "provider", "content": "PDF summary"}
+    assert result.status == TaskStatus.COMPLETED
+    assert result.output == {"content": "PDF summary of NOR.pdf"}
+    assert queue.empty()

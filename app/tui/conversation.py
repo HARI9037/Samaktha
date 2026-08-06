@@ -32,12 +32,17 @@ class ConversationWelcome(Widget):
 class ConversationPanel(VerticalScroll):
     """Scrollable conversation display. Supports streaming appends."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.messages: list[ConversationMessage] = []
         self._current_assistant_msg: Optional[ConversationMessage] = None
         self._active_widget: Optional[RenderedMessage] = None
         self._pipeline: Optional[AgentPipelineWidget] = None
+        self._bus: Any = None
+
+    def attach_bus(self, bus: Any) -> None:
+        """Store the RuntimeEventBus and pass to children if needed."""
+        self._bus = bus
 
     def compose(self) -> ComposeResult:
         yield ConversationWelcome()
@@ -139,6 +144,8 @@ class ConversationPanel(VerticalScroll):
         """Appends an inline warning for an approval request."""
         self._dismiss_welcome()
         widget = ConversationRenderer.render_approval(task_id, pause_data)
+        if self._bus and hasattr(widget, "attach_bus"):
+            widget.attach_bus(self._bus)
         self.mount(widget)
         self.app.call_later(self.scroll_end, animate=False)
         

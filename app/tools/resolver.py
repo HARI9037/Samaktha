@@ -38,8 +38,11 @@ class FileResolver:
             if registered_path.exists():
                 return registered_path
             else:
+                # The file was registered but no longer exists on disk.
+                # Remove the stale entry and continue resolving, because the
+                # user might be trying to recreate it, or there might be another
+                # file with the same name in the search directories.
                 self._registry.remove(registered_path)
-                return None
             
         # Search locations for relative paths
         search_dirs = [

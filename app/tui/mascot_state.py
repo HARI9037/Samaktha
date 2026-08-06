@@ -35,7 +35,7 @@ MASCOT_STATE_VISUALS: dict[MascotState, tuple[str, str]] = {
     MascotState.IDLE:             ("🟠", "Idle"),
     MascotState.LISTENING:        ("🟡", "Listening…"),
     MascotState.THINKING:         ("🟠", "Thinking…"),
-    MascotState.SEARCHING_MEMORY: ("🔵", "Searching Memory…"),
+    MascotState.SEARCHING_MEMORY: ("🟠", "Searching Memory…"),
     MascotState.PLANNING:         ("🟡", "Planning…"),
     MascotState.EXECUTING:        ("🟠", "Executing Tools…"),
     MascotState.STREAMING:        ("🟠", "Streaming…"),

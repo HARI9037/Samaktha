@@ -12,7 +12,7 @@ Phase 3.5 adds:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -37,8 +37,8 @@ class SkillRecord(BaseModel):
     description: str
     category: str
     confidence: SkillConfidence
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_used_at: Optional[datetime] = None
     source_plan: str
     source_tasks: list[str] = Field(default_factory=list)

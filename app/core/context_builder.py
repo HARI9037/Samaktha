@@ -28,7 +28,12 @@ no readable text."
 - If the tool returned a valid result, do NOT generate generic ChatGPT-style \
 disclaimers about being unable to access files.
 - Be honest — if the document text is empty or the tool returned an error, \
-say so directly. Do not fabricate content."""
+say so directly. Do not fabricate content.
+- For [INTERNET ... RESULTS] blocks: base your answer ONLY on those verified \
+results, never on your own knowledge of the topic. Cite each claim as [n] \
+matching the numbered results, and finish with a "Sources:" list of the \
+numbered title + URL you actually used. If no result supports an answer, say \
+"I don't have verified information on that." Never invent a source."""
 
 
 class ContextBuilder:
@@ -124,6 +129,39 @@ class ContextBuilder:
                 size = f" ({item.get('size', 0)} bytes)" if not item.get("is_dir") else ""
                 listing_lines.append(f"  {icon} {item.get('name', '?')}{size}")
             return f"[DIRECTORY LISTING — {path}]\n" + "\n".join(listing_lines)
+
+        # Internet search results (Phase 12) — numbered so the LLM can cite [n]
+        if output.get("internet") is True and "results" in output:
+            action = output.get("action", "search")
+            query = str(output.get("query", "?"))
+            lines = [f"[INTERNET {action.upper()} RESULTS — query: {query}]"]
+            if output.get("cached"):
+                lines.append("[Retrieved from cache — retrieved earlier today.]")
+            for index, result in enumerate(output.get("results", []), start=1):
+                title = str(result.get("title", "") or "Untitled")
+                url = str(result.get("url", "") or "")
+                domain = str(result.get("domain", "") or "")
+                confidence = str(result.get("confidence", "unknown"))
+                published = str(result.get("published_at") or "unknown")
+                retrieved = str(result.get("retrieved_at") or "unknown")
+                lines.append(f"[{index}] {title} — {domain} (confidence: {confidence})")
+                lines.append(f"    URL: {url}")
+                lines.append(f"    Published: {published} | Retrieved: {retrieved}")
+                snippet = str(result.get("description", "") or "")
+                if snippet:
+                    lines.append(f"    {snippet[:1000]}")
+            verification = output.get("verification") or {}
+            verdict = str(verification.get("verdict", "unknown"))
+            notes = verification.get("notes") or []
+            lines.append(
+                f"[VERIFICATION] overall confidence: {verdict}"
+                + (
+                    " | " + " | ".join(str(n) for n in notes)
+                    if notes
+                    else ""
+                )
+            )
+            return "\n".join(lines)
 
         # Memory results
         if "memories" in output:

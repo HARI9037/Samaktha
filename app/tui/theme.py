@@ -1,18 +1,18 @@
 """Minimal Phase 6 conversation-first design system."""
 
-SAMAKTHA_ORANGE = "#FF8C00"
-SAMAKTHA_AMBER = "#FFA733"
-SAMAKTHA_BLACK = "#000000"
-SAMAKTHA_TEXT = "#E8E8E8"
-SAMAKTHA_SUCCESS = "#00C96E"
-SAMAKTHA_WARNING = "#FFB300"
-SAMAKTHA_ERROR = "#FF4040"
-SAMAKTHA_DIM = "#777777"
-SAMAKTHA_DIM2 = "#202020"
-SAMAKTHA_SURFACE = "#080808"
-SAMAKTHA_SURFACE2 = "#111111"
-SAMAKTHA_BORDER = "#242424"
-SAMAKTHA_USER_BG = "#000000"
+SAMAKTHA_ORANGE = "#F59E0B"
+SAMAKTHA_AMBER = "#FBBF24"
+SAMAKTHA_HIGHLIGHT = "#FCD34D"
+SAMAKTHA_BLACK = "#0D1117"
+SAMAKTHA_SURFACE = "#161B22"
+SAMAKTHA_BORDER = "#2A2F36"
+SAMAKTHA_TEXT = "#F8FAFC"
+SAMAKTHA_TEXT_SECONDARY = "#94A3B8"
+SAMAKTHA_DIM = "#64748B"
+SAMAKTHA_SUCCESS = "#22C55E"
+SAMAKTHA_WARNING = "#F59E0B"
+SAMAKTHA_ERROR = "#EF4444"
+SAMAKTHA_USER_BG = "#0D1117"
 
 SAMAKTHA_CSS = f"""
 Screen {{
@@ -26,7 +26,7 @@ SamakthaHeader {{
 }}
 
 #header {{
-    height: 4;
+    height: 9;
     width: 1fr;
     padding: 0 2;
     background: {SAMAKTHA_BLACK};
@@ -36,15 +36,15 @@ SamakthaHeader {{
 }}
 
 #header-mascot-cell {{
-    width: 4;
-    height: 2;
+    width: 16;
+    height: 7;
     align: left middle;
 }}
 
 #header-mascot {{
-    width: 3;
+    width: 14;
+    height: 7;
     color: {SAMAKTHA_ORANGE};
-    text-style: bold;
     content-align: left middle;
 }}
 
@@ -71,6 +71,20 @@ SamakthaHeader {{
     width: 1fr;
     padding: 0 2;
     background: {SAMAKTHA_BLACK};
+}}
+
+#runtime-status-bar {{
+    height: 1;
+    width: 1fr;
+    padding: 0 2;
+    background: {SAMAKTHA_BLACK};
+    color: {SAMAKTHA_DIM};
+}}
+
+#runtime-status-bar Label {{
+    width: 1fr;
+    height: 1;
+    color: {SAMAKTHA_DIM};
 }}
 
 #status-panel > Horizontal {{
@@ -255,4 +269,9 @@ StartupScreen {{
 .startup-step-done {{ color: {SAMAKTHA_SUCCESS}; }}
 .startup-step-pending {{ color: {SAMAKTHA_DIM}; }}
 #startup-ready {{ color: {SAMAKTHA_ORANGE}; text-align: center; text-style: bold; margin-top: 1; display: none; }}
+#startup-info-box {{ padding: 1 2; background: transparent; border: none; }}
+.startup-row-label {{ color: {SAMAKTHA_DIM}; }}
+.startup-row-value {{ color: {SAMAKTHA_TEXT}; }}
+.startup-row-done {{ color: {SAMAKTHA_SUCCESS}; }}
+#startup-help {{ color: {SAMAKTHA_DIM}; text-align: center; display: none; }}
 """

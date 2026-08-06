@@ -11,10 +11,10 @@ from app.tui.session_browser import SessionBrowser
 
 def test_theme_colors():
     """Verify theme consistency."""
-    assert SAMAKTHA_ORANGE == "#FF8C00"
-    assert SAMAKTHA_BLACK == "#000000"
-    assert SAMAKTHA_TEXT == "#E8E8E8"
-    assert SAMAKTHA_DIM == "#777777"
+    assert SAMAKTHA_ORANGE == "#F59E0B"
+    assert SAMAKTHA_BLACK == "#0D1117"
+    assert SAMAKTHA_TEXT == "#F8FAFC"
+    assert SAMAKTHA_DIM == "#64748B"
 
 
 @pytest.mark.asyncio

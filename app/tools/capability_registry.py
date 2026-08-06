@@ -9,7 +9,7 @@ Architecture rule: This registry is read-only. Planning logic MUST NOT live here
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 
@@ -68,6 +68,10 @@ class CapabilityRegistry:
         """Return a sorted list of all installed capability domains."""
         return sorted(self._entries.keys())
 
+    def entries(self) -> List[CapabilityEntry]:
+        """Return all installed capability entries (introspection only)."""
+        return list(self._entries.values())
+
     def uninstalled_domains(self) -> List[str]:
         """Return a sorted list of known-but-not-installed domains."""
         return sorted(
@@ -91,7 +95,11 @@ class CapabilityRegistry:
                 CapabilityEntry(
                     domain="filesystem",
                     tool_id="resolver",
-                    description="Local filesystem: read, write, list, move, copy, delete",
+                    description=(
+                        "Local filesystem: read, write, list, move, copy, delete. Write supports .txt, "
+                        ".md, .markdown, .html, .htm, .csv, .docx, .xlsx, .pdf. When an explicit absolute "
+                        "path is supplied by the user, preserve it exactly."
+                    ),
                 ),
                 CapabilityEntry(
                     domain="pdf",
@@ -109,19 +117,79 @@ class CapabilityRegistry:
                     description="Conversation and skill memory search",
                 ),
                 CapabilityEntry(
+                    domain="internet",
+                    tool_id="internet",
+                    description="Governed internet search, news, content fetch, and suggestions",
+                ),
+                CapabilityEntry(
                     domain="windows",
                     tool_id="windows",
                     description="Windows OS: processes, clipboard, terminal",
                 ),
                 CapabilityEntry(
                     domain="terminal",
-                    tool_id="windows",
-                    description="Execute terminal/shell commands (via Windows tool)",
+                    tool_id="shell",
+                    description="Execute terminal/shell commands (ShellTool)",
                 ),
                 CapabilityEntry(
+                    domain="shell",
+                    tool_id="shell",
+                    description="Execute approved shell commands with safety controls",
+                ),
+                CapabilityEntry(
+                    domain="clipboard",
+                    tool_id="clipboard",
+                    description="Read and write the system clipboard",
+                ),
+                CapabilityEntry(
+                    domain="notification",
+                    tool_id="notification",
+                    description="Send local desktop notifications",
+                ),
+CapabilityEntry(
                     domain="document",
                     tool_id="document",
                     description="Document reading, summarization, table extraction, and metadata",
+                ),
+                CapabilityEntry(
+                    domain="reminder",
+                    tool_id="reminder",
+                    description="Personal reminder management with scheduling and notifications",
+                ),
+                CapabilityEntry(
+                    domain="note",
+                    tool_id="notes",
+                    description="Markdown notes with CRUD, search, and voice dictation",
+                ),
+                CapabilityEntry(
+                    domain="task",
+                    tool_id="tasks",
+                    description="Task management with priority, status, due dates, and reminders",
+                ),
+                CapabilityEntry(
+                    domain="contact",
+                    tool_id="contacts",
+                    description="Contact management with CRUD, search, and vCard import/export",
+                ),
+                CapabilityEntry(
+                    domain="calendar",
+                    tool_id="calendar",
+                    description="Local-first calendar with events, conflicts, and recurrence",
+                ),
+                CapabilityEntry(
+                    domain="email",
+                    tool_id="email",
+                    description="Email communication with compose, send, reply, forward, read, search",
+                ),
+                CapabilityEntry(
+                    domain="message",
+                    tool_id="message",
+                    description="Messaging communication with send, reply, history, draft, search",
+                ),
+                CapabilityEntry(
+                    domain="notification",
+                    tool_id="notification",
+                    description="Expanded notification system with desktop, toast, priority, scheduling, grouping",
                 ),
             ]
         )
@@ -130,8 +198,9 @@ class CapabilityRegistry:
 # Known domains that are NOT yet installed.
 # These are used to generate user-facing "Capability not installed" messages.
 _KNOWN_DOMAINS = {
-    "filesystem", "pdf", "image", "memory", "windows", "terminal",
+    "filesystem", "pdf", "image", "memory", "windows", "terminal", "internet",
+    "reminder", "note", "task", "contact", "calendar",
+    "email", "message", "notification",
     # Not yet installed:
-    "email", "calendar", "browser", "git", "spotify", "slack",
-    "notion", "drive", "dropbox", "jira", "github",
+    "sms", "whatsapp", "telegram", "slack", "discord", "webhook", "push",
 }

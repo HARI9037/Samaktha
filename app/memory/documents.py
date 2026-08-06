@@ -16,6 +16,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from app.core.contracts.multimodal import MediaType
+from app.memory.time_utils import normalize_datetime
 
 
 class DocumentRecord(BaseModel):
@@ -72,7 +73,7 @@ class DocumentMemoryStore:
         """List all stored document records, newest first."""
         return sorted(
             self._documents.values(),
-            key=lambda r: r.updated_at,
+            key=lambda r: normalize_datetime(r.updated_at) or r.updated_at,
             reverse=True,
         )
 

@@ -60,16 +60,6 @@ class ModelRouter(Router):
         capability = self._capability_from_request(request)
         candidates = self._registry.candidates(capability)
 
-        # Filter unhealthy providers if health checker is provided
-        if self._health_checker:
-            healthy_candidates = []
-            for candidate in candidates:
-                status = self._health_checker.get_status(candidate.provider_id)
-                # Assume healthy if no status is available yet, or if it's explicitly available
-                if status is None or status.available:
-                    healthy_candidates.append(candidate)
-            candidates = healthy_candidates
-
         # ModelRegistry is authoritative for model capabilities. A model with
         # coding metadata can satisfy a code request even when legacy router
         # registrations only declare their base text capability.
@@ -84,6 +74,8 @@ class ModelRouter(Router):
                 )
             ]
 
+        # Eligibility — a model must satisfy the request constraints (context
+        # window, code/reasoning requirements) before it can be selected.
         if self._model_manager is not None:
             candidates = [
                 candidate
@@ -101,6 +93,34 @@ class ModelRouter(Router):
                     constraints=[f"model_constraints:{capability}"],
                     metadata={"capability": capability},
                 )
+
+        # Health + Cooldown — dead providers and providers cooling down from a
+        # failure are never returned. This participates in routing, never
+        # after it: an unavailable provider can never be selected here.
+        if self._health_checker:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if self._health_checker.is_available(candidate.provider_id)
+            ]
+            if not candidates:
+                self._metrics.record_decision(successful=False)
+                decision = RoutingDecision(
+                    provider_id="",
+                    model_id="",
+                    reasoning_summary=(
+                        "No registered provider is currently available"
+                    ),
+                    constraints=[f"health_constraints:{capability}"],
+                    metadata={"capability": capability},
+                )
+                if context and context.trace:
+                    context.trace.add_event(
+                        source="router",
+                        event_type="provider.selection.completed",
+                        success=False
+                    )
+                return decision
 
         if not candidates:
             self._metrics.record_decision(successful=False)

@@ -3,21 +3,25 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict
 
+from app.fileparsers.writer import write_document
 from app.tools.base import Tool, ToolResult
 from app.tools.document import DocumentTool, is_document_file
 from app.tools.resolver import FileResolver, MultipleMatches
+
+DEFAULT_WRITE_DIR_ENV = "SAMAKTHA_WRITE_DIR"
 
 
 class FileSystemTool(Tool):
     """Tool for local filesystem operations (exists, read, write, list, search, copy, move, delete, mkdir)."""
 
-    def __init__(self, root_dir: str | Path | None = None) -> None:
+    def __init__(self, root_dir: str | Path | None = None, write_dir: str | Path | None = None) -> None:
         if root_dir:
             self._root_dir = Path(root_dir).resolve()
             self._root_dir.mkdir(parents=True, exist_ok=True)
         else:
             self._root_dir = None
         self._resolver = FileResolver(root_dir)
+        self._write_dir = self._resolve_write_dir(write_dir, self._root_dir)
         from app.memory.resources import ResourceRegistry
         self._registry = ResourceRegistry()
         self._document_tool = DocumentTool(root_dir)
@@ -28,6 +32,36 @@ class FileSystemTool(Tool):
 
     def _resolve(self, path_str: str) -> Path | MultipleMatches:
         return self._resolver.resolve(path_str)
+
+    @staticmethod
+    def _resolve_write_dir(write_dir: str | Path | None, root_dir: Path | None) -> Path:
+        """Configured default output directory for relative WRITE paths.
+
+        Priority: explicit argument, then the SAMAKTHA_WRITE_DIR env var, then
+        the sandbox ``root_dir`` when one is set, then the user's Desktop.
+        Relative writes must never silently anchor to the repository root or the
+        current working directory.
+        """
+        configured = write_dir or os.environ.get(DEFAULT_WRITE_DIR_ENV)
+        if configured:
+            target = Path(os.path.expanduser(str(configured))).resolve()
+        elif root_dir is not None:
+            target = root_dir
+        else:
+            target = Path(os.path.expanduser("~/Desktop")).resolve()
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def _resolve_write_path(self, path_str: str) -> Path:
+        """Resolve a path for a WRITE operation.
+
+        Absolute paths are preserved exactly. Relative paths (with or without a
+        directory component) resolve against the configured default output dir.
+        """
+        p = Path(os.path.expanduser(path_str.strip().strip('"').strip("'")))
+        if p.is_absolute():
+            return p.resolve()
+        return (self._write_dir / p).resolve()
 
     async def run(self, arguments: Dict[str, Any]) -> ToolResult:
         action = arguments.get("action", "read")
@@ -45,6 +79,11 @@ class FileSystemTool(Tool):
                     data={"candidates": resolved.candidates}
                 )
             target_path = resolved
+
+            if action in ("write", "write_file"):
+                # Writes must never silently anchor relative paths to the repo
+                # root or cwd; they resolve against the default output dir.
+                target_path = self._resolve_write_path(path_str)
 
             if action == "remember":
                 if not Path(path_str).is_absolute():
@@ -102,9 +141,49 @@ class FileSystemTool(Tool):
 
             elif action in ("write", "write_file"):
                 content = arguments.get("content", "")
+                # Guard: for absolute paths, detect obviously-invalid targets
+                # (e.g. C:/NonExistentTopDir/file.txt) without blocking
+                # legitimate intermediate-directory creation (e.g. writing to
+                # tmp_path/subdir/file.txt where subdir doesn't exist yet).
+                # Strategy: walk up the path ancestors until we find the first
+                # component that does NOT exist.  If that missing component is
+                # a direct child of the drive root (i.e. it has no existing
+                # parent above the drive), the path is invalid; fail clearly.
+                _original_path = Path(os.path.expanduser(path_str.strip().strip('"').strip("'")))
+                if _original_path.is_absolute():
+                    _check = target_path.parent
+                    _first_missing: Path | None = None
+                    while True:
+                        if _check.exists():
+                            break
+                        _first_missing = _check
+                        _parent = _check.parent
+                        if _parent == _check:
+                            # Reached drive root without finding anything real
+                            _first_missing = _check
+                            break
+                        _check = _parent
+                    if _first_missing is not None:
+                        # _check is the deepest existing ancestor.
+                        # If _check is the drive root itself (e.g. C:\) and
+                        # _first_missing is a direct child of the root, the
+                        # top-level directory does not exist → invalid path.
+                        _existing_root = _check
+                        _missing_parent = _first_missing.parent
+                        if _missing_parent == _existing_root and str(_existing_root) == _existing_root.anchor:
+                            return ToolResult(
+                                ok=False,
+                                error=(
+                                    f"Directory does not exist: {target_path.parent}. "
+                                    "Create the directory first, or use a valid path."
+                                ),
+                            )
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                target_path.write_text(content, encoding="utf-8")
-                result = ToolResult(ok=True, data={"path": str(target_path), "written_bytes": len(content)})
+                fmt, written_bytes = write_document(target_path, content)
+                result = ToolResult(
+                    ok=True,
+                    data={"path": str(target_path), "format": fmt, "written_bytes": written_bytes},
+                )
 
             elif action in ("list", "list_directory", "ls", "dir"):
                 if not target_path.exists():
@@ -170,9 +249,11 @@ class FileSystemTool(Tool):
                 result = ToolResult(ok=True, data={"source": str(target_path), "destination": str(dest_path)})
 
             elif action == "delete":
+                if not target_path.exists():
+                    return ToolResult(ok=False, error=f"File or directory not found: {target_path}")
                 if target_path.is_dir():
                     shutil.rmtree(target_path)
-                elif target_path.exists():
+                else:
                     target_path.unlink()
                 result = ToolResult(ok=True, data={"deleted": str(target_path)})
 

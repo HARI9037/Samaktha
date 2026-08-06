@@ -182,6 +182,11 @@ class MemoryVisibilityPolicy:
                     memory_id=view.memory_id,
                     reason=f"{reason}: collapsed into summary",
                     visibility_type=VisibilityType.SUMMARIZE,
+                    content=view.content,
+                    provenance=view.provenance,
+                    session_id=view.session_id,
+                    confidence=view.confidence,
+                    freshness=view.freshness,
                 )
                 for view in allowed
             ]
@@ -192,6 +197,11 @@ class MemoryVisibilityPolicy:
                     memory_id=view.memory_id,
                     reason=reason,
                     visibility_type=VisibilityType.ALLOW,
+                    content=view.content,
+                    provenance=view.provenance,
+                    session_id=view.session_id,
+                    confidence=view.confidence,
+                    freshness=view.freshness,
                 )
                 for view in allowed
             ]

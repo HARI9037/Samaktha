@@ -1,10 +1,22 @@
-"""Phase 9.1 + 9.2 — Samaktha Personality Engine.
+"""Phase 9.1 + 9.2 + 9.3 + 9.4 + 9.5 — Samaktha Personality Engine.
 
 Deterministic vertical slices: identity policy, greeting policy, the
-memory-visibility gate, the engine facade, the structured IdentityProfile,
-and the temporary provider-context adapter.
+memory-visibility gate, the behavior engine, the structured IdentityProfile,
+the dynamic prompt composer, the reflection engine, and the backward-compatible
+provider-context adapter.
 """
 
+from app.personality.behavior import BehaviorEngine
+from app.personality.behavior_features import BehaviorFeatures, extract_features
+from app.personality.behavior_policies import (
+    ChallengePolicyEvaluator,
+    CollaborationPolicyEvaluator,
+    ConfidencePolicyEvaluator,
+    ExplanationPolicyEvaluator,
+    HumorPolicyEvaluator,
+    ReasoningPolicyEvaluator,
+    TonePolicyEvaluator,
+)
 from app.personality.engine import (
     PersonalityEngine,
     SAMAKTHA_IDENTITY_PROFILE,
@@ -12,14 +24,29 @@ from app.personality.engine import (
 )
 from app.personality.greeting import GreetingPolicy
 from app.personality.identity import IdentityPolicy
+from app.personality.intent_engine import (
+    IntentEngine,
+    IntentResult,
+    classify_input,
+    normalize_text,
+)
 from app.personality.memory_visibility import (
     MAX_VISIBLE_MEMORIES,
     MemoryVisibilityPolicy,
     build_summary,
 )
 from app.personality.models import (
+    BehaviorDecision,
+    CapContextView,
+    ChallengePolicy,
+    CollaborationPolicy,
+    ConfidencePolicy,
+    ConversationIntent,
+    ConversationMetadataView,
+    ExplanationPolicy,
     GreetingDecision,
     GreetingKind,
+    HumorPolicy,
     IdentityDecision,
     IdentityIntent,
     IdentityProfile,
@@ -28,8 +55,67 @@ from app.personality.models import (
     MemoryVisibilitySummary,
     PersonalityEvaluation,
     PreferenceCategory,
+    PromptComposition,
+    ReasoningPolicy,
+    TonePolicy,
     VisibilityType,
     VisibleMemory,
+)
+from app.personality.prompt_composer import PromptComposer
+from app.personality.prompt_sections import (
+    BEHAVIOR_HEADER,
+    CONTEXT_HEADER,
+    IDENTITY_HEADER,
+    MEMORY_HEADER,
+    TASK_HEADER,
+    build_behavior_section,
+    build_context_section,
+    build_identity_section,
+    build_memory_section,
+    build_task_section,
+)
+from app.personality.reflection import ReflectionEngine
+from app.personality.reflection_features import (
+    ReflectionFeatures,
+    extract_reflection_features,
+)
+from app.personality.reflection_models import (
+    CompletionStatus,
+    ConversationType,
+    MemoryUsage,
+    ReflectionReport,
+    RiskLevel,
+)
+from app.personality.style_controller import (
+    CANT_DETERMINE_VARIANTS,
+    GOODBYE_VARIANTS,
+    OPENING_CONNECTORS,
+    RECALL_PREAMBLE_VARIANTS,
+    THANKS_VARIANTS,
+    UNCERTAIN_MEMORY_VARIANTS,
+    StyleController,
+)
+from app.personality.response_formatter import (
+    ARCHITECTURE_FALLBACK_TEXT,
+    CANT_DETERMINE_TEXT,
+    COMPARISON_CLOSING,
+    COMPARISON_PREAMBLE,
+    CREATOR_IDENTITY_TEXT,
+    DENIED_BY_USER_TEXT,
+    GOODBYE_TEXT,
+    GREETING_HEY_TEXT,
+    HELP_TEXT,
+    KNOWN_AGENT_FACTS,
+    MEMORY_DELETED_TEXT,
+    NO_COMPARISON_EVIDENCE_TEXT,
+    SAMAKTHA_VERSION,
+    SENSITIVE_OUTPUT_TEXT,
+    THANKS_TEXT,
+    UNCERTAIN_MEMORY_TEXT,
+    UNKNOWN_AGENT_COMPARISON_TEXT,
+    VERSION_TEXT,
+    WHAT_ARE_YOU_TEXT,
+    ResponseFormatter,
 )
 from app.personality.visibility_rules import (
     RULE_DOCUMENT,
@@ -52,6 +138,11 @@ __all__ = [
     "identity_to_provider_context",
     "GreetingPolicy",
     "IdentityPolicy",
+    "IntentEngine",
+    "IntentResult",
+    "classify_input",
+    "normalize_text",
+    "ConversationIntent",
     "GreetingDecision",
     "GreetingKind",
     "IdentityDecision",
@@ -79,4 +170,71 @@ __all__ = [
     "RuleMatch",
     "evaluate_visibility",
     "normalize_item",
+    "BehaviorEngine",
+    "BehaviorDecision",
+    "BehaviorFeatures",
+    "extract_features",
+    "CapContextView",
+    "ConversationMetadataView",
+    "TonePolicy",
+    "ChallengePolicy",
+    "HumorPolicy",
+    "ReasoningPolicy",
+    "ExplanationPolicy",
+    "ConfidencePolicy",
+    "CollaborationPolicy",
+    "TonePolicyEvaluator",
+    "ChallengePolicyEvaluator",
+    "HumorPolicyEvaluator",
+    "ReasoningPolicyEvaluator",
+    "ExplanationPolicyEvaluator",
+    "ConfidencePolicyEvaluator",
+    "CollaborationPolicyEvaluator",
+    "PromptComposer",
+    "PromptComposition",
+    "IDENTITY_HEADER",
+    "BEHAVIOR_HEADER",
+    "CONTEXT_HEADER",
+    "MEMORY_HEADER",
+    "TASK_HEADER",
+    "build_identity_section",
+    "build_behavior_section",
+    "build_context_section",
+    "build_memory_section",
+    "build_task_section",
+    "ReflectionEngine",
+    "ReflectionFeatures",
+    "extract_reflection_features",
+    "ReflectionReport",
+    "ConversationType",
+    "MemoryUsage",
+    "RiskLevel",
+    "CompletionStatus",
+    "ResponseFormatter",
+    "CREATOR_IDENTITY_TEXT",
+    "WHAT_ARE_YOU_TEXT",
+    "HELP_TEXT",
+    "UNCERTAIN_MEMORY_TEXT",
+    "GREETING_HEY_TEXT",
+    "MEMORY_DELETED_TEXT",
+    "DENIED_BY_USER_TEXT",
+    "SENSITIVE_OUTPUT_TEXT",
+    "GOODBYE_TEXT",
+    "THANKS_TEXT",
+    "VERSION_TEXT",
+    "SAMAKTHA_VERSION",
+    "ARCHITECTURE_FALLBACK_TEXT",
+    "CANT_DETERMINE_TEXT",
+    "NO_COMPARISON_EVIDENCE_TEXT",
+    "UNKNOWN_AGENT_COMPARISON_TEXT",
+    "KNOWN_AGENT_FACTS",
+    "COMPARISON_PREAMBLE",
+    "COMPARISON_CLOSING",
+    "StyleController",
+    "UNCERTAIN_MEMORY_VARIANTS",
+    "CANT_DETERMINE_VARIANTS",
+    "RECALL_PREAMBLE_VARIANTS",
+    "GOODBYE_VARIANTS",
+    "THANKS_VARIANTS",
+    "OPENING_CONNECTORS",
 ]

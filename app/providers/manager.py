@@ -1,5 +1,4 @@
 import time
-from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Optional
 
 from app.core.contracts.streaming import StreamChunk, StreamEventType, StreamRequest
@@ -30,7 +29,6 @@ class ProviderManager:
             registry=registry,
             health_checker=self._health_checker,
         )
-        self._cooldowns: dict[str, datetime] = {}
         self._metrics = ProviderMetricsStore()
 
     def resolve_provider(self, provider_id: str) -> Optional[BaseProvider]:
@@ -46,70 +44,131 @@ class ProviderManager:
         request: StreamRequest,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a response incrementally from the provider.
-        
-        Validates the provider exists and supports the required capabilities,
-        then forwards the StreamRequest to the underlying provider.
+
+        Mirrors the ``execute_provider`` fallback policy: the routed provider
+        is always tried first, and on failure it is marked for cooldown and
+        the next healthy provider is tried. The stream only fails when every
+        candidate fails.
         """
-        provider_id = request.provider_id
-        selected = self._registry.get_info(provider_id)
-        if selected is None:
-            raise ValueError(f"Provider '{provider_id}' is not registered.")
-            
-        if not self.get_provider_status(provider_id).available:
-            raise RuntimeError(f"Provider '{provider_id}' is currently unavailable.")
-
-        # Empty capabilities implies unconstrained (legacy). 
-        # If strict capabilities are provided, validate them.
-        if selected.capabilities and request.capabilities:
-            missing = set(request.capabilities) - set(selected.capabilities)
-            if missing:
-                raise ValueError(f"Provider '{provider_id}' missing capabilities: {missing}")
-
-        provider = self._registry.get_provider(provider_id)
-        if provider is None:
-            raise ValueError(f"Provider '{provider_id}' instance not found.")
+        primary_id = request.provider_id
+        if self._registry.get_info(primary_id) is None:
+            raise ValueError(f"Provider '{primary_id}' is not registered.")
 
         stream_id = f"stream-{request.request_id}"
+        sequence_number = 1
         yield StreamChunk(
             stream_id=stream_id,
             event_type=StreamEventType.STARTED,
             content="",
             timestamp=time.time(),
-            sequence_number=1,
-        )
-        stream_payload = {
-            "prompt": request.prompt,
-            "model_id": request.metadata.get("model_id") or self._default_model(selected),
-        }
-        sequence_number = 2
-        async for token in provider.execute_stream(stream_payload):
-            yield StreamChunk(
-                stream_id=stream_id,
-                event_type=StreamEventType.TOKEN,
-                content=token,
-                timestamp=time.time(),
-                sequence_number=sequence_number,
-            )
-            sequence_number += 1
-        yield StreamChunk(
-            stream_id=stream_id,
-            event_type=StreamEventType.COMPLETED,
-            content="",
-            timestamp=time.time(),
             sequence_number=sequence_number,
+            metadata={"provider_id": primary_id},
+        )
+        sequence_number += 1
+
+        candidates = self._candidate_infos(primary_id, request.capabilities)
+        attempted: set[str] = set()
+        last_error: Exception | None = None
+        used_provider = primary_id
+
+        for candidate in candidates:
+            candidate_id = candidate.provider_id
+            if candidate_id in attempted:
+                continue
+            attempted.add(candidate_id)
+            if not self.get_provider_status(candidate_id).available:
+                continue
+            provider = self._registry.get_provider(candidate_id)
+            if provider is None:
+                continue
+
+            stream_payload = {
+                "model_id": request.metadata.get("model_id") or self._default_model(candidate),
+            }
+            if request.messages:
+                stream_payload["messages"] = request.messages
+                stream_payload["prompt"] = request.messages[-1].get("content", "")
+            else:
+                stream_payload["prompt"] = request.prompt
+
+            used_provider = candidate_id
+            try:
+                async for token in provider.execute_stream(stream_payload):
+                    yield StreamChunk(
+                        stream_id=stream_id,
+                        event_type=StreamEventType.TOKEN,
+                        content=token,
+                        timestamp=time.time(),
+                        sequence_number=sequence_number,
+                        metadata={"provider_id": candidate_id},
+                    )
+                    sequence_number += 1
+                yield StreamChunk(
+                    stream_id=stream_id,
+                    event_type=StreamEventType.COMPLETED,
+                    content="",
+                    timestamp=time.time(),
+                    sequence_number=sequence_number,
+                    metadata={"provider_id": candidate_id},
+                )
+                return
+            except Exception as exc:
+                self._mark_cooldown(candidate_id)
+                last_error = exc
+                if not self._settings.fallback_enabled:
+                    break
+
+        if last_error is None:
+            raise RuntimeError(
+                f"Provider '{primary_id}' is currently unavailable."
+            )
+        raise RuntimeError(
+            f"Provider '{used_provider}' stream failed: {last_error}"
         )
 
+    def _candidate_infos(
+        self,
+        provider_id: str,
+        required_capabilities: list[str] | None,
+    ) -> list:
+        """Ordered execution candidates for fallback.
+
+        Single source of truth for both the synchronous and streaming
+        execution paths: the routed provider first, then the remaining
+        registered providers in deterministic registry order. A candidate is
+        eligible when it satisfies the required capabilities; empty capability
+        metadata is legacy/unconstrained registration data and remains
+        executable (mirrors the pre-unification behavior).
+        """
+        selected = self._registry.get_info(provider_id)
+        if selected is None:
+            return []
+        candidates = [selected]
+        if self._settings.fallback_enabled:
+            candidates.extend(
+                provider
+                for provider in self._registry.list_providers()
+                if provider.provider_id != provider_id
+            )
+
+        required = required_capabilities or list(selected.capabilities)
+        return [
+            candidate
+            for candidate in candidates
+            if not candidate.capabilities
+            or set(required).issubset(set(candidate.capabilities))
+        ]
+
     def get_provider_status(self, provider_id: str) -> ProviderStatus:
-        """Inspect provider health using local configuration only."""
-        status = self._health_checker.check(
+        """Inspect provider health using local configuration only.
+
+        Cooldown is applied by the shared health checker, so providers in
+        cooldown are reported unavailable to both selection and execution.
+        """
+        return self._health_checker.check(
             provider_id=provider_id,
             provider=self._registry.get_provider(provider_id),
         )
-        if self._is_in_cooldown(provider_id):
-            status.available = False
-            status.rate_limited = True
-            status.last_error = "Provider is temporarily unavailable"
-        return status
 
     def list_provider_status(self) -> list[ProviderStatus]:
         """List health status for all registered providers."""
@@ -166,26 +225,12 @@ class ProviderManager:
                 finish_reason="unavailable",
             ).model_dump()
 
-        candidates = [selected]
-        if self._settings.fallback_enabled:
-            candidates.extend(
-                provider
-                for provider in self._registry.list_providers()
-                if provider.provider_id != provider_id
-            )
-
-        required = required_capabilities or list(selected.capabilities)
+        candidates = self._candidate_infos(provider_id, required_capabilities)
         final_response: ProviderResponse | None = None
         for candidate in candidates:
             if candidate.provider_id in attempted:
                 continue
             attempted.add(candidate.provider_id)
-            # Empty capability metadata is legacy/unconstrained registration
-            # data. Preserve execution for providers registered that way.
-            if candidate.capabilities and not set(required).issubset(
-                set(candidate.capabilities)
-            ):
-                continue
             if not self.get_provider_status(candidate.provider_id).available:
                 final_response = self._unavailable_response(candidate, model_id)
                 self._metrics.record(candidate.provider_id, final_response)
@@ -208,13 +253,13 @@ class ProviderManager:
                 })
                 response = self._normalize_response(raw, candidate.provider_id, model_id)
                 transient = response.finish_reason in {
-                    "rate_limited", "server_error", "timeout", "unavailable"
+                    "rate_limited", "server_error", "timeout", "unavailable", "http_error"
                 }
                 if response.success or not transient or attempt >= retry_limit:
                     break
             response = response or self._unavailable_response(candidate, model_id)
             self._metrics.record(candidate.provider_id, response)
-            if response.finish_reason in {"rate_limited", "server_error", "timeout", "unavailable"}:
+            if response.finish_reason in {"rate_limited", "server_error", "timeout", "unavailable", "http_error"}:
                 self._mark_cooldown(candidate.provider_id)
             if response.success:
                 return response.model_dump()
@@ -243,16 +288,8 @@ class ProviderManager:
         selected = self._registry.get_info(provider_id)
         if selected is None:
             return
-        required = required_capabilities or list(selected.capabilities)
-        candidates = [selected]
-        if self._settings.fallback_enabled:
-            candidates.extend(
-                info for info in self._registry.list_providers()
-                if info.provider_id != provider_id
-            )
+        candidates = self._candidate_infos(provider_id, required_capabilities)
         for candidate in candidates:
-            if not set(required).issubset(set(candidate.capabilities)):
-                continue
             if not self.get_provider_status(candidate.provider_id).available:
                 continue
             context_error = self._validate_context(candidate, payload, model_id)
@@ -348,18 +385,10 @@ class ProviderManager:
         )
 
     def _mark_cooldown(self, provider_id: str) -> None:
-        self._cooldowns[provider_id] = datetime.now(timezone.utc) + timedelta(
-            seconds=self._settings.cooldown_seconds,
-        )
+        self._health_checker.mark_cooldown(provider_id)
 
     def _is_in_cooldown(self, provider_id: str) -> bool:
-        until = self._cooldowns.get(provider_id)
-        if until is None:
-            return False
-        if until <= datetime.now(timezone.utc):
-            self._cooldowns.pop(provider_id, None)
-            return False
-        return True
+        return self._health_checker.is_in_cooldown(provider_id)
 
     @staticmethod
     def _default_model(provider: ProviderInfo | None) -> str:

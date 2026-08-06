@@ -14,6 +14,9 @@ WRITE_ACTIONS = {"write", "create", "update", "edit", "save", "organize"}
 DELETE_ACTIONS = {"delete", "remove", "destroy"}
 EXECUTE_ACTIONS = {"execute", "run", "shell", "command"}
 NETWORK_ACTIONS = {"send", "email", "post", "request", "upload", "download"}
+# Phase 12 — governed internet intelligence. Any action that reaches the
+# InternetTool is a NETWORK action and therefore HIGH risk (approval required).
+INTERNET_ACTIONS = {"internet", "web_search", "search_web", "fetch_url", "browse"}
 
 
 class PolicyEngine:
@@ -81,6 +84,8 @@ class PolicyEngine:
         if action_type in EXECUTE_ACTIONS:
             permissions.append(PermissionScope.EXECUTE)
         if action_type in NETWORK_ACTIONS:
+            permissions.append(PermissionScope.NETWORK)
+        if action_type in INTERNET_ACTIONS:
             permissions.append(PermissionScope.NETWORK)
         return list(dict.fromkeys(permissions))
 

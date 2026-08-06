@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Protocol
 from uuid import uuid4
@@ -42,8 +42,8 @@ class MemoryItem(BaseModel):
     sensitive: bool = False
     retention_policy: str = "normal"  # "private", "normal", "temporary"
     
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class MemorySearchResult(BaseModel):

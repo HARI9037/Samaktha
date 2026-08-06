@@ -222,8 +222,35 @@ class RenderedToolMessage(RenderedMessage):
         yield Label(display, classes="msg-system", shrink=True, markup=False)
 
 
+from app.core.events import RuntimeEvent, RuntimeEventBus, RuntimeEventType
+from textual.message import Message
+
+class _RuntimeEventReceived(Message):
+    """Fired when a RuntimeEvent is received from the bus."""
+    def __init__(self, event: RuntimeEvent) -> None:
+        self.event = event
+        super().__init__()
+
 class RenderedApprovalMessage(RenderedMessage):
     """Inline approval request indicator."""
+
+    def __init__(self, message: ConversationMessage, **kwargs) -> None:
+        super().__init__(message, **kwargs)
+        self._bus: RuntimeEventBus | None = None
+
+    def attach_bus(self, bus: RuntimeEventBus) -> None:
+        """Subscribe to the RuntimeEventBus."""
+        self._bus = bus
+        self._bus.subscribe(self._on_runtime_event_callback)
+
+    def _on_runtime_event_callback(self, event: RuntimeEvent) -> None:
+        """Called directly by the EventBus from an arbitrary context."""
+        self.post_message(_RuntimeEventReceived(event))
+
+    def on_runtime_event_received(self, message: _RuntimeEventReceived) -> None:
+        """Handle the RuntimeEvent safely on the UI thread."""
+        if message.event.type in (RuntimeEventType.CAP_STARTED, RuntimeEventType.WORKFLOW_SCHEDULED):
+            self.remove()
 
     def compose(self) -> ComposeResult:
         action_text = "CAP Approval Required"

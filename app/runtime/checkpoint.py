@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.core.contracts.state import ExecutionState
 
@@ -13,7 +13,7 @@ class CheckpointStore:
         
     def save_checkpoint(self, state: ExecutionState) -> None:
         """Save a snapshot of the execution state."""
-        state.updated_at = datetime.utcnow()
+        state.updated_at = datetime.now(timezone.utc)
         self._checkpoints[state.execution_id] = state.model_copy(deep=True)
         
     def load_checkpoint(self, execution_id: str) -> ExecutionState | None:

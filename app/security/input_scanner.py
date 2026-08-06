@@ -4,7 +4,6 @@ Detects dangerous patterns, sensitive information, and classifies risk level
 deterministically without ML models.
 """
 import re
-from typing import Optional
 
 from app.core.contracts.security import SecurityDecision, SecurityLevel
 

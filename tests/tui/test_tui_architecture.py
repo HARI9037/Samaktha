@@ -104,7 +104,6 @@ def test_tui_modules_exist():
         "app/tui/theme.py",
         "app/tui/mascot.py",
         "app/tui/header.py",
-        "app/tui/status_panel.py",
         "app/tui/conversation.py",
         "app/tui/input_bar.py",
         "app/tui/startup.py",

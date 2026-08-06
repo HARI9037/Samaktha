@@ -19,6 +19,7 @@ All operations are deterministic and local.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from enum import StrEnum, auto
 from typing import Any
 
@@ -280,7 +281,7 @@ class PreferenceResolver:
         current = meta.get("importance", 0.7)
         meta["importance"] = min(1.0, current + 0.05)
         meta["access_counter"] = meta.get("access_counter", 0) + 1
-        meta["updated_at"] = __import__("datetime").datetime.utcnow().isoformat()
+        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
         meta["last_accessed"] = meta["updated_at"]
         try:
             self._memory_manager.update_memory(item)
@@ -302,7 +303,7 @@ class PreferenceResolver:
             history = []
         history.append({
             "previous": item.content,
-            "updated_at": __import__("datetime").datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         meta["history"] = history
 
@@ -310,7 +311,7 @@ class PreferenceResolver:
         item.content = new_content
         meta["importance"] = min(1.0, meta.get("importance", 0.7) + 0.05)
         meta["access_counter"] = meta.get("access_counter", 0) + 1
-        meta["updated_at"] = __import__("datetime").datetime.utcnow().isoformat()
+        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
         meta["last_accessed"] = meta["updated_at"]
 
         # Merge tags

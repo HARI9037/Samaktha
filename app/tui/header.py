@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Label
+from app.tui.mascot import MascotWidget
 
 
 
@@ -20,7 +21,7 @@ class SamakthaHeader(Widget):
         # We rely on CSS defined in theme.py, particularly #header, #header-mascot-cell, #header-text-cell
         with Horizontal(id="header"):
             with Vertical(id="header-mascot-cell"):
-                yield Label("🔥", id="header-mascot")
+                yield MascotWidget(id="header-mascot")
             with Vertical(id="header-text-cell"):
                 yield Label("Samaktha", id="header-title")
                 yield Label("Local AI Operating System", id="header-subtitle")

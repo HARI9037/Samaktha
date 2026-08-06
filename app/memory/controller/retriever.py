@@ -122,6 +122,22 @@ class _DocumentContextItem:
         }
 
 
+class _PersonalKnowledgeItem:
+    """Wraps a personal productivity entity for the ranking pipeline."""
+
+    def __init__(self, entity: Any, entity_type: str) -> None:
+        self._entity = entity
+        self._entity_type = entity_type
+        self._entity_id = getattr(entity, "id", str(id(entity)))
+        self.content = str(entity)
+        self.id = f"{entity_type}:{self._entity_id}"
+        self.metadata = {
+            "entity_type": entity_type,
+            "importance": 0.3,
+            "memory_type": "personal_knowledge",
+        }
+
+
 # ---------------------------------------------------------------------------
 # Retriever
 # ---------------------------------------------------------------------------
@@ -164,6 +180,7 @@ class MemoryRetriever:
         include_skills: bool = True,
         include_preferences: bool = True,
         include_documents: bool = True,
+        include_personal_knowledge: bool = True,
         top_k: int = 15,
         session_id: str | None = None,
     ) -> list[tuple[Any, float]]:
@@ -174,7 +191,18 @@ class MemoryRetriever:
         list of (item, score) tuples, sorted by combined score descending.
         """
         # Check cache first
-        cache_key = f"{query}:{top_k}:{session_id}"
+        include_flags = "".join(
+            "1" if flag else "0"
+            for flag in (
+                include_recent,
+                include_semantic,
+                include_skills,
+                include_preferences,
+                include_documents,
+                include_personal_knowledge,
+            )
+        )
+        cache_key = f"{query}:{top_k}:{session_id}:{include_flags}"
         cached = self._cache.get_retrieval(cache_key)
         if cached is not None:
             self._cache.record_hit()
@@ -233,10 +261,20 @@ class MemoryRetriever:
                     candidates.append(d)
                     seen_ids.add(did)
 
-        # Stage 6: rank
+        # Stage 6: personal knowledge (reminders, notes, tasks, contacts, calendar)
+        if include_personal_knowledge:
+            knowledge = self._retrieve_personal_knowledge(query)
+            seen_ids = {self._item_id(it) for it in candidates}
+            for k in knowledge:
+                kid = self._item_id(k)
+                if kid not in seen_ids:
+                    candidates.append(k)
+                    seen_ids.add(kid)
+
+        # Stage 7: rank
         ranked = self._ranker.rank(candidates, semantic_scores=semantic_ids)
 
-        # Stage 7: deduplicate by id (safety pass)
+        # Stage 8: deduplicate by id (safety pass)
         deduped = self._deduplicate(ranked)
 
         result = deduped[:top_k]
@@ -253,10 +291,11 @@ class MemoryRetriever:
     def _retrieve_recent(
         self, session_id: str | None = None
     ) -> list[Any]:
-        """Load recent memories from cache (which mirrors ContextMemoryStore)."""
-        cached = self._cache.list_cached_memories()
+        """Load recent memories (newest first) from cache or the store."""
+        cached = [m for m in self._cache.list_cached_memories() if m is not None]
         if cached:
-            return cached[: self._top_k_recent]
+            # Cache is insertion-ordered (oldest first); take the newest N.
+            return list(reversed(cached[-self._top_k_recent:]))
 
         # Fall back to MemoryManager
         items = self._memory_manager.get_recent_context(n=self._top_k_recent)
@@ -267,7 +306,12 @@ class MemoryRetriever:
     def _retrieve_semantic(
         self, query: str
     ) -> tuple[list[Any], dict[str, float]]:
-        """Semantic search via the pluggable engine."""
+        """Semantic search via the pluggable engine.
+
+        Items are materialized from the cache or the full context store so a
+        semantic hit is never dropped merely because it fell outside the
+        recent-memory window.
+        """
         semantic_results = self._semantic.search(query, top_k=self._top_k_semantic)
         semantic_ids: dict[str, float] = {}
         items: list[Any] = []
@@ -277,13 +321,10 @@ class MemoryRetriever:
             # Try cache first
             item = self._cache.get_recent_memory(item_id)
             if item is None:
-                # Load from MemoryManager (searches for it by semantic match)
-                raw = self._memory_manager.get_recent_context(n=100)
-                for r in raw:
-                    if r.id == item_id:
-                        item = r
-                        self._cache.store_recent_memory(r.id, r)
-                        break
+                # Load from the full context store (any recency window)
+                item = self._memory_manager.get_context_item(item_id)
+                if item is not None:
+                    self._cache.store_recent_memory(item_id, item)
             if item is not None:
                 items.append(item)
 
@@ -299,15 +340,16 @@ class MemoryRetriever:
             return []
 
     def _retrieve_preferences(self) -> list[Any]:
-        """Retrieve preference-flagged items from recent memories."""
-        all_items = self._cache.list_cached_memories()
-        if not all_items:
-            all_items = self._memory_manager.get_recent_context(n=50)
-        prefs = []
-        for item in all_items:
-            meta = getattr(item, "metadata", {})
-            if isinstance(meta, dict) and meta.get("memory_type") == "preference":
-                prefs.append(item)
+        """Retrieve preference-flagged items from the full context store.
+
+        Scans all stored items by type (not just the recent-50 window) so a
+        preference written before many unrelated conversations is still found.
+        """
+        prefs = self._memory_manager.get_context_items_by_type(
+            "preference", n=50, allow_private=False
+        )
+        for p in prefs:
+            self._cache.store_recent_memory(self._item_id(p), p)
         return prefs
 
     def _retrieve_documents(self, query: str) -> list[Any]:
@@ -325,6 +367,20 @@ class MemoryRetriever:
             log.warning("MemoryRetriever: document search failed", exc_info=True)
         return []
 
+    def _retrieve_personal_knowledge(self, query: str) -> list[Any]:
+        """Retrieve personal productivity entities (reminders, notes, tasks,
+        contacts, calendar events) for the ranking pipeline."""
+        results: list[Any] = []
+        try:
+            entity_types = ("reminder", "note", "task", "contact", "calendar_event")
+            for entity_type in entity_types:
+                items = self._memory_manager.search_personal_knowledge(entity_type, query)
+                for item in items:
+                    results.append(_PersonalKnowledgeItem(item, entity_type))
+        except Exception:
+            log.debug("MemoryRetriever: personal knowledge search failed", exc_info=True)
+        return results
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -337,6 +393,8 @@ class MemoryRetriever:
             return str(item.skill_id)
         if hasattr(item, "document_id"):
             return str(item.document_id)
+        if hasattr(item, "_entity_type") and hasattr(item, "_entity_id"):
+            return f"{item._entity_type}:{item._entity_id}"
         return str(id(item))
 
     @staticmethod
@@ -369,6 +427,8 @@ class MemoryRetriever:
         items = []
         for item_id, _ in results:
             item = self._cache.get_recent_memory(item_id)
+            if item is None:
+                item = self._memory_manager.get_context_item(item_id)
             if item is not None:
                 items.append(item)
         return items

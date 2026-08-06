@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 
 log = logging.getLogger(__name__)
 
@@ -14,7 +13,6 @@ from app.core.contracts import (
     MessageRole,
     RuntimeContext,
     RuntimeResult,
-    RuntimeTask,
 )
 
 from app.core.contracts.policy import (
@@ -22,17 +20,30 @@ from app.core.contracts.policy import (
     ApprovalRequest,
     PlannedAction,
 )
-from app.core.contracts.planning import ExecutionPlan, PlanTask, PlannerStatus, TaskKind, TaskStatus
+from app.core.contracts.planning import PlannerStatus, TaskKind, TaskStatus
 from app.core.gambit import Planner
 from app.core.orchestrator.metrics import OrchestratorMetricsCollector, OrchestratorMetricsSnapshot
 from app.core.orchestrator.pipeline import PipelineState
+from app.core.orchestrator.tool_response_synthesizer import synthesize_tool_response
 from app.router import Router
 from app.runtime.base import Runtime
 from app.core.contracts.trace import ExecutionTrace
 from app.workflow import WorkflowEngine
 from app.core.orchestrator.pipeline import PipelineEvent
 from app.agent.prompts import CAPABILITY_UNAVAILABLE_MESSAGE
-from typing import Any, Callable, Optional
+from app.conversation import ConversationStateManager
+from app.personality import (
+    IntentEngine,
+    PersonalityEngine,
+    PromptComposer,
+    ReflectionEngine,
+    ResponseFormatter,
+)
+from app.intelligence import IntelligenceManager, LearningEngine, RetrievalEngine
+from app.intelligence.reflection import ReflectionEngine as IntelligenceReflectionEngine
+from app.intelligence.planning import PlanningContext
+from typing import Any, Callable
+import inspect
 
 
 class SamakthaOrchestrator:
@@ -52,6 +63,13 @@ class SamakthaOrchestrator:
         memory_manager: Any = None,
         memory_controller: MemoryController | None = None,
         memory_formation_engine: Any = None,
+        session_manager: Any = None,
+        personality_engine: Any = None,
+        prompt_composer: Any = None,
+        reflection_engine: Any = None,
+        response_formatter: Any = None,
+        intent_engine: Any = None,
+        conversation_state_manager: Any = None,
     ) -> None:
         self._context_engine = context_engine
         self._planner = planner
@@ -67,9 +85,44 @@ class SamakthaOrchestrator:
         self._memory_controller = memory_controller or (
             MemoryController(memory_manager) if memory_manager else None
         )
+        self._session_manager = session_manager
+        # Phase 9 — deterministic personality vertical slice. These engines
+        # never plan, never learn, and never touch storage; they are pure
+        # functions of the request and the retrieved memories.
+        self._personality_engine = personality_engine or PersonalityEngine()
+        self._prompt_composer = prompt_composer or PromptComposer()
+        self._reflection_engine = reflection_engine or ReflectionEngine()
+        # Phase 10C — deterministic final presentation layer. Pure function of
+        # the evaluation and the raw provider output; never plans, never
+        # learns, never touches storage, and never mutates personality state.
+        self._response_formatter = response_formatter or ResponseFormatter()
+        # Phase 11.3 — deterministic conversational-intent classifier. Runs
+        # between the provider output and the formatter so the formatter never
+        # inspects raw text; it switches only on the ConversationIntent.
+        self._intent_engine = intent_engine or IntentEngine()
+        # Phase 11.4 — short-lived per-session working memory + the
+        # deterministic reference resolver that runs before the GoalParser.
+        # It never persists, never learns, and never touches storage.
+        self._conversation_state = conversation_state_manager or ConversationStateManager()
         # Phase 8.2 — autonomous memory formation after each completed interaction.
         self._memory_formation = memory_formation_engine or (
-            MemoryFormationEngine(self._memory_controller)
+            MemoryFormationEngine(
+                self._memory_controller,
+                session_manager=self._session_manager
+            )
+            if self._memory_controller is not None
+            else None
+        )
+        self._intelligence_manager = (
+            IntelligenceManager(
+                retrieval_engine=RetrievalEngine(
+                    self._memory_controller,
+                    session_manager=self._session_manager,
+                ),
+                reflection_engine=IntelligenceReflectionEngine(),
+                learning_engine=LearningEngine(),
+                memory_controller=self._memory_controller,
+            )
             if self._memory_controller is not None
             else None
         )
@@ -82,18 +135,17 @@ class SamakthaOrchestrator:
         """The Phase 8.2 autonomous memory formation engine (or None)."""
         return self._memory_formation
 
+    @property
+    def conversation_state(self) -> Any:
+        """The Phase 11.4 short-lived per-session conversation state manager."""
+        return self._conversation_state
+
     async def run(
         self,
         request: str,
         runtime_context: RuntimeContext,
         conversation: list[ConversationMessage] | None = None,
     ) -> RuntimeResult:
-        try:
-            trace_path = tempfile.gettempdir() + "/samaktha_trace.txt"
-            with open(trace_path, "a", encoding="utf-8") as f:
-                f.write("[TRACE] orchestrator.run\n")
-        except OSError:
-            pass
         state = await self.run_pipeline(
             request=request,
             runtime_context=runtime_context,
@@ -125,8 +177,26 @@ class SamakthaOrchestrator:
                 request=request
             )
 
+        from app.core.events import RuntimeEventBus
+
+        session_id = runtime_context.session_id or "default"
+        if runtime_context.event_bus is None:
+            runtime_context.event_bus = RuntimeEventBus(session_id)
+
+        # Phase 11.4 — resolve conversational references BEFORE the GoalParser
+        # so "Summarize it" deterministically becomes "Summarize profile.pdf".
+        # State observation is restricted to the session's short-lived working
+        # memory; the original request is preserved for memory formation.
+        effective_request = self._conversation_state.resolve(request, session_id).request
+        self._conversation_state.record_command(request, session_id)
+
         # 1. Goal Parser
-        goal = self._planner._goal_parser.parse(request)
+        goal = self._planner._goal_parser.parse(effective_request)
+        self._conversation_state.record_goal(
+            getattr(goal, "intent", None),
+            getattr(goal, "target_path", None),
+            session_id,
+        )
         log.info("Orchestrator: goal intent=%s target_path=%s", goal.intent, goal.target_path)
         
         # 2. Risk Analysis and Policy Evaluation on the User Request Intent
@@ -138,11 +208,26 @@ class SamakthaOrchestrator:
             payload={"intent": goal.intent.value},
             target=goal.target_path,
         )
+        from app.core.events import RuntimeEventType
+        if runtime_context.event_bus:
+            runtime_context.event_bus.publish(
+                RuntimeEventType.CAP_STARTED, "cap", "started",
+                trace_id=runtime_context.request_id,
+                payload={"action": intent_action, "target": goal.target_path}
+            )
+
         policy = self._policy_engine.evaluate(user_action)
         approval = await self._approval_engine.decide(
             ApprovalRequest(action=user_action, policy=policy),
             subject_id=runtime_context.user_id or runtime_context.request_id,
         )
+
+        if runtime_context.event_bus:
+            runtime_context.event_bus.publish(
+                RuntimeEventType.CAP_COMPLETED, "cap", "completed",
+                trace_id=runtime_context.request_id,
+                payload={"decision": approval.decision.value}
+            )
         
         if approval.decision == ApprovalDecision.DENY:
             state.runtime_result = RuntimeResult(
@@ -156,6 +241,7 @@ class SamakthaOrchestrator:
                     "privacy_category": policy.privacy.category.value,
                 },
             )
+            self._format_result_error(state)
             self._metrics.record_pipeline(success=False, governance_blocked=True)
             if runtime_context.trace:
                 runtime_context.trace.add_event(
@@ -175,13 +261,38 @@ class SamakthaOrchestrator:
             )
         )
         
-        # 3b. Retrieve memory context for this request
-        state.memory_context = await self._retrieve_memory_context(request)
-        if state.memory_context:
-            log.info("Orchestrator: memory context retrieved (%d chars)", len(state.memory_context))
+        # 3b. Retrieve candidate memories and run the Phase 9 personality
+        # vertical slice: deterministic visibility gate + behavior engine +
+        # prompt composer. The composed system prompt is the single prompt
+        # source for text-generation tasks.
+        retrieved_items = self._retrieve_memory_items(request)
+        evaluation = self._personality_engine.evaluate(
+            request, retrieved_memories=retrieved_items)
+        composition = self._prompt_composer.compose(evaluation)
+        state.personality_evaluation = evaluation
+        state.prompt_composition = composition
+        log.info(
+            "Orchestrator: personality evaluation — greeting=%s visible=%d/%d",
+            evaluation.greeting.is_greeting,
+            len(evaluation.visible_memories),
+            len(retrieved_items),
+        )
         
         # 4. GAMBIT Planner — with Capability Registry gate
-        planner_result = await self._planner.plan_with_capability_check(request)
+        planning_context = None
+        if self._intelligence_manager is not None:
+            planning_context = self._intelligence_manager.build_planning_context(
+                effective_request,
+                session_id=runtime_context.session_id,
+            )
+
+        if runtime_context.event_bus:
+            runtime_context.event_bus.publish(
+                RuntimeEventType.GAMBIT_PLANNING_STARTED, "gambit", "planning",
+                trace_id=runtime_context.request_id,
+                payload={"request": effective_request[:200]}
+            )
+        planner_result = await self._planner_plan(effective_request, planning_context)
 
         if planner_result.status == PlannerStatus.CAPABILITY_UNAVAILABLE:
             cap_name = (planner_result.required_capability or "unknown").capitalize()
@@ -192,6 +303,7 @@ class SamakthaOrchestrator:
                 error=user_message,
                 metadata={"capability_unavailable": planner_result.required_capability},
             )
+            self._format_result_error(state)
             self._metrics.record_pipeline(success=False)
             return state
 
@@ -200,11 +312,32 @@ class SamakthaOrchestrator:
         log.info("Orchestrator: plan has %d tasks", len(state.execution_plan.tasks))
         for t in state.execution_plan.tasks:
             log.info("Orchestrator: task — id=%s kind=%s tool=%s action=%s args=%s", t.task_id, t.kind, t.metadata.get("tool"), t.metadata.get("action"), t.metadata.get("args"))
+        if runtime_context.event_bus:
+            runtime_context.event_bus.publish(
+                RuntimeEventType.GAMBIT_PLANNING_COMPLETED, "gambit", "completed",
+                trace_id=runtime_context.request_id,
+                payload={"task_count": len(state.execution_plan.tasks), "plan_id": state.execution_plan.plan_id}
+            )
         
-        # 4b. Inject memory context into plan task metadata
-        if state.memory_context:
+        # 4b. Inject the composed deterministic prompt into text-generation
+        # tasks. Tool tasks keep their own deterministic arguments.
+        if composition.system_prompt:
             for t in state.execution_plan.tasks:
-                t.metadata["memory_context"] = state.memory_context
+                if (
+                    t.kind == TaskKind.EXECUTE_VIA_RUNTIME
+                    and t.execution_action_type != "tool"
+                ):
+                    t.metadata["system_prompt"] = composition.system_prompt
+
+        # Session-scoped memory deletion needs the active session id.
+        for t in state.execution_plan.tasks:
+            if (
+                t.metadata.get("tool") == "memory"
+                and t.metadata.get("action") == "delete_session"
+            ):
+                args = t.metadata.setdefault("args", {})
+                if not args.get("session_id"):
+                    args["session_id"] = runtime_context.session_id or ""
         
         # 5. CAP evaluates execution plan tasks
         from app.core.contracts.policy import ExecutionPermit
@@ -218,7 +351,15 @@ class SamakthaOrchestrator:
                     action_str = "write"
                 elif action_str.startswith("list_"):
                     action_str = "list"
-                
+                elif action_str.startswith("delete"):
+                    action_str = "delete"
+
+                # Phase 12 — internet tool tasks are always NETWORK actions:
+                # HIGH risk, approval required, permit attached. The tool
+                # itself refuses to run without the injected permit.
+                if task.metadata.get("tool") == "internet":
+                    action_str = "internet"
+
                 planned_task_action = PlannedAction(
                     action_id=task.task_id,
                     action_type=action_str,
@@ -236,8 +377,18 @@ class SamakthaOrchestrator:
                     decision=task_approval.decision,
                     reasons=task_approval.reasons,
                 ).model_dump()
+                if task.metadata.get("tool") == "internet":
+                    task.metadata.setdefault("args", {})["_cap_permit"] = (
+                        task_approval.decision.value
+                    )
 
         # 6. Workflow Engine
+        if runtime_context.event_bus:
+            runtime_context.event_bus.publish(
+                RuntimeEventType.WORKFLOW_SCHEDULED, "workflow", "scheduled",
+                trace_id=runtime_context.request_id,
+                payload={"plan_id": state.execution_plan.plan_id, "task_count": len(state.execution_plan.tasks)}
+            )
         workflow_result = await self._workflow_engine.execute(
             execution_plan=state.execution_plan,
             runtime=self._runtime,
@@ -249,10 +400,36 @@ class SamakthaOrchestrator:
         state.routing_decision = self._final_routing_decision(workflow_result)
         state.execution_report = workflow_result.execution_report
         log.info("Orchestrator: workflow completed — success=%s errors=%s", workflow_result.success, workflow_result.errors)
+        if runtime_context.event_bus:
+            from app.core.contracts.state import ExecutionStatus
+            is_paused = state.workflow_state and state.workflow_state.status == ExecutionStatus.PAUSED
+            if is_paused:
+                pass  # Do not emit terminal workflow event yet
+            elif workflow_result.success:
+                runtime_context.event_bus.publish(
+                    RuntimeEventType.WORKFLOW_COMPLETED, "workflow", "completed",
+                    trace_id=runtime_context.request_id,
+                    payload={"success": True, "errors": []}
+                )
+            else:
+                runtime_context.event_bus.publish(
+                    RuntimeEventType.WORKFLOW_FAILED, "workflow", "failed",
+                    trace_id=runtime_context.request_id,
+                    payload={"success": False, "errors": workflow_result.errors}
+                )
         
         # 6b. Persist document reads to memory
         if self._memory_manager and workflow_result.outputs:
             await self._persist_documents_to_memory(workflow_result.outputs, request)
+
+        # 6b2. Phase 11.4 — observe runtime outputs into the session's
+        # short-lived working memory (generated text, tool results, search
+        # candidates, errors, active resources).
+        self._conversation_state.record_outputs(workflow_result.outputs, session_id)
+        if state.execution_plan:
+            self._conversation_state.update_state(
+                session_id, last_plan=state.execution_plan.plan_id
+            )
         
         if state.runtime_result and state.runtime_result.output:
             content = state.runtime_result.output.get("content", "")
@@ -264,17 +441,76 @@ class SamakthaOrchestrator:
                     if "governance_reasons" not in state.runtime_result.metadata:
                         state.runtime_result.metadata["governance_reasons"] = []
                     state.runtime_result.metadata["governance_reasons"].extend(privacy.reasons)
-                     
-        # 7. Autonomous memory formation — every completed interaction is
-        # inspected and anything worth remembering is persisted (Phase 8.2).
+                    
+        # 6c. Phase 10C — final presentation layer. Deterministic overrides
+        # (greeting, identity, capabilities, memory recall, deletion,
+        # architecture, version, thanks, goodbye) keyed off the Phase 11.3
+        # conversation intent, plus a leak-proofing sanitize pass, so the API
+        # and the TUI surface the same natural text. Phase 11.6 passes the
+        # session's conversation turn and previous opening through so wording
+        # variation and duplicate-response prevention stay deterministic and
+        # session-aware. Runs before reflection/formation so the stored
+        # interaction is the user-facing text, never internal identifiers.
+        if state.runtime_result is not None and state.runtime_result.status == TaskStatus.COMPLETED:
+            if state.runtime_result.output:
+                content = self._response_content(state.runtime_result.output)
+                intent_result = self._intent_engine.classify_detailed(request)
+                session = self._conversation_state.get_state(session_id)
+                formatted = self._response_formatter.format(
+                    evaluation, content,
+                    conversation_intent=intent_result.intent,
+                    comparison_target=intent_result.comparison_target,
+                    turn=session.conversation_turn,
+                    previous_opening=session.last_opening,
+                    sources=self._internet_sources(workflow_result.outputs),
+                    execution_report=(
+                        workflow_result.execution_report.model_dump()
+                        if workflow_result.execution_report is not None
+                        else None
+                    ),
+                )
+                if formatted:
+                    key = (
+                        "content"
+                        if state.runtime_result.output.get("content")
+                        else "response"
+                    )
+                    state.runtime_result.output[key] = formatted
+                    self._conversation_state.update_state(
+                        session_id,
+                        last_opening=ResponseFormatter.opening_paragraph(formatted),
+                    )
+        # 7. Autonomous memory formation + Phase 9.5 reflection — every
+        # completed interaction is inspected (descriptively) and anything
+        # worth remembering is persisted (Phase 8.2).
         if state.runtime_result and state.runtime_result.output:
             response_content = self._response_content(state.runtime_result.output)
             if response_content:
+                state.reflection_report = self._reflect_after_interaction(
+                    request=request,
+                    response=response_content,
+                    evaluation=evaluation,
+                    composition=composition,
+                )
+                if runtime_context.event_bus:
+                    runtime_context.event_bus.publish(
+                        RuntimeEventType.MEMORY_STARTED, "memory", "started",
+                        trace_id=runtime_context.request_id,
+                    )
                 await self._form_memory_after_interaction(
                     request=request,
                     response=response_content,
                     session_id=runtime_context.session_id,
+                    metadata={"internet_sourced": self._used_internet(workflow_result.outputs)},
+                    execution_report=state.execution_report,
+                    workflow_result=workflow_result,
+                    approval_result=approval if 'approval' in locals() else None,
                 )
+                if runtime_context.event_bus:
+                    runtime_context.event_bus.publish(
+                        RuntimeEventType.MEMORY_COMPLETED, "memory", "completed",
+                        trace_id=runtime_context.request_id,
+                    )
         
         # Check for pause
         from app.core.contracts.state import ExecutionStatus
@@ -287,6 +523,13 @@ class SamakthaOrchestrator:
             )
             if self._event_callback:
                 self._event_callback(event)
+            if runtime_context.event_bus:
+                runtime_context.event_bus.publish(
+                    RuntimeEventType.APPROVAL_REQUESTED, "approval", "requested",
+                    trace_id=runtime_context.request_id,
+                    task_id=state.runtime_result.task_id,
+                    payload={"reason": getattr(state.runtime_result.pause, "reason", "")}
+                )
         
         if state.runtime_result is not None and state.execution_report is not None:
             if runtime_context.trace:
@@ -301,8 +544,25 @@ class SamakthaOrchestrator:
                 event_type="orchestrator.completed",
                 duration_ms=(time.perf_counter() - started_at) * 1000,
             )
+        self._format_result_error(state)
         self._metrics.record_pipeline(success=workflow_result.success)
+        if runtime_context.event_bus:
+            runtime_context.event_bus.publish(
+                RuntimeEventType.SESSION_IDLE, "session", "idle",
+                trace_id=runtime_context.request_id,
+                payload={"session_id": session_id}
+            )
         return state
+
+    async def _planner_plan(self, request: str, planning_context: Any | None):
+        method = getattr(self._planner, "plan_with_capability_check")
+        try:
+            signature = inspect.signature(method)
+            if "planning_context" in signature.parameters:
+                return await method(request, planning_context=planning_context)
+        except Exception:
+            pass
+        return await method(request)
 
     async def resume_pipeline(
         self,
@@ -325,15 +585,36 @@ class SamakthaOrchestrator:
             overrides={task_id: updates}
         )
         
-        # Retrieve memory context for resume
-        if not state.memory_context and self._memory_manager:
-            state.memory_context = await self._retrieve_memory_context(state.request or "")
-        
-        # Inject memory context into each task that doesn't already have it
-        if state.memory_context and state.execution_plan:
+        # Re-run the Phase 9 personality slice only if it was never evaluated.
+        if not state.prompt_composition:
+            retrieved_items = self._retrieve_memory_items(state.request or "")
+            evaluation = self._personality_engine.evaluate(
+                state.request or "", retrieved_memories=retrieved_items)
+            state.personality_evaluation = evaluation
+            state.prompt_composition = self._prompt_composer.compose(evaluation)
+
+        # Inject the composed prompt into tasks that don't already have it.
+        if state.prompt_composition and state.execution_plan:
             for t in state.execution_plan.tasks:
-                if "memory_context" not in t.metadata:
-                    t.metadata["memory_context"] = state.memory_context
+                if (
+                    "system_prompt" not in t.metadata
+                    and t.kind == TaskKind.EXECUTE_VIA_RUNTIME
+                    and t.execution_action_type != "tool"
+                ):
+                    t.metadata["system_prompt"] = (
+                        state.prompt_composition.system_prompt
+                    )
+
+        # Session-scoped memory deletion needs the active session id.
+        if state.execution_plan:
+            for t in state.execution_plan.tasks:
+                if (
+                    t.metadata.get("tool") == "memory"
+                    and t.metadata.get("action") == "delete_session"
+                ):
+                    args = t.metadata.setdefault("args", {})
+                    if not args.get("session_id"):
+                        args["session_id"] = runtime_context.session_id or ""
         
         # Make sure the resume_state is passed to context
         runtime_context.metadata["resume_state"] = state.workflow_state
@@ -349,6 +630,36 @@ class SamakthaOrchestrator:
         state.routing_decision = self._final_routing_decision(workflow_result)
         state.execution_report = workflow_result.execution_report
         
+        if runtime_context.event_bus:
+            from app.core.contracts.state import ExecutionStatus
+            is_paused = state.workflow_state and state.workflow_state.status == ExecutionStatus.PAUSED
+            from app.core.events import RuntimeEventType
+            if is_paused:
+                pass  # Do not emit terminal workflow event yet
+            elif workflow_result.success:
+                runtime_context.event_bus.publish(
+                    RuntimeEventType.WORKFLOW_COMPLETED, "workflow", "completed",
+                    trace_id=runtime_context.request_id,
+                    payload={"success": True, "errors": []}
+                )
+            else:
+                runtime_context.event_bus.publish(
+                    RuntimeEventType.WORKFLOW_FAILED, "workflow", "failed",
+                    trace_id=runtime_context.request_id,
+                    payload={"success": False, "errors": workflow_result.errors}
+                )
+
+        # Phase 11.4 — observe the resumed execution's outputs into the
+        # session's short-lived working memory (same pass as run_pipeline).
+        resume_session_id = runtime_context.session_id or "default"
+        self._conversation_state.record_outputs(
+            workflow_result.outputs, resume_session_id
+        )
+        if state.execution_plan:
+            self._conversation_state.update_state(
+                resume_session_id, last_plan=state.execution_plan.plan_id
+            )
+
         # Apply privacy filter again for newly executed tasks
         if state.runtime_result and state.runtime_result.output:
             content = state.runtime_result.output.get("content", "")
@@ -361,6 +672,40 @@ class SamakthaOrchestrator:
                         state.runtime_result.metadata["governance_reasons"] = []
                     state.runtime_result.metadata["governance_reasons"].extend(privacy.reasons)
                     
+        # 6c. Phase 10C — same deterministic final presentation pass as
+        # run_pipeline, so the resumed interaction surfaces natural text too.
+        if state.runtime_result is not None and state.runtime_result.status == TaskStatus.COMPLETED:
+            if state.runtime_result.output:
+                content = self._response_content(state.runtime_result.output)
+                intent_result = self._intent_engine.classify_detailed(
+                    state.request or ""
+                )
+                session = self._conversation_state.get_state(resume_session_id)
+                formatted = self._response_formatter.format(
+                    state.personality_evaluation, content,
+                    conversation_intent=intent_result.intent,
+                    comparison_target=intent_result.comparison_target,
+                    turn=session.conversation_turn,
+                    previous_opening=session.last_opening,
+                    sources=self._internet_sources(workflow_result.outputs),
+                    execution_report=(
+                        workflow_result.execution_report.model_dump()
+                        if workflow_result.execution_report is not None
+                        else None
+                    ),
+                )
+                if formatted:
+                    key = (
+                        "content"
+                        if state.runtime_result.output.get("content")
+                        else "response"
+                    )
+                    state.runtime_result.output[key] = formatted
+                    self._conversation_state.update_state(
+                        resume_session_id,
+                        last_opening=ResponseFormatter.opening_paragraph(formatted),
+                    )
+
         # Persist document reads + autonomously form memory for the resumed
         # (now completed) interaction (Phase 8.2).
         if self._memory_manager and workflow_result.outputs:
@@ -370,11 +715,32 @@ class SamakthaOrchestrator:
         if state.runtime_result and state.runtime_result.output:
             response_content = self._response_content(state.runtime_result.output)
             if response_content:
+                state.reflection_report = self._reflect_after_interaction(
+                    request=state.request or "",
+                    response=response_content,
+                    evaluation=state.personality_evaluation,
+                    composition=state.prompt_composition,
+                )
+                if runtime_context.event_bus:
+                    from app.core.events import RuntimeEventType
+                    runtime_context.event_bus.publish(
+                        RuntimeEventType.MEMORY_STARTED, "memory", "started",
+                        trace_id=runtime_context.request_id,
+                    )
                 await self._form_memory_after_interaction(
                     request=state.request or "",
                     response=response_content,
                     session_id=runtime_context.session_id,
+                    metadata={"internet_sourced": self._used_internet(workflow_result.outputs)},
+                    execution_report=state.execution_report,
+                    workflow_result=workflow_result,
                 )
+                if runtime_context.event_bus:
+                    from app.core.events import RuntimeEventType
+                    runtime_context.event_bus.publish(
+                        RuntimeEventType.MEMORY_COMPLETED, "memory", "completed",
+                        trace_id=runtime_context.request_id,
+                    )
 
         # Check for pause
         from app.core.contracts.state import ExecutionStatus
@@ -401,6 +767,16 @@ class SamakthaOrchestrator:
                 event_type="orchestrator.resumed",
                 duration_ms=(time.perf_counter() - started_at) * 1000,
             )
+        self._format_result_error(state)
+        
+        if runtime_context.event_bus:
+            from app.core.events import RuntimeEventType
+            resume_session_id = runtime_context.session_id or "default"
+            runtime_context.event_bus.publish(
+                RuntimeEventType.SESSION_IDLE, "session", "idle",
+                trace_id=runtime_context.request_id,
+                payload={"session_id": resume_session_id}
+            )
             
         return state
     
@@ -414,11 +790,14 @@ class SamakthaOrchestrator:
             role=MessageRole.USER, content=request))
         return messages
 
-    async def _retrieve_memory_context(self, request: str) -> str:
-        """Query memory controller for context relevant to this request."""
+    def _retrieve_memory_items(self, request: str) -> list[Any]:
+        """Retrieve candidate memories for the Phase 9 visibility gate.
+
+        Returns raw memory items (not a rendered string); the personality
+        engine decides what is visible and the prompt composer renders it.
+        """
         if not self._memory_controller:
-            return ""
-        parts: list[str] = []
+            return []
         try:
             results = self._memory_controller.retrieve(
                 query=request,
@@ -428,21 +807,33 @@ class SamakthaOrchestrator:
                 include_skills=True,
                 include_preferences=True,
             )
-            for item, score in results:
-                if hasattr(item, "content") and item.content:
-                    prefix = "Relevant" if score > 0.5 else "Recent"
-                    parts.append(f"[{prefix}] {item.content}")
-                elif hasattr(item, "summary") and item.summary:
-                    prefix = "Relevant" if score > 0.5 else "Recent"
-                    text = f"Document: {item.name}\nSummary: {item.summary}"
-                    parts.append(f"[{prefix}] {text}")
-                    log.debug("Orchestrator: injected DocumentRecord into memory_context: %s", item.name)
+            return [item for item, _score in results if item is not None]
         except Exception:
             log.warning("Memory controller retrieval failed", exc_info=True)
-        if parts:
-            log.debug("Orchestrator: memory_context has %d parts", len(parts))
-            return "\n".join(parts)
-        return ""
+            return []
+
+    def _reflect_after_interaction(
+        self,
+        request: str,
+        response: str,
+        evaluation: Any,
+        composition: Any,
+    ) -> Any:
+        """Produce a descriptive reflection report for a completed interaction.
+
+        Phase 9.5 — descriptive only; reflection never influences the
+        conversation and never mutates state.
+        """
+        try:
+            return self._reflection_engine.reflect(
+                message=request,
+                response=response,
+                evaluation=evaluation,
+                prompt_composition=composition,
+            )
+        except Exception:
+            log.warning("Reflection engine failed", exc_info=True)
+            return None
 
     async def _persist_conversation_to_memory(
         self,
@@ -470,6 +861,11 @@ class SamakthaOrchestrator:
         request: str,
         response: str,
         session_id: str | None = None,
+        metadata: dict | None = None,
+        execution_report: Any | None = None,
+        workflow_result: Any | None = None,
+        approval_result: Any | None = None,
+        runtime_summary: str | None = None,
     ) -> None:
         """Run autonomous memory formation for a completed interaction.
 
@@ -477,21 +873,52 @@ class SamakthaOrchestrator:
         any typed memories (preference, project, workflow, tool, knowledge).
         Falls back to legacy conversation persistence when the engine is
         unavailable.
+
+        Phase 12.10 — internet-sourced turns are TRANSIENT: unless the user
+        explicitly asked to remember the content, nothing from an internet
+        interaction may be auto-persisted as a long-term memory.
         """
         if not self._memory_controller:
             return
+        formation_metadata = dict(metadata or {})
         if self._memory_formation is not None:
             try:
                 self._memory_formation.ingest(
                     user_message=request,
                     assistant_response=response,
                     session_id=session_id,
-                    metadata={},
+                    metadata=formation_metadata,
+                    execution_report=execution_report,
+                    workflow_result=workflow_result,
+                    approval_result=approval_result,
+                    runtime_summary=runtime_summary,
                 )
             except Exception:
                 log.warning("Failed to form memories for interaction", exc_info=True)
             return
         await self._persist_conversation_to_memory(request, response)
+
+    @staticmethod
+    def _used_internet(outputs: list[Any]) -> bool:
+        """True when any workflow output came from the InternetTool."""
+        for output in outputs:
+            data = getattr(output, "output", None)
+            if isinstance(data, dict) and data.get("internet") is True:
+                return True
+        return False
+
+    @staticmethod
+    def _internet_sources(outputs: list[Any]) -> list[dict]:
+        """Collect SourceMetadata dicts produced by the InternetTool."""
+        sources: list[dict] = []
+        for output in outputs:
+            data = getattr(output, "output", None)
+            if not isinstance(data, dict) or data.get("internet") is not True:
+                continue
+            collected = data.get("sources") or []
+            if isinstance(collected, list):
+                sources.extend(collected)
+        return sources
 
     @staticmethod
     def _response_content(output: Any) -> str:
@@ -502,7 +929,15 @@ class SamakthaOrchestrator:
         if isinstance(content, str) and content:
             return content
         response = output.get("response", "")
-        return response if isinstance(response, str) else ""
+        if isinstance(response, str) and response:
+            return response
+        return synthesize_tool_response(output)
+
+    def _format_result_error(self, state: PipelineState) -> None:
+        """Replace internal error wording with natural user-facing text."""
+        if state.runtime_result is not None and state.runtime_result.error:
+            state.runtime_result.error = self._response_formatter.format_error(
+                state.runtime_result.error)
 
     async def _persist_documents_to_memory(
         self,
@@ -546,13 +981,6 @@ class SamakthaOrchestrator:
                 log.debug("Stored document in memory: %s (id=%s)", doc_name, stored.document_id)
             except Exception:
                 log.warning("Failed to persist document output to memory", exc_info=True)
-
-    @staticmethod
-    def _select_runtime_plan_task(plan: ExecutionPlan) -> PlanTask:
-        for task in plan.tasks:
-            if task.kind == TaskKind.EXECUTE_VIA_RUNTIME:
-                return task
-        return plan.tasks[0]
 
     @staticmethod
     def _final_runtime_result(workflow_result):

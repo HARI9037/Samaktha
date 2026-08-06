@@ -33,7 +33,8 @@ class StreamRequest(BaseModel):
 
     request_id: str
     provider_id: str
-    prompt: Any  # Could be string, list of messages, etc.
+    prompt: Any = ""  # Fallback for prompt-only providers; messages supersede it.
+    messages: list[dict[str, Any]] | None = None
     capabilities: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

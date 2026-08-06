@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import tempfile
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-from app.core.contracts import ExecutionPlan, RouterRequest, RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask, ApprovedRuntimeTask
+from app.core.contracts import ExecutionPlan, RouterRequest, RoutingDecision, RuntimeContext, RuntimeResult, ApprovedRuntimeTask
 from app.core.contracts.planning import PlanTask, TaskKind, TaskStatus
 from app.core.contracts.workflow import ExecutionGraph, TaskDependency
 from app.core.contracts.policy import ExecutionPermit
@@ -18,12 +17,11 @@ from app.core.contracts.state import ExecutionStatus
 from app.core.context_builder import ContextBuilder
 from app.router.base import Router
 from app.runtime.base import Runtime
-from app.runtime.report import ExecutionReport
+from app.runtime.report import ExecutionReport, ExecutionTruthState
 from app.workflow.models import WorkflowResult, WorkflowTask
 from app.workflow.state import WorkflowState
 from app.workflow.metrics import WorkflowMetricsCollector, WorkflowMetricsSnapshot
 from app.workflow.pause import PauseManager
-from app.core.contracts.pause import ExecutionPause
 
 
 class ParallelWorkflowScheduler:
@@ -72,12 +70,6 @@ class WorkflowEngine:
         context: RuntimeContext | None = None,
     ) -> WorkflowResult:
         log.debug("WorkflowEngine.execute is called. resume_state=%s", context.metadata.get('resume_state') if context else None)
-        try:
-            trace_path = tempfile.gettempdir() + "/samaktha_trace.txt"
-            with open(trace_path, "a", encoding="utf-8") as f:
-                f.write("[TRACE] workflow.execute\n")
-        except OSError:
-            pass
         runtime_context = context or RuntimeContext(
             request_id=execution_plan.plan_id)
             
@@ -107,7 +99,7 @@ class WorkflowEngine:
                 workflow_id=execution_plan.plan_id,
                 status=ExecutionStatus.RUNNING,
                 total_steps=len(tasks),
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
             )
         started = perf_counter()
 
@@ -178,6 +170,18 @@ class WorkflowEngine:
                 state.completed_steps += 1
                 scheduler.mark_completed(result.task_id)
 
+            # Emit TASK_STARTED for all runtime batch tasks
+            if context and context.event_bus:
+                from app.core.events import RuntimeEventType
+                for bt in batch:
+                    context.event_bus.publish(
+                        RuntimeEventType.TASK_STARTED, "workflow", "started",
+                        workflow_id=execution_plan.plan_id,
+                        trace_id=context.request_id if context else None,
+                        task_id=bt.task_id,
+                        payload={"title": bt.title, "kind": bt.kind.value}
+                    )
+
             batch = [
                 task for task in batch
                 if task.kind == TaskKind.EXECUTE_VIA_RUNTIME
@@ -227,6 +231,14 @@ class WorkflowEngine:
                     state.completed_task_ids.add(result.task_id)
                     scheduler.mark_completed(result.task_id)
                     batch_successful += 1
+                    if context and context.event_bus:
+                        context.event_bus.publish(
+                            RuntimeEventType.TASK_COMPLETED, "workflow", "completed",
+                            workflow_id=execution_plan.plan_id,
+                            trace_id=context.request_id if context else None,
+                            task_id=result.task_id,
+                            payload={"duration_ms": result.duration_ms}
+                        )
                     # Collect tool outputs (non-LLM runtime results) for context building
                     wt = workflow_tasks.get(result.task_id)
                     if wt and wt.runtime_task.action_type not in ("text_generation", "provider"):
@@ -245,6 +257,12 @@ class WorkflowEngine:
                                 and rt.task_id not in scheduler.completed_task_ids
                                 and rt.task_id not in scheduler.failed_task_ids
                             ):
+                                system_prompt = rt.inputs.get("system_prompt")
+                                if system_prompt:
+                                    messages = [
+                                        {"role": "system", "content": system_prompt},
+                                        *messages,
+                                    ]
                                 rt.inputs["messages"] = messages
                                 rt.inputs["prompt"] = messages[-1]["content"]
                 elif result.status == TaskStatus.PAUSED:
@@ -274,6 +292,14 @@ class WorkflowEngine:
                     batch_failed += 1
                     if result.error:
                         state.errors.append(result.error)
+                    if context and context.event_bus:
+                        context.event_bus.publish(
+                            RuntimeEventType.TASK_FAILED, "workflow", "failed",
+                            workflow_id=execution_plan.plan_id,
+                            trace_id=context.request_id if context else None,
+                            task_id=result.task_id,
+                            payload={"error": result.error or "unknown"}
+                        )
                 
             log.info("WorkflowEngine: batch result — task_id=%s status=%s error=%s output_keys=%s", result.task_id, result.status, result.error, list(result.output.keys()) if isinstance(result.output, dict) else type(result.output).__name__)
                     
@@ -307,7 +333,7 @@ class WorkflowEngine:
 
         is_success = len(scheduler.failed_task_ids) == 0 and len(blocked_tasks) == 0
         state.status = ExecutionStatus.COMPLETED if is_success else ExecutionStatus.FAILED
-        state.finished_at = datetime.utcnow()
+        state.finished_at = datetime.now(timezone.utc)
         
         duration = (perf_counter() - started) * 1000
         self._metrics.record_execution(success=is_success, duration_ms=duration)
@@ -354,7 +380,7 @@ class WorkflowEngine:
 
     def _fail_workflow(self, state: WorkflowState, error: str, started: float, plan_id: str, context: RuntimeContext | None) -> WorkflowResult:
         state.status = ExecutionStatus.FAILED
-        state.finished_at = datetime.utcnow()
+        state.finished_at = datetime.now(timezone.utc)
         state.errors.append(error)
         duration = (perf_counter() - started) * 1000
         self._metrics.record_execution(success=False, duration_ms=duration)
@@ -389,19 +415,78 @@ class WorkflowEngine:
         blocked_tasks: int,
     ) -> ExecutionReport:
         failed_count = sum(1 for res in state.results if res.status == TaskStatus.FAILED)
+        result_dicts = [
+            result.model_dump() if hasattr(result, "model_dump") else result
+            for result in state.results
+        ]
+        executed_tasks = [
+            str(result.get("task_id"))
+            for result in result_dicts
+            if isinstance(result, dict)
+            and result.get("metadata", {}).get("internal_workflow_task") is None
+            and result.get("status") in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value}
+        ]
+        skipped_tasks = [
+            str(result.get("task_id"))
+            for result in result_dicts
+            if isinstance(result, dict)
+            and result.get("status") == TaskStatus.BLOCKED_BY_DEPENDENCY.value
+        ]
+        tool_results = [
+            result for result in result_dicts
+            if isinstance(result, dict)
+            and result.get("metadata", {}).get("runtime_action_type") == "tool"
+        ]
+        provider_results = [
+            result for result in result_dicts
+            if isinstance(result, dict)
+            and result.get("metadata", {}).get("runtime_action_type") in {"text_generation", "provider", "code_generation"}
+        ]
+        worker_information = [
+            {
+                "task_id": result.get("task_id"),
+                "worker_id": result.get("metadata", {}).get("worker_id"),
+            }
+            for result in result_dicts
+            if isinstance(result, dict) and result.get("metadata", {}).get("worker_id")
+        ]
+        if state.status == ExecutionStatus.PAUSED:
+            execution_state = ExecutionTruthState.WAITING_APPROVAL
+            approval_status = "waiting_approval"
+        elif state.status == ExecutionStatus.COMPLETED:
+            execution_state = ExecutionTruthState.SUCCEEDED
+            approval_status = "approved"
+        elif state.status == ExecutionStatus.FAILED:
+            execution_state = ExecutionTruthState.FAILED
+            approval_status = "blocked" if any("approval" in err.lower() for err in state.errors) else "approved"
+        elif state.status == ExecutionStatus.RUNNING:
+            execution_state = ExecutionTruthState.EXECUTING
+            approval_status = "approved"
+        else:
+            execution_state = ExecutionTruthState.PLANNED
+            approval_status = "unknown"
         return ExecutionReport(
             plan_id=plan_id,
             success=state.status == ExecutionStatus.COMPLETED,
+            execution_state=execution_state,
+            executed_tasks=executed_tasks,
+            skipped_tasks=skipped_tasks,
+            tool_results=tool_results,
+            provider_results=provider_results,
+            approval_status=approval_status,
+            worker_information=worker_information,
+            retry_count=sum(
+                int(result.get("metadata", {}).get("retry_count", 0) or 0)
+                for result in result_dicts
+                if isinstance(result, dict)
+            ),
             started_at=state.started_at,
             finished_at=state.finished_at,
             duration_ms=int((perf_counter() - started) * 1000),
             completed_tasks=state.completed_steps,
             failed_tasks=failed_count,
             blocked_tasks=blocked_tasks,
-            results=[
-                result.model_dump() if hasattr(result, "model_dump") else result
-                for result in state.results
-            ],
+            results=result_dicts,
             errors=list(state.errors),
             metadata={
                 "workflow_id": state.workflow_id,
@@ -458,8 +543,8 @@ class WorkflowEngine:
                             "plan_task_kind": task.kind.value,
                             **task_args,
                         } | (
-                            {"memory_context": task.metadata["memory_context"]}
-                            if task.metadata.get("memory_context")
+                            {"system_prompt": task.metadata["system_prompt"]}
+                            if task.metadata.get("system_prompt")
                             else {}
                         ),
                         dependencies=task.dependencies,

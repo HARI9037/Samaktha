@@ -32,7 +32,8 @@ def _build_mascot_renderable() -> str:
 
         image = Image.open(MASCOT_PATH).convert("RGB")
         thumb = image.resize((12, 7), Image.Resampling.LANCZOS)
-        pixels = list(thumb.getdata())
+        get_pixels = getattr(thumb, "get_flattened_data", thumb.getdata)
+        pixels = list(get_pixels())
         rows: list[str] = []
         for y in range(7):
             row: list[str] = []

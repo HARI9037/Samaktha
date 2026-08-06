@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import uuid
@@ -27,7 +27,7 @@ class ResourceRegistry:
         # Check if it already exists to preserve aliases/created_at
         existing = self._repo.get(key)
         
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         if existing:
             try:
@@ -81,7 +81,7 @@ class ResourceRegistry:
                 abs_path = data.get("absolute_path")
                 if abs_path:
                     # Update last accessed
-                    now = datetime.utcnow()
+                    now = datetime.now(timezone.utc)
                     data["last_accessed"] = now.isoformat()
                     entry.value = json.dumps(data)
                     entry.updated_at = now

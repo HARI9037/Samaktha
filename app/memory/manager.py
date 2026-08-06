@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Optional, Union
 
 from app.core.contracts.memory import MemoryItem, MemoryRecord, MemorySearchResult, MemoryType
@@ -14,6 +14,7 @@ from app.memory.context import ContextMemoryStore
 from app.memory.documents import DocumentMemoryStore, DocumentRecord
 from app.memory.metrics import MemoryMetricsCollector, MemoryMetricsSnapshot
 from app.memory.models import MemoryEntry
+from app.memory.personal_knowledge import PersonalKnowledgeStore
 from app.memory.repository import MemoryRepository
 from app.memory.search import search_entries
 from app.memory.skills import SkillMemoryStore
@@ -65,6 +66,7 @@ class MemoryManager(Memory):
         self._skill_store = SkillMemoryStore()
         self._context_store = ContextMemoryStore()  # Phase 4.5
         self._document_store = DocumentMemoryStore()  # Phase 5.2
+        self._knowledge_store = PersonalKnowledgeStore()  # Phase 14
         self._load_persisted_memories()
 
     def get_metrics(self) -> MemoryMetricsSnapshot:
@@ -82,7 +84,7 @@ class MemoryManager(Memory):
 
     async def write(self, key: str, value: Any, category: str = "internal") -> None:
         self._metrics.record_write()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         stored_category = normalize_category_for_storage(category)
         entry = self._repo.get(key)
         if entry:
@@ -262,17 +264,91 @@ class MemoryManager(Memory):
         """Semantic search over stored MemoryItems."""
         return self._context_store.search_context(query, top_k=top_k, memory_type=memory_type)
 
+    def get_context_item(self, item_id: str) -> MemoryItem | None:
+        """Return a stored context item by ID regardless of recency window.
+
+        Used by the retriever to materialize semantic hits that fall outside
+        the recent-memory window without losing them.
+        """
+        return self._context_store.get(item_id)
+
+    def get_context_items_by_type(
+        self,
+        memory_type: str,
+        n: int | None = None,
+        allow_private: bool = False,
+    ) -> list[MemoryItem]:
+        """Return stored items of a given memory_type, newest first.
+
+        Scans the full store so typed items are found even when they fall
+        outside the recent-memory window.
+        """
+        return self._context_store.get_by_type(memory_type, n=n, allow_private=allow_private)
+
     def delete_memory(self, item_id: str) -> None:
-        """Remove a MemoryItem by ID."""
+        """Remove a MemoryItem by ID.
+
+        Deletion is persistent: the in-memory ContextMemoryStore item and its
+        semantic index entry are removed together with the SQLite ``mem:<id>``
+        row, so the item never returns after a restart.
+        """
         self._context_store.delete_memory(item_id)
+        self._repo.delete(f"mem:{item_id}")
+
+    def delete_memory_by_type(self, memory_type: str) -> int:
+        """Permanently delete every memory item of a given type.
+
+        Matches against the ``memory_type`` metadata value (conversation,
+        preference, workflow, tool, knowledge, system, document, ...).
+        Returns the number of items deleted.
+        """
+        removed = 0
+        items = self._context_store.get_recent_context(n=1000, allow_private=True)
+        for item in items:
+            meta = item.metadata or {}
+            if meta.get("memory_type") == memory_type:
+                self.delete_memory(item.id)
+                removed += 1
+        return removed
+
+    def delete_all_memories(self) -> dict[str, int]:
+        """Permanently delete every persisted memory.
+
+        Removes all SQLite rows (``mem:``, ``doc:``, ``skill:``) plus the
+        in-memory context/document/skill stores and their indexes, so nothing
+        can be re-hydrated on startup. Returns a count per storage family.
+        """
+        counts = {"mem": 0, "doc": 0, "skill": 0}
+        for entry in self._repo.list_all():
+            key = entry.key or ""
+            try:
+                if key.startswith("mem:"):
+                    self._context_store.delete_memory(key[len("mem:"):])
+                    self._repo.delete(key)
+                    counts["mem"] += 1
+                elif key.startswith("doc:"):
+                    doc_id = key[len("doc:"):]
+                    self._document_store.delete(doc_id)
+                    self._repo.delete(key)
+                    counts["doc"] += 1
+                elif key.startswith("skill:"):
+                    skill_id = key[len("skill:"):]
+                    self._skill_store.delete_skill(skill_id)
+                    self._repo.delete(key)
+                    counts["skill"] += 1
+            except Exception:
+                log.debug("MemoryManager: delete_all_memories failed for %s", key, exc_info=True)
+        return counts
 
     def update_memory(self, item: MemoryItem) -> None:
         """Update an existing MemoryItem (upsert)."""
         self._context_store.update_memory(item)
 
-    def get_recent_context(self, n: int = 10) -> list[MemoryItem]:
+    def get_recent_context(
+        self, n: int = 10, allow_private: bool = False
+    ) -> list[MemoryItem]:
         """Return the n most recently stored context items."""
-        return self._context_store.get_recent_context(n)
+        return self._context_store.get_recent_context(n, allow_private=allow_private)
 
     # ------------------------------------------------------------------
     # Document Memory APIs — Phase 5.2
@@ -389,3 +465,7 @@ class MemoryManager(Memory):
                 **entry.metadata,
             },
         )
+
+    def search_personal_knowledge(self, entity_type: str, query: str) -> list[Any]:
+        """Search personal knowledge entities through the knowledge store."""
+        return self._knowledge_store.search(entity_type, query)

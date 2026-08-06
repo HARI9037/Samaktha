@@ -1,5 +1,5 @@
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ class ProviderStatus(BaseModel):
     available: bool
     reachable: bool = False
     rate_limited: bool = False
+    cooldown_until: datetime | None = None
     last_checked: datetime | None = None
     last_error: str | None = None
     failures: int = 0
@@ -40,11 +41,77 @@ class ProviderHealthChecker:
     def __init__(self, settings: Optional[ProviderSettings] = None) -> None:
         self._settings = settings or ProviderSettings()
         self._status_cache: Dict[str, ProviderStatus] = {}
+        self._cooldowns: Dict[str, datetime] = {}
         self._lock = threading.Lock()
 
     def get_status(self, provider_id: str) -> ProviderStatus | None:
         with self._lock:
             return self._status_cache.get(provider_id)
+
+    def is_available(self, provider_id: str) -> bool:
+        """Availability without requiring a provider instance.
+
+        Used by the Router so health and cooldown participate in selection.
+        Uses cached status when present, otherwise a cheap config + cooldown
+        check (never a network call).
+        """
+        status = self.get_status(provider_id)
+        if status is not None:
+            return status.available
+        return (
+            self._is_enabled(provider_id)
+            and self._is_configured(provider_id)
+            and not self.is_in_cooldown(provider_id)
+        )
+
+    def mark_cooldown(self, provider_id: str, seconds: Optional[int] = None) -> None:
+        """Put a provider into cooldown so selection skips it."""
+        seconds = seconds if seconds is not None else self._settings.cooldown_seconds
+        with self._lock:
+            self._cooldowns[provider_id] = datetime.now(timezone.utc) + timedelta(
+                seconds=seconds,
+            )
+
+    def clear_cooldown(self, provider_id: str) -> None:
+        with self._lock:
+            self._cooldowns.pop(provider_id, None)
+
+    def is_in_cooldown(self, provider_id: str) -> bool:
+        with self._lock:
+            until = self._cooldowns.get(provider_id)
+            if until is None:
+                return False
+            if until <= datetime.now(timezone.utc):
+                self._cooldowns.pop(provider_id, None)
+                return False
+            return True
+
+    def cooldown_until(self, provider_id: str) -> datetime | None:
+        with self._lock:
+            until = self._cooldowns.get(provider_id)
+            if until is None:
+                return None
+            if until <= datetime.now(timezone.utc):
+                self._cooldowns.pop(provider_id, None)
+                return None
+            return until
+
+    def cooldown_providers(self) -> list[str]:
+        """Provider ids currently in cooldown (with active timers)."""
+        with self._lock:
+            now = datetime.now(timezone.utc)
+            expired = [
+                provider_id
+                for provider_id, until in self._cooldowns.items()
+                if until <= now
+            ]
+            for provider_id in expired:
+                self._cooldowns.pop(provider_id, None)
+            return [
+                provider_id
+                for provider_id, until in self._cooldowns.items()
+                if until > now
+            ]
 
     def check(
         self,
@@ -54,11 +121,13 @@ class ProviderHealthChecker:
         """Inspect and return the current health status for a provider.
 
         This is a lightweight, synchronous check against cached state and
-        local configuration — it does NOT make network calls.
+        local configuration — it does NOT make network calls. Cooldown is a
+        hard availability gate: a provider in cooldown is never available.
         """
         enabled = self._is_enabled(provider_id)
         configured = provider is not None and self._is_configured(provider_id)
-        available = enabled and configured
+        in_cooldown = self.is_in_cooldown(provider_id)
+        available = enabled and configured and not in_cooldown
 
         reachable = False
         if available and provider is not None:
@@ -72,6 +141,8 @@ class ProviderHealthChecker:
             enabled=enabled,
             configured=configured,
         )
+        if in_cooldown and last_error is None:
+            last_error = "Provider is in cooldown"
         if not reachable and last_error is None:
             last_error = "Provider is currently unreachable"
 
@@ -81,6 +152,8 @@ class ProviderHealthChecker:
                 existing.enabled = enabled
                 existing.configured = configured
                 existing.available = available
+                existing.rate_limited = in_cooldown
+                existing.cooldown_until = self._cooldowns.get(provider_id)
                 existing.last_checked = datetime.now(timezone.utc)
                 if last_error:
                     existing.last_error = last_error
@@ -92,7 +165,8 @@ class ProviderHealthChecker:
                 configured=configured,
                 available=available,
                 reachable=reachable,
-                rate_limited=False,
+                rate_limited=in_cooldown,
+                cooldown_until=self._cooldowns.get(provider_id),
                 last_checked=datetime.now(timezone.utc),
                 last_error=last_error,
             )

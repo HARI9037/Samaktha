@@ -148,7 +148,7 @@ class MemoryController:
         if not decision.allowed:
             log.warning("MemoryController: write_conversation DENIED by security: %s", decision.reason)
             raise PermissionError(decision.reason)
-        return self._writer.write_conversation(
+        item = self._writer.write_conversation(
             content=content,
             session_id=session_id,
             conversation_id=conversation_id,
@@ -156,6 +156,8 @@ class MemoryController:
             importance_kind=importance_kind,
             security_level=security_level,
         )
+        self._cache.clear_retrievals()
+        return item
 
     def _check_write_access(
         self, memory_type: str, security_level: SecurityLevel
@@ -176,7 +178,7 @@ class MemoryController:
         security_level: SecurityLevel = SecurityLevel.LOW,
     ) -> MemoryItem:
         self._check_write_access("document", security_level)
-        return self._writer.write_document(
+        item = self._writer.write_document(
             content=content,
             source_path=source_path,
             doc_name=doc_name,
@@ -185,6 +187,8 @@ class MemoryController:
             importance_kind=importance_kind,
             security_level=security_level,
         )
+        self._cache.clear_retrievals()
+        return item
 
     def write_preference(
         self,
@@ -212,6 +216,7 @@ class MemoryController:
             self._cache.store_recent_memory(resolved.id, resolved)
             log.debug("MemoryController: resolved preference → updated %s", resolved.id)
 
+        self._cache.clear_retrievals()
         return resolved
 
     def write_workflow(
@@ -224,7 +229,7 @@ class MemoryController:
         security_level: SecurityLevel = SecurityLevel.LOW,
     ) -> MemoryItem:
         self._check_write_access("workflow", security_level)
-        return self._writer.write_workflow(
+        item = self._writer.write_workflow(
             content=content,
             workflow_id=workflow_id,
             session_id=session_id,
@@ -232,6 +237,8 @@ class MemoryController:
             success=success,
             security_level=security_level,
         )
+        self._cache.clear_retrievals()
+        return item
 
     def write_tool(
         self,
@@ -242,13 +249,15 @@ class MemoryController:
         security_level: SecurityLevel = SecurityLevel.LOW,
     ) -> MemoryItem:
         self._check_write_access("tool", security_level)
-        return self._writer.write_tool(
+        item = self._writer.write_tool(
             content=content,
             tool_name=tool_name,
             session_id=session_id,
             tags=tags,
             security_level=security_level,
         )
+        self._cache.clear_retrievals()
+        return item
 
     def write_knowledge(
         self,
@@ -259,13 +268,15 @@ class MemoryController:
         security_level: SecurityLevel = SecurityLevel.LOW,
     ) -> MemoryItem:
         self._check_write_access("knowledge", security_level)
-        return self._writer.write_knowledge(
+        item = self._writer.write_knowledge(
             content=content,
             source=source,
             tags=tags,
             importance_kind=importance_kind,
             security_level=security_level,
         )
+        self._cache.clear_retrievals()
+        return item
 
     def write_system(
         self,
@@ -274,11 +285,13 @@ class MemoryController:
         security_level: SecurityLevel = SecurityLevel.LOW,
     ) -> MemoryItem:
         self._check_write_access("system", security_level)
-        return self._writer.write_system(
+        item = self._writer.write_system(
             content=content,
             tags=tags,
             security_level=security_level,
         )
+        self._cache.clear_retrievals()
+        return item
 
     # ------------------------------------------------------------------
     # Retrieval
@@ -364,6 +377,18 @@ class MemoryController:
 
     def delete_by_type(self, memory_type: str) -> int:
         return self._lifecycle.delete_by_type(memory_type)
+
+    def delete_all(self) -> dict[str, int]:
+        """Permanently delete every persisted memory and clear all caches.
+
+        Delegates to MemoryManager.delete_all_memories (SQLite rows + in-memory
+        stores) and drops the retrieval/memory caches so a fresh hydration on
+        restart finds nothing. Returns a count per storage family.
+        """
+        counts = self._memory_manager.delete_all_memories()
+        self._cache.clear_all()
+        log.info("MemoryController: delete_all removed %r", counts)
+        return counts
 
     def promote_memory(
         self, item_id: str, new_importance: float | None = None

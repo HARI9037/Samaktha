@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
@@ -20,7 +20,7 @@ class MetricCategory(str, Enum):
 
 class TelemetryEvent(BaseModel):
     event_id: str = Field(default_factory=lambda: str(uuid4()))
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     category: MetricCategory
     name: str
     value: float
@@ -28,5 +28,5 @@ class TelemetryEvent(BaseModel):
 
 
 class TelemetrySnapshot(BaseModel):
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metrics: dict[str, Any] = Field(default_factory=dict)

@@ -18,7 +18,15 @@ from app.runtime.worker_registry import WorkerRegistry
 from app.runtime.worker_metrics import WorkerMetricsCollector
 from app.runtime.checkpoint import CheckpointStore
 from app.runtime.recovery import RecoveryManager
-from app.runtime.recovery_metrics import RecoveryMetricsCollector
+from app.runtime_parallel import (
+    DependencyResolver,
+    ExecutionGraph,
+    FailureRecoveryEngine,
+    ResourceAllocator,
+    ResultAggregator,
+    RuntimeScheduler,
+    WorkerManager,
+)
 
 class RuntimeExecutionPool:
     """Manages concurrent execution of multiple RuntimeTasks."""
@@ -340,11 +348,39 @@ class RuntimeEngine(Runtime):
         tasks_and_routings: list[tuple[RuntimeTask, RoutingDecision]]
     ) -> list[RuntimeResult]:
         log.debug("RuntimeEngine.run_batch() begins with %s", [t[0].task_id for t in tasks_and_routings])
-        pool = RuntimeExecutionPool(
-            self._dispatcher, 
-            self._metrics, 
-            self._worker_registry, 
-            self._worker_metrics,
-            self._recovery_manager
+        task_ids = {task.task_id for task, _routing in tasks_and_routings}
+        external_dependency_present = any(
+            dep not in task_ids
+            for task, _routing in tasks_and_routings
+            for dep in task.dependencies
         )
-        return await pool.execute_batch(context, tasks_and_routings)
+        if external_dependency_present:
+            pool = RuntimeExecutionPool(
+                self._dispatcher,
+                self._metrics,
+                self._worker_registry,
+                self._worker_metrics,
+                self._recovery_manager,
+            )
+            return await pool.execute_batch(context, tasks_and_routings)
+        graph = ExecutionGraph(
+            task_ids=[task.task_id for task, _routing in tasks_and_routings],
+            dependencies={task.task_id: list(task.dependencies) for task, _routing in tasks_and_routings},
+            parent={task.task_id: (task.dependencies[0] if task.dependencies else None) for task, _routing in tasks_and_routings},
+            children={task.task_id: [] for task, _routing in tasks_and_routings},
+        )
+        for task, _routing in tasks_and_routings:
+            for dep in task.dependencies:
+                graph.children.setdefault(dep, []).append(task.task_id)
+        scheduler = RuntimeScheduler(
+            worker_manager=WorkerManager(),
+            dependency_resolver=DependencyResolver(),
+            result_aggregator=ResultAggregator(),
+            failure_recovery=FailureRecoveryEngine(),
+            resource_allocator=ResourceAllocator(),
+            runtime_executor=self,
+            worker_registry=self._worker_registry,
+            worker_metrics=self._worker_metrics,
+            metrics=self._metrics,
+        )
+        return await scheduler.schedule(context, graph, tasks_and_routings)

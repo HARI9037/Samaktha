@@ -3,8 +3,6 @@
 Provides wrappers around the system clipboard for reading, copying, and pasting.
 """
 
-from typing import Optional
-
 from app.windows import IS_WINDOWS
 
 if IS_WINDOWS:

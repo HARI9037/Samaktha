@@ -136,6 +136,6 @@ def test_existing_orchestrator_execution_still_works() -> None:
         )
 
         assert result.status == TaskStatus.COMPLETED
-        assert result.output == {"response": "Mock provider response"}
+        assert result.output == {"response": "Hey. Good to see you again."}
 
     asyncio.run(run_test())
