@@ -182,3 +182,13 @@ Phase design documents and audit reports live under `docs/` (`PHASE*_*.md`).
 
 - Memory currently relies on keyword/structured retrieval alongside RAG; semantic coverage is expanding.
 - Continuous long-term learning systems are still evolving.
+
+## License
+
+Samaktha is proprietary software.
+
+This repository is publicly available for demonstration, portfolio, transparency, and educational viewing purposes only.
+
+No license is granted to copy, modify, redistribute, or commercially use any part of this project.
+
+Copyright © 2026 Sreehari R Nair. All Rights Reserved.
