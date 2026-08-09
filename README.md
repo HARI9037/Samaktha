@@ -80,6 +80,40 @@ graph TD
 
 ---
 
+## 🖥️ Samaktha in Action
+
+### 1. Human-in-the-Loop Execution
+
+Before a tool operation is performed, CAP can request explicit user approval.
+
+![CAP approval flow](docs/assets/cap-approval.png)
+
+---
+
+### 2. Governed Tool Execution
+
+After approval, Samaktha executes the requested operation and reports the resulting system action.
+
+![Samaktha tool execution](docs/assets/tool-execution.png)
+
+---
+
+### 3. Result on the Local System
+
+The executed operation produces the requested artifact directly on the local Windows system.
+
+![Local tool result](docs/assets/tool-result.png)
+
+---
+
+### 4. Persistent Conversation Memory
+
+Samaktha can retrieve relevant context from previous sessions.
+
+![Persistent conversation memory](docs/assets/memory-retrieval.png)
+
+---
+
 ## 📦 Repository Structure
 
 ```text
