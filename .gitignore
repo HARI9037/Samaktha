@@ -123,8 +123,9 @@ data/temp_*.py
 data/diag_*.py
 
 
-# --- Local Audit Reports -------------------------------------------------------
+# --- Local-only Docs -----------------------------------------------------------
 # Generated for local / AI-tool consumption. Intentionally NOT published to the
 # public repository.
 docs/PROJECT_AUDIT.md
 docs/TECHNICAL_AUDIT.md
+docs/Samaktha_Implementation_Maturity_Checklist.md
