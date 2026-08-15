@@ -46,7 +46,10 @@ ENV/
 # --- Runtime Databases -------------------------------------------------------
 # Auto-generated SQLite databases containing user/runtime data.
 # data/memory.db is created on first run; not required for boot.
+# WAL mode produces -wal/-shm sidecars alongside the database file.
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 *.sqlite
 
@@ -118,3 +121,10 @@ data/*.db
 data/*.log
 data/temp_*.py
 data/diag_*.py
+
+
+# --- Local Audit Reports -------------------------------------------------------
+# Generated for local / AI-tool consumption. Intentionally NOT published to the
+# public repository.
+docs/PROJECT_AUDIT.md
+docs/TECHNICAL_AUDIT.md

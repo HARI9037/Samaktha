@@ -132,3 +132,73 @@ def test_tool_execution_returns_controlled_failure() -> None:
         assert "Tool not found" in result.error
 
     asyncio.run(run_test())
+
+
+def test_tool_result_carries_evidence_metadata() -> None:
+    """P0.6 — tool results must carry tool/action/args evidence so session
+    intelligence can extract tools/files without fabrication."""
+
+    from app.memory.formation.session_builder import SessionBuilder
+    from app.memory.session_models import SessionMetadata
+    from app.runtime.report import ExecutionReport, ExecutionTruthState
+    from app.tools import ToolInfo
+    from app.tools.base import Tool, ToolResult
+
+    class FakeFileTool(Tool):
+        @property
+        def name(self) -> str:
+            return "filesystem"
+
+        async def run(self, arguments: dict) -> ToolResult:
+            return ToolResult(
+                ok=True,
+                data={"action": arguments.get("action"), "path": arguments.get("path")},
+            )
+
+    async def run_test() -> None:
+        tool_registry = ToolRegistry()
+        tool_registry.register(
+            "filesystem",
+            FakeFileTool(),
+            ToolInfo(tool_id="filesystem", description="fs", capabilities=["tool"]),
+        )
+        tool_manager = ToolManager(tool_registry)
+        registry = RuntimeRegistry()
+        registry.register("tool", ToolExecutor(tool_manager))
+        dispatcher = RuntimeDispatcher(registry)
+        engine = RuntimeEngine(dispatcher)
+
+        task = approved_task(
+            task_id="task-tool-evidence",
+            title="Write file",
+            description="Write an evidence file.",
+            action_type="tool",
+            metadata={"tool": "filesystem"},
+            inputs={"action": "write", "path": "/tmp/evidence.py"},
+        )
+
+        result = await engine.run(runtime_context(), task, routing_decision("mock"))
+
+        assert result.status == TaskStatus.COMPLETED
+        assert result.metadata["tool"] == "filesystem"
+        assert result.metadata["action"] == "write"
+        assert result.metadata["args"]["path"] == "/tmp/evidence.py"
+
+        report = ExecutionReport(
+            plan_id="plan-evidence",
+            success=True,
+            execution_state=ExecutionTruthState.SUCCEEDED,
+            tool_results=[result.model_dump()],
+        )
+        metadata = SessionMetadata(
+            session_id="ev-chain",
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+        entries = SessionBuilder.build_history_entries("write file", "done", execution_report=report)
+        metadata = SessionBuilder.update_metadata(metadata, entries, execution_report=report)
+
+        assert "filesystem" in metadata.tools_used
+        assert "/tmp/evidence.py" in metadata.files_created
+
+    asyncio.run(run_test())

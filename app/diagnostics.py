@@ -19,6 +19,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from app.db.config import connect, resolve_database_path
 from app.providers.config import ProviderSettings
 
 
@@ -232,11 +233,13 @@ class SystemDiagnostics:
         else:
             checks.append(DiagnosticCheck("Memory", "Data Dir", DiagnosticStatus.ERROR, "data dir not writable"))
 
-        db_path = data_dir / "memory.db"
+        db_path = resolve_database_path()
         try:
-            conn = sqlite3.connect(str(db_path), timeout=2.0)
-            conn.execute("SELECT 1")
-            conn.close()
+            conn = connect(db_path)
+            try:
+                conn.execute("SELECT 1")
+            finally:
+                conn.close()
             checks.append(DiagnosticCheck("Memory", "SQLite", DiagnosticStatus.OK, str(db_path)))
         except sqlite3.Error as exc:
             checks.append(DiagnosticCheck("Memory", "SQLite", DiagnosticStatus.ERROR, f"unable to open database: {exc}"))

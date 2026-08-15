@@ -15,6 +15,7 @@ from app.tools.base import Tool
 from app.tools.base import ToolResult
 from app.tools.framework.models import ToolPermission
 from app.tools.framework.capabilities import ToolCategory
+from app.tools.storage import delete_row, open_table, rebuild, save
 
 log = logging.getLogger(__name__)
 
@@ -61,13 +62,19 @@ class Note:
 
 
 class NotesStore:
-    """In-memory notes store with markdown persistence."""
+    """Durable notes store: in-memory cache backed by SQLite (P1.1)."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         self._notes: dict[str, Note] = {}
+        self._db = open_table("notes", db_path)
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        rebuild(self._notes, self._db, Note.from_dict)
 
     def create(self, note: Note) -> Note:
         self._notes[note.id] = note
+        save(self._db, note)
         return note
 
     def get(self, note_id: str) -> Note | None:
@@ -84,13 +91,20 @@ class NotesStore:
         if "tags" in kwargs:
             note.tags = kwargs["tags"]
         note.updated_at = datetime.now(timezone.utc)
+        save(self._db, note)
         return note
 
     def delete(self, note_id: str) -> bool:
         if note_id in self._notes:
             del self._notes[note_id]
+            delete_row(self._db, note_id)
             return True
         return False
+
+    def save(self, note: Note) -> None:
+        """Persist a directly-mutated note (e.g. tool-completed flows)."""
+        self._notes[note.id] = note
+        save(self._db, note)
 
     def list_all(self) -> list[Note]:
         return list(self._notes.values())
@@ -133,8 +147,8 @@ class NotesTool(Tool):
         return "notes"
     """Tool for managing notes with markdown storage and search."""
 
-    def __init__(self) -> None:
-        self._store = NotesStore()
+    def __init__(self, db_path: str | None = None) -> None:
+        self._store = NotesStore(db_path=db_path)
         self._capabilities = ["note_create", "note_read", "note_update", "note_delete", "note_search", "note_list"]
 
     @property

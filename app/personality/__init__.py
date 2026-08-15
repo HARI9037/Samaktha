@@ -30,6 +30,15 @@ from app.personality.intent_engine import (
     classify_input,
     normalize_text,
 )
+from app.personality.lifecycle import PersonalityLifecycleManager
+from app.personality.persistence import PersonalityPersistence
+from app.personality.registry import (
+    DEFAULT_PERSONALITY_ID,
+    PersonalityDefinition,
+    PersonalityRegistry,
+    PersonalityValidationError,
+    default_personality_registry,
+)
 from app.personality.memory_visibility import (
     MAX_VISIBLE_MEMORIES,
     MemoryVisibilityPolicy,
@@ -136,6 +145,13 @@ __all__ = [
     "PersonalityEngine",
     "SAMAKTHA_IDENTITY_PROFILE",
     "identity_to_provider_context",
+    "PersonalityLifecycleManager",
+    "PersonalityPersistence",
+    "DEFAULT_PERSONALITY_ID",
+    "PersonalityDefinition",
+    "PersonalityRegistry",
+    "PersonalityValidationError",
+    "default_personality_registry",
     "GreetingPolicy",
     "IdentityPolicy",
     "IntentEngine",

@@ -15,6 +15,7 @@ from app.tools.base import Tool
 from app.tools.base import ToolResult
 from app.tools.framework.models import ToolPermission
 from app.tools.framework.capabilities import ToolCategory
+from app.tools.storage import delete_row, open_table, rebuild, save
 
 log = logging.getLogger(__name__)
 
@@ -69,13 +70,19 @@ class Contact:
 
 
 class ContactsStore:
-    """In-memory contacts store."""
+    """Durable contacts store: in-memory cache backed by SQLite (P1.1)."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         self._contacts: dict[str, Contact] = {}
+        self._db = open_table("contacts", db_path)
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        rebuild(self._contacts, self._db, Contact.from_dict)
 
     def create(self, contact: Contact) -> Contact:
         self._contacts[contact.id] = contact
+        save(self._db, contact)
         return contact
 
     def get(self, contact_id: str) -> Contact | None:
@@ -88,13 +95,20 @@ class ContactsStore:
         for key, value in kwargs.items():
             if hasattr(contact, key):
                 setattr(contact, key, value)
+        save(self._db, contact)
         return contact
 
     def delete(self, contact_id: str) -> bool:
         if contact_id in self._contacts:
             del self._contacts[contact_id]
+            delete_row(self._db, contact_id)
             return True
         return False
+
+    def save(self, contact: Contact) -> None:
+        """Persist a directly-mutated contact."""
+        self._contacts[contact.id] = contact
+        save(self._db, contact)
 
     def list_all(self) -> list[Contact]:
         return list(self._contacts.values())
@@ -130,8 +144,8 @@ class ContactsTool(Tool):
         return "contacts"
     """Tool for managing contacts with CRUD, search, and vCard support."""
 
-    def __init__(self) -> None:
-        self._store = ContactsStore()
+    def __init__(self, db_path: str | None = None) -> None:
+        self._store = ContactsStore(db_path=db_path)
         self._capabilities = ["contact_create", "contact_read", "contact_update", "contact_delete", "contact_search", "contact_list", "contact_lookup", "contact_import", "contact_export"]
 
     @property

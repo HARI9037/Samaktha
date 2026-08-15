@@ -130,18 +130,9 @@ COMPARISON_CLOSING = (
 
 
 def _detect_version() -> str:
-    try:
-        from importlib.metadata import version
+    from app import __version__
 
-        return version("samaktha-core")
-    except Exception:
-        pass
-    try:
-        from app.config.settings import get_settings
-
-        return get_settings().app_version
-    except Exception:
-        return "0.x.x"
+    return __version__
 
 
 SAMAKTHA_VERSION = _detect_version()

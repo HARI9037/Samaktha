@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional, AsyncIterator
 
 from app.voice.config import VoiceConfig
 from app.voice.events import VoiceEvent
+from app.voice.metrics import VoiceMetricsCollector
 from app.voice.microphone import MicrophoneInterface, NullMicrophone, SoundDeviceMicrophone
 from app.voice.speaker import SpeakerInterface, NullSpeaker, SoundDeviceSpeaker
 from app.voice.stt import SpeechToText, NullSpeechToText, FasterWhisperSTT
@@ -28,6 +29,7 @@ from app.voice.streaming_queue import SpeechChunkBuilder, SpeechChunkQueue
 from app.voice.performance import VoicePerformanceReport
 from app.voice.speech_formatter import SpeechFormatter, SpeechEmotion
 from app.voice.personality import PersonalityEngine
+from app.personality.intent_engine import IntentEngine
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +66,7 @@ class VoiceManager:
         vad: Optional[VoiceActivityDetector] = None,
         wakeword: Optional[WakeWordDetector] = None,
         on_event: Optional[Callable[[VoiceEvent, dict], None]] = None,
+        metrics: Optional[VoiceMetricsCollector] = None,
     ) -> None:
         self._config = config
         self._runtime = runtime
@@ -79,6 +82,7 @@ class VoiceManager:
             if local and config.wake_active else NullWakeWordDetector()
         )
         self._on_event = on_event
+        self._metrics = metrics
         self._running = False
         self._ptt_task: asyncio.Task | None = None
         self._wake_diagnostics = WakeDiagnostics()
@@ -86,6 +90,7 @@ class VoiceManager:
         self._active_utterance = False
         self._performance = VoicePerformanceReport()
         self._personality = PersonalityEngine(config.personality_profile)
+        self._intent_engine = IntentEngine()
         self._formatter = SpeechFormatter(
             profile=self._personality,
             expand_numbers=config.expand_numbers,
@@ -115,6 +120,8 @@ class VoiceManager:
             self._running = True
             if self._config.enable_push_to_talk and self._config.microphone_enabled:
                 self._ptt_task = asyncio.create_task(self._poll_push_to_talk())
+            if self._metrics:
+                self._metrics.record_session_started()
             self._emit(VoiceEvent.VOICE_STARTED, {})
         except Exception as exc:
             await self._safe_shutdown()
@@ -129,6 +136,8 @@ class VoiceManager:
         self._vad.stop()
         self._wakeword.disable()
         await self._safe_shutdown()
+        if self._metrics:
+            self._metrics.record_session_stopped()
         self._emit(VoiceEvent.VOICE_STOPPED, {})
 
     async def _safe_shutdown(self) -> None:
@@ -210,6 +219,8 @@ class VoiceManager:
         try:
             result = await self._stt.transcribe(audio)
         except Exception as exc:
+            if self._metrics:
+                self._metrics.record_transcription_error()
             self._emit(VoiceEvent.VOICE_ERROR, {"stage": "stt", "error": self._friendly_error(exc)})
             self._emit(VoiceEvent.VOICE_READY, {})
             return None
@@ -217,7 +228,14 @@ class VoiceManager:
         text = result.text.strip()
         if not text:
             return
-        self._emit(VoiceEvent.VOICE_TRANSCRIBED, {"text": text})
+        # P2.8 — voice → intent: classify the transcript before execution so
+        # the transcribed intent is observable on the VOICE_TRANSCRIBED event
+        # and in the voice metrics.
+        intent = self._intent_engine.classify(text)
+        if self._metrics:
+            self._metrics.record_utterance()
+            self._metrics.record_transcription(intent.value)
+        self._emit(VoiceEvent.VOICE_TRANSCRIBED, {"text": text, "intent": intent.value})
         self._emit(VoiceEvent.VOICE_GENERATING, {})
         response_parts: list[str] = []
         runtime_started = time.monotonic()
@@ -245,6 +263,8 @@ class VoiceManager:
         if self._barge_event.is_set():
             self._performance.interruptions += 1
             self._performance.cancelled_responses += 1
+            if self._metrics:
+                self._metrics.record_cancelled()
             self._emit(VoiceEvent.LISTENING_AGAIN, {})
             seed = self._barge_seed
             self._barge_event.clear()
@@ -253,6 +273,8 @@ class VoiceManager:
         self._emit(VoiceEvent.VOICE_FINISHED, {})
         self._emit(VoiceEvent.VOICE_READY, {})
         self._performance.total_latencies.append(time.monotonic() - response_started)
+        if self._metrics:
+            self._metrics.update_latencies(self._performance)
 
     async def _stream_response(self, text: str, response_parts: list[str], runtime_started: float) -> None:
         """Produce runtime chunks while a separate consumer feeds Piper."""
@@ -326,6 +348,8 @@ class VoiceManager:
                 self._last_barge_at = time.monotonic()
                 self._barge_seed = chunk
                 self._barge_event.set()
+                if self._metrics:
+                    self._metrics.record_interruption()
                 self._emit(VoiceEvent.BARGE_IN, {"latency": time.monotonic() - started})
                 self._emit(VoiceEvent.INTERRUPTING, {})
                 await self.stop_current_speech()
@@ -421,6 +445,8 @@ class VoiceManager:
         return "Voice engine unavailable"
 
     def _emit(self, event: VoiceEvent, data: dict) -> None:
+        if self._metrics:
+            self._metrics.record_event(event.value)
         if self._on_event:
             try:
                 self._on_event(event, data)

@@ -20,6 +20,13 @@ class WorkerManager:
     def lookup(self, worker_id: str) -> ExecutionWorker | None:
         return self.workers.get(worker_id)
 
+    def count(self, status: WorkerLifecycleState) -> int:
+        return sum(1 for worker in self.workers.values() if worker.status == status)
+
+    def active_count(self) -> int:
+        active = {WorkerLifecycleState.CREATED, WorkerLifecycleState.ASSIGNED, WorkerLifecycleState.RUNNING, WorkerLifecycleState.WAITING}
+        return sum(1 for worker in self.workers.values() if worker.status in active)
+
     def cleanup(self) -> None:
         archived = [wid for wid, worker in self.workers.items() if worker.status in {WorkerLifecycleState.COMPLETED, WorkerLifecycleState.FAILED, WorkerLifecycleState.CANCELLED}]
         for wid in archived:

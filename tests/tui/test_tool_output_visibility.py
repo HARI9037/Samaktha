@@ -165,18 +165,27 @@ class TestRuntimeNotModified:
 
 
 class TestTUIAppRouting:
-    """_stream_response and _submit_resume gate tool output."""
+    """Runtime streaming is consolidated into one canonical consumer."""
 
-    def test_stream_response_gates_tool_output(self):
+    def test_canonical_consumer_gates_tool_output(self):
         import inspect
         from app.tui.app import MainScreen
-        src = inspect.getsource(MainScreen._stream_response)
+        src = inspect.getsource(MainScreen._consume_runtime_stream)
         assert "show_tool_output" in src
         assert "conv.append_tool_output(" in src
 
-    def test_submit_resume_gates_tool_output(self):
+    def test_stream_and_resume_delegate_to_canonical_consumer(self):
         import inspect
         from app.tui.app import MainScreen
-        src = inspect.getsource(MainScreen._submit_resume)
-        assert "show_tool_output" in src
-        assert "conv.append_tool_output(" in src
+        for method in (MainScreen._stream_response, MainScreen._submit_resume):
+            src = inspect.getsource(method)
+            assert "_consume_runtime_stream" in src
+
+    def test_tool_output_gate_defined_once(self):
+        """The visibility gate lives in exactly one place in MainScreen."""
+        import inspect
+        from app.tui.app import MainScreen
+        src = inspect.getsource(MainScreen)
+        assert src.count("conv.append_tool_output(") == 1
+        for method in (MainScreen._stream_response, MainScreen._submit_resume):
+            assert "show_tool_output" not in inspect.getsource(method)

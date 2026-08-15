@@ -15,10 +15,14 @@ dependencies = [
     "numpy",
     "openwakeword",
     "docling>=2.15.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "pytesseract>=0.3.10",
 ]
 
 [project.scripts]
 samaktha = "app.cli:main"
+samaktha-plugin = "app.plugins.sdk.cli:main"
 
 [dependency-groups]
 dev = [

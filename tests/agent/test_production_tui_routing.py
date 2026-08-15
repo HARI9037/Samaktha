@@ -6,6 +6,7 @@ from app.agent.production import _StreamingRuntimeBridge
 from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask
 from app.core.contracts.planning import TaskStatus
 from app.core.contracts.streaming import StreamChunk, StreamEventType
+from tests.conftest import approved_task
 
 
 @pytest.mark.asyncio
@@ -66,7 +67,7 @@ async def test_streaming_bridge_buffers_tokens_and_returns_joined_content():
 
     result = await bridge.run(
         RuntimeContext(request_id="test"),
-        RuntimeTask(
+        approved_task(
             task_id="provider-task",
             title="Read",
             description="Read NOR.pdf",

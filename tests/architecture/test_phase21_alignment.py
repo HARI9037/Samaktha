@@ -222,8 +222,22 @@ async def test_api_prefers_normalized_provider_content():
                 output={"content": "normalized content"},
             )
 
+    class _AppState:
+        settings = None
+        http_metrics = None
+
+    class _App:
+        state = _AppState()
+
+    class FakeRequest:
+        app = _App()
+
+        async def is_disconnected(self):
+            return False
+
     response = await execute_request(
         ExecuteRequest(message="hello"),
+        request=FakeRequest(),
         orchestrator=Orchestrator(),
     )
 

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "id": "hello",
+  "name": "Hello Example Plugin",
+  "version": "1.0.0",
+  "kind": "tool",
+  "description": "Example plugin: greets the caller and demonstrates the plugin lifecycle.",
+  "author": "Samaktha Team",
+  "entry": "hello",
+  "capabilities": [
+    { "name": "hello", "description": "Greets the caller." }
+  ],
+  "permissions": [
+    { "scope": "read", "description": "Read-only greeting." }
+  ],
+  "dependencies": []
+}

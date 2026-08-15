@@ -19,6 +19,7 @@ from app.communication.provider import (
     SlackProvider,
     SMTPProvider,
     TelegramProvider,
+    TestProvider,
     WebhookProvider,
     WhatsAppProvider,
 )
@@ -43,6 +44,7 @@ class CommunicationRegistry:
         self.register("webhook", WebhookProvider())
         self.register("push", PushProvider())
         self.register("desktop", DesktopProvider())
+        self.register("test", TestProvider())
 
     def register(self, name: str, provider: CommunicationProvider) -> None:
         self._providers[name.lower()] = provider
@@ -70,7 +72,7 @@ class CommunicationRegistry:
                 results.append(name)
         return results
 
-    def health_check(self) -> dict[str, str]:
+    def health_check(self) -> dict[str, bool]:
         return {name: asyncio.run(provider.health()) for name, provider in self._providers.items()}
 
     def count(self) -> int:

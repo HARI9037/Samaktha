@@ -25,6 +25,7 @@ class CommunicationProvider(str, Enum):
     WEBHOOK = "webhook"
     PUSH = "push"
     DESKTOP = "desktop"
+    TEST = "test"
 
 
 class CommunicationPriority(str, Enum):

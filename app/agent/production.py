@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 from uuid import uuid4
 
@@ -20,6 +22,7 @@ from typing import Callable
 
 
 from app.runtime.base import Runtime
+from app.runtime.governance import enforce_cap_permit
 from app.runtime.payload import build_provider_messages
 
 
@@ -75,6 +78,18 @@ class _StreamingRuntimeBridge(Runtime):
                 else:
                     await queue.put({"type": "tool", "content": result.output, "action": action})
             return result
+
+        # Provider tasks stream through this bridge directly, so the CAP
+        # permit gate must be enforced here rather than in the real runtime.
+        started_at = datetime.now(timezone.utc)
+        blocked = enforce_cap_permit(
+            task,
+            routing,
+            started_at=started_at,
+            duration_ms=0.0,
+        )
+        if blocked is not None:
+            return blocked
 
         prompt = task.inputs.get("prompt", task.description)
         request = StreamRequest(
@@ -140,6 +155,8 @@ class ProductionAgentRuntime:
             memory_controller=getattr(self._base, "memory_controller", None),
             session_manager=getattr(self._base, "session_manager", None),
             conversation_state_manager=getattr(self._base, "conversation_state_manager", None),
+            security_scanner=getattr(self._base, "input_scanner", None),
+            security_output_filter=getattr(self._base, "output_filter", None),
         )
 
     def get_event_bus(self, session_id: str) -> "RuntimeEventBus":
@@ -148,6 +165,22 @@ class ProductionAgentRuntime:
         if session_id not in self._event_buses:
             self._event_buses[session_id] = RuntimeEventBus(session_id)
         return self._event_buses[session_id]
+
+    async def start(self) -> None:
+        """Start the shared reminder scheduler (idempotent)."""
+        scheduler = getattr(self._base, "reminder_scheduler", None)
+        if scheduler is not None and inspect.iscoroutinefunction(
+            getattr(scheduler, "start", None)
+        ):
+            await scheduler.start()
+
+    async def stop(self) -> None:
+        """Gracefully stop the shared reminder scheduler."""
+        scheduler = getattr(self._base, "reminder_scheduler", None)
+        if scheduler is not None and inspect.iscoroutinefunction(
+            getattr(scheduler, "stop", None)
+        ):
+            await scheduler.stop()
 
     def _orchestrator_event_handler(self, event: PipelineEvent) -> None:
         if event.type == "pause_requested" and self._event_callback:
@@ -164,6 +197,7 @@ class ProductionAgentRuntime:
         self, session_id: str, user_input: str
     ) -> AsyncGenerator[Any, None]:
         output_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        await self.start()
         context = RuntimeContext(
             request_id=f"tui-{uuid4().hex}",
             session_id=session_id,

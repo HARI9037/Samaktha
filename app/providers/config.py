@@ -10,11 +10,12 @@ _PRODUCTION_PROVIDERS = ("openai", "groq", "openrouter", "local")
 
 
 class ProviderStartupError(RuntimeError):
-    """Raised when provider configuration prevents production startup.
+    """Raised when provider configuration prevents production execution.
 
-    Production startup must fail loudly rather than silently degrade to a
-    development provider. The message is written to be shown to the user
-    verbatim.
+    Provider credentials are optional at composition time so ``create_app``
+    and ``/health`` remain available without keys. Missing configuration
+    surfaces as a clean execution-time error instead of a startup failure.
+    The message is written to be shown to the user verbatim.
     """
 
 
@@ -57,8 +58,9 @@ class ProviderSettings(BaseSettings):
     default_model: str = ""
     max_output_tokens: int = 1024
 
-    # NOTE: There is intentionally NO model_post_init downgrade. An
-    # unconfigured default provider aborts startup (see validate_startup).
+    # NOTE: There is intentionally NO model_post_init downgrade. Provider
+    # availability is enforced by the orchestrator's execution-time gate
+    # (see ``_ensure_provider_available``), not at application construction.
 
     def is_provider_enabled(self, provider_id: str) -> bool:
         """True when the provider's enable flag is set."""
@@ -102,10 +104,12 @@ class ProviderSettings(BaseSettings):
         ]
 
     def validate_startup(self) -> None:
-        """Fail loudly when the default provider cannot serve production.
+        """Validate the default provider for production service.
 
-        Never silently switches providers. An unconfigured or disabled
-        default provider aborts startup with a clear, actionable message.
+        Raises ``ProviderStartupError`` when the default provider cannot
+        serve production. Never silently switches providers. Retained as an
+        explicit diagnostic; application construction no longer calls it
+        automatically so unconfigured installs remain reachable.
         """
         if not self.default_provider:
             raise ProviderStartupError("No production provider is configured.")
@@ -136,8 +140,9 @@ class ProviderSettings(BaseSettings):
     def validate_production(self) -> None:
         """Ensure at least one real provider exists outside dev mode.
 
-        Production startup never silently includes the mock provider. If no
-        real provider is configured and dev mode is off, startup aborts.
+        Never silently includes the mock provider. Used by the orchestrator's
+        execution-time gate and directly tested; application construction
+        does not depend on it.
         """
         if self.configured_production_providers() or self.mock_allowed():
             return

@@ -24,6 +24,7 @@ class TaskStatus(StrEnum):
     PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class TaskKind(StrEnum):

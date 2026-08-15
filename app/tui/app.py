@@ -12,6 +12,7 @@ from typing import Any, Dict
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
+from textual.widgets import Button
 
 from app.agent.models import AgentEvent
 from app.config.settings import get_settings
@@ -23,6 +24,7 @@ from app.tui.header import SamakthaHeader
 from app.tui.input_bar import InputBar
 from app.tui.startup import StartupScreen
 from app.tui.status_bar import StatusBar
+from app.tui.status_panel import StatusPanel
 from app.tui.theme import SAMAKTHA_CSS
 from app.tui.timeline import TimelinePanel
 from app.tui.feedback import AgentEventLog
@@ -71,6 +73,7 @@ class MainScreen(Screen):
     def compose(self) -> ComposeResult:
         yield SamakthaHeader()
         yield ConversationPanel(id="conversation")
+        yield StatusPanel(id="voice-status-panel")
         yield StatusBar(id="runtime-status-bar")
         yield InputBar(on_submit=self._handle_user_input, id="input-bar")
         yield NotificationHost(id="notification-host")
@@ -178,7 +181,12 @@ class MainScreen(Screen):
         self.app.push_screen(CommandPalette(registry=self._cmd_registry), check_command)
 
     def action_reload_session(self) -> None:
-        pass # To be implemented fully
+        """Reload the active session's persisted state and refresh history."""
+        self._save_current_session()
+        router = getattr(self.app, "command_router", None)
+        if router is None or not hasattr(router, "reload_session"):
+            return
+        self._apply_command_result(router.reload_session(self._active_session_id))
 
     def action_show_memory(self) -> None:
         self.app.push_screen(MemoryInspector())
@@ -220,7 +228,10 @@ class MainScreen(Screen):
             self.app.call_from_thread(self._dispatch_voice_event, event, data)
 
     def _dispatch_voice_event(self, event: VoiceEvent, data: Dict[str, Any]) -> None:
-        pass # Removed StatusPanel
+        try:
+            self.query_one("#voice-status-panel", StatusPanel).update_voice_event(event, data)
+        except Exception:
+            pass
 
     def _dispatch_event(self, event: AgentEvent, data: Dict[str, Any]) -> None:
         notifs = self.query_one("#notification-host", NotificationHost)
@@ -366,7 +377,7 @@ class MainScreen(Screen):
             self.app.exit()
             return
 
-        if action in ("new_session", "delete_session", "switch_session"):
+        if action in ("new_session", "delete_session", "switch_session", "reload_session"):
             session_id = result.payload.get("session_id")
             if session_id:
                 self._active_session_id = session_id
@@ -422,54 +433,75 @@ class MainScreen(Screen):
             router.save_active_session(self._active_session_id, self._message_count)
 
     async def _stream_response(self, text: str) -> None:
-        """Streams the AgentRuntime response into the conversation panel."""
-        conv = self.query_one("#conversation", ConversationPanel)
-        input_bar = self.query_one("#input-bar", InputBar)
+        """Stream the AgentRuntime response into the conversation panel."""
+        if self._runtime is None:
+            await self._consume_demo_response(text)
+            return
+        session_id = self._active_session_id or "default"
+        await self._consume_runtime_stream(
+            self._runtime.handle_message(session_id, text), "Provider error"
+        )
 
+    async def _consume_demo_response(self, text: str) -> None:
+        """Stream a canned echo when no runtime is attached (demo mode)."""
+        conv = self.query_one("#conversation", ConversationPanel)
+        conv.hide_typing_indicator()
+        conv.append_assistant_start()
+        demo_text = f"[Demo mode] Echo: {text}"
+        for char in demo_text:
+            conv.append_stream_token(char)
+            await asyncio.sleep(0.01)
+        conv.append_assistant_end()
+        self._restore_input_bar()
+
+    async def _consume_runtime_stream(self, stream, error_prefix: str) -> None:
+        """Canonical consumer for runtime item streams.
+
+        Handles provider/tool/error items from both ``handle_message`` and
+        ``resume``, applies the tool-output visibility gate once, and always
+        restores the input bar when the stream ends or fails.
+        """
+        conv = self.query_one("#conversation", ConversationPanel)
+        started = False
         try:
-            if self._runtime is not None:
-                session_id = self._active_session_id or "default"
-                started = False
-                async for item in self._runtime.handle_message(session_id, text):
-                    if isinstance(item, dict):
-                        etype = item.get("type")
-                        content = item.get("content", "")
-                        
-                        if etype == "provider":
-                            if not started:
-                                conv.hide_typing_indicator()
-                                conv.append_assistant_start()
-                                started = True
-                                
-                            conv.append_stream_token(content)
-                        elif etype == "tool":
-                            conv.hide_typing_indicator()
-                            action = item.get("action")
-                            settings = get_settings()
-                            if settings.debug or (hasattr(settings, 'show_tool_output') and settings.show_tool_output):
-                                conv.append_tool_output(content, action=action, show_header=True)
-                        elif etype == "error":
-                            conv.hide_typing_indicator()
-                            conv.append_error(content)
-                    else:
-                        pass
-            else:
-                conv.hide_typing_indicator()
-                conv.append_assistant_start()
-                demo_text = f"[Demo mode] Echo: {text}"
-                for char in demo_text:
-                    conv.append_stream_token(char)
-                    await asyncio.sleep(0.01)
+            async for item in stream:
+                if not isinstance(item, dict):
+                    continue
+                etype = item.get("type")
+                content = item.get("content", "")
+                if etype == "provider":
+                    if not started:
+                        conv.hide_typing_indicator()
+                        conv.append_assistant_start()
+                        started = True
+                    conv.append_stream_token(content)
+                elif etype == "tool":
+                    conv.hide_typing_indicator()
+                    settings = get_settings()
+                    if settings.debug or (hasattr(settings, 'show_tool_output') and settings.show_tool_output):
+                        conv.append_tool_output(content, action=item.get("action"), show_header=True)
+                elif etype == "error":
+                    conv.hide_typing_indicator()
+                    conv.append_error(content)
         except Exception as exc:
             conv.hide_typing_indicator()
-            conv.append_error(f"⚠ Provider error: {exc}")
+            conv.append_error(f"⚠ {error_prefix}: {exc}")
         finally:
             conv.append_assistant_end()
-            input_bar.set_enabled(True)
-            self.query_one("#user-input").focus()
+            self._restore_input_bar()
 
-    from textual.widgets import Button
-    
+    def _restore_input_bar(self) -> None:
+        """Re-enable the input bar and return focus after a stream ends."""
+        try:
+            input_bar = self.query_one("#input-bar", InputBar)
+            input_bar.set_enabled(True)
+        except Exception:
+            pass
+        try:
+            self.query_one("#user-input").focus()
+        except Exception:
+            pass
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
         if not button_id:
@@ -494,47 +526,19 @@ class MainScreen(Screen):
     async def _submit_resume(self, task_id: str, updates: dict) -> None:
         conv = self.query_one("#conversation", ConversationPanel)
         input_bar = self.query_one("#input-bar", InputBar)
-        
+
         input_bar.set_enabled(False)
         conv.show_typing_indicator()
-        
-        try:
-            if self._runtime is not None:
-                session_id = self._active_session_id or "default"
-                started = False
-                async for item in self._runtime.resume(session_id, task_id, updates):
-                    if isinstance(item, dict):
-                        etype = item.get("type")
-                        content = item.get("content", "")
-                        
-                        if etype == "provider":
-                            if not started:
-                                conv.hide_typing_indicator()
-                                conv.append_assistant_start()
-                                started = True
-                                
-                            conv.append_stream_token(content)
-                        elif etype == "tool":
-                            conv.hide_typing_indicator()
-                            action = item.get("action")
-                            settings = get_settings()
-                            if settings.debug or (hasattr(settings, 'show_tool_output') and settings.show_tool_output):
-                                conv.append_tool_output(content, action=action, show_header=True)
-                        elif etype == "error":
-                            conv.hide_typing_indicator()
-                            conv.append_error(content)
-                    else:
-                        pass
-            else:
-                conv.hide_typing_indicator()
-                conv.append_error("No runtime attached to resume.")
-        except Exception as exc:
+
+        if self._runtime is None:
             conv.hide_typing_indicator()
-            conv.append_error(f"⚠ Resume error: {exc}")
-        finally:
-            conv.append_assistant_end()
-            input_bar.set_enabled(True)
-            self.query_one("#user-input").focus()
+            conv.append_error("No runtime attached to resume.")
+            self._restore_input_bar()
+            return
+        session_id = self._active_session_id or "default"
+        await self._consume_runtime_stream(
+            self._runtime.resume(session_id, task_id, updates), "Resume error"
+        )
 
 
 class SamakthaApp(App):
@@ -616,6 +620,9 @@ class SamakthaApp(App):
         initial_session_id = None
         if self._command_router is not None:
             initial_session_id = self._command_router.create_initial_session()
+
+        if self._runtime is not None and hasattr(self._runtime, "start"):
+            self.run_worker(self._runtime.start())
 
         main = MainScreen(runtime=self._runtime, command_registry=self._cmd_registry, name="main")
         if initial_session_id:
@@ -752,3 +759,5 @@ class SamakthaApp(App):
             self._tray_manager.stop()
         if hasattr(self, "_hotkey_manager"):
             self._hotkey_manager.unregister()
+        if self._runtime is not None and hasattr(self._runtime, "stop"):
+            self.run_worker(self._runtime.stop())

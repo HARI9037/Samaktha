@@ -35,9 +35,11 @@ from app.conversation import ConversationStateManager
 from app.personality import (
     IntentEngine,
     PersonalityEngine,
+    PersonalityLifecycleManager,
     PromptComposer,
     ReflectionEngine,
     ResponseFormatter,
+    default_personality_registry,
 )
 from app.intelligence import IntelligenceManager, LearningEngine, RetrievalEngine
 from app.intelligence.reflection import ReflectionEngine as IntelligenceReflectionEngine
@@ -70,6 +72,10 @@ class SamakthaOrchestrator:
         response_formatter: Any = None,
         intent_engine: Any = None,
         conversation_state_manager: Any = None,
+        security_scanner: Any = None,
+        security_output_filter: Any = None,
+        personality_registry: Any = None,
+        personality_manager: Any = None,
     ) -> None:
         self._context_engine = context_engine
         self._planner = planner
@@ -89,7 +95,16 @@ class SamakthaOrchestrator:
         # Phase 9 — deterministic personality vertical slice. These engines
         # never plan, never learn, and never touch storage; they are pure
         # functions of the request and the retrieved memories.
-        self._personality_engine = personality_engine or PersonalityEngine()
+        # P2.8 — a registry + lifecycle manager owns the active personality so
+        # it can be switched and persisted without mutating the deterministic
+        # engine design.
+        self._personality_registry = personality_registry or default_personality_registry()
+        self._personality_manager = personality_manager or PersonalityLifecycleManager(
+            self._personality_registry
+        )
+        self._personality_engine = personality_engine or PersonalityEngine(
+            profile=self._personality_manager.current_profile()
+        )
         self._prompt_composer = prompt_composer or PromptComposer()
         self._reflection_engine = reflection_engine or ReflectionEngine()
         # Phase 10C — deterministic final presentation layer. Pure function of
@@ -104,6 +119,11 @@ class SamakthaOrchestrator:
         # deterministic reference resolver that runs before the GoalParser.
         # It never persists, never learns, and never touches storage.
         self._conversation_state = conversation_state_manager or ConversationStateManager()
+        # P0.2 — security controls are active runtime gates. The input scanner
+        # rejects dangerous/malicious requests before any planning or provider
+        # work; the output filter redacts leaked credentials from responses.
+        self._security_scanner = security_scanner
+        self._security_output_filter = security_output_filter
         # Phase 8.2 — autonomous memory formation after each completed interaction.
         self._memory_formation = memory_formation_engine or (
             MemoryFormationEngine(
@@ -131,6 +151,52 @@ class SamakthaOrchestrator:
         return self._metrics.get_metrics()
 
     @property
+    def personality_registry(self) -> Any:
+        """P2.8 — the catalog of registered personalities."""
+        return self._personality_registry
+
+    @property
+    def personality_manager(self) -> Any:
+        """P2.8 — the lifecycle manager for the active personality."""
+        return self._personality_manager
+
+    def get_personality(self) -> dict:
+        """P2.8 — the currently active personality summary."""
+        active = self._personality_manager.current()
+        return {
+            "profile_id": active.profile_id,
+            "name": active.name,
+            "description": active.description,
+        }
+
+    def list_personalities(self) -> list[dict]:
+        """P2.8 — all registered personalities, ordered by profile_id."""
+        return [
+            {
+                "profile_id": definition.profile_id,
+                "name": definition.name,
+                "description": definition.description,
+            }
+            for definition in self._personality_manager.available()
+        ]
+
+    def switch_personality(self, profile_id: str) -> dict:
+        """P2.8 — activate a registered personality and switch the engine.
+
+        Raises ``PersonalityValidationError`` for unknown ids. The switch is
+        persisted by the lifecycle manager when a persistence backend is
+        attached, so the selection survives restarts.
+        """
+        definition = self._personality_manager.activate(profile_id)
+        self._personality_engine.set_profile(definition.profile)
+        log.info("Orchestrator: personality switched to %s", profile_id)
+        return {
+            "profile_id": definition.profile_id,
+            "name": definition.name,
+            "description": definition.description,
+        }
+
+    @property
     def memory_formation(self) -> Any:
         """The Phase 8.2 autonomous memory formation engine (or None)."""
         return self._memory_formation
@@ -156,6 +222,30 @@ class SamakthaOrchestrator:
                 "Orchestrator pipeline finished without a runtime result.")
         return state.runtime_result
 
+    def _ensure_provider_available(self) -> None:
+        """Raise a clean execution-time error when no provider can serve work.
+
+        Provider credentials are optional at composition time; this gate is
+        the single enforcement point that converts missing configuration into
+        a structured error instead of letting execution fail later with an
+        opaque provider-level exception. Orchestrators constructed without
+        provider settings (e.g. unit-test doubles) skip the check.
+        """
+        provider_settings = getattr(self, "provider_settings", None)
+        if provider_settings is None:
+            return
+        if (
+            provider_settings.configured_production_providers()
+            or provider_settings.mock_allowed()
+        ):
+            return
+        from app.providers.config import ProviderStartupError
+
+        raise ProviderStartupError(
+            "No production provider is configured.\n"
+            "Configure .env before starting Samaktha."
+        )
+
     async def run_pipeline(
         self,
         request: str,
@@ -163,10 +253,41 @@ class SamakthaOrchestrator:
         conversation: list[ConversationMessage] | None = None,
     ) -> PipelineState:
         state = PipelineState(request=request)
-        
+        # P2.7 — tracing is enabled by the API layer (enable_tracing metadata);
+        # create the trace up front so even security-blocked requests are
+        # observable with a correlation/task timeline.
         if runtime_context.metadata.get("enable_tracing") and runtime_context.trace is None:
             runtime_context.trace = ExecutionTrace(request_id=runtime_context.request_id)
-            
+        # P0.2 — input security gate: reject dangerous/malicious requests
+        # before any planning, CAP evaluation, or provider work.
+        if self._security_scanner is not None:
+            security_decision = self._security_scanner.scan_text(request)
+            if not security_decision.allowed:
+                log.info(
+                    "Orchestrator: input blocked by security policy — reason=%s",
+                    security_decision.reason,
+                )
+                state.runtime_result = RuntimeResult(
+                    task_id=runtime_context.request_id,
+                    status=TaskStatus.FAILED,
+                    error=f"Security policy blocked request: {security_decision.reason}",
+                    metadata={
+                        "security_blocked": True,
+                        "security_reason": security_decision.reason,
+                        "security_policy_id": security_decision.policy_id,
+                        "security_level": security_decision.security_level.value,
+                    },
+                )
+                self._metrics.record_pipeline(success=False)
+                if runtime_context.trace:
+                    runtime_context.trace.add_event(
+                        source="orchestrator",
+                        event_type="security.input.blocked",
+                        reason=security_decision.reason,
+                        policy_id=security_decision.policy_id,
+                    )
+                return state
+        self._ensure_provider_available()        
         import time
         started_at = time.perf_counter()
         
@@ -174,7 +295,6 @@ class SamakthaOrchestrator:
             runtime_context.trace.add_event(
                 source="orchestrator",
                 event_type="orchestrator.started",
-                request=request
             )
 
         from app.core.events import RuntimeEventBus
@@ -292,7 +412,21 @@ class SamakthaOrchestrator:
                 trace_id=runtime_context.request_id,
                 payload={"request": effective_request[:200]}
             )
-        planner_result = await self._planner_plan(effective_request, planning_context)
+        # P2.8 — personality → GAMBIT: pass the active personality directive
+        # into planning so produced plans are observably personality-aware
+        # (recorded in the plan notes/reasoning); the full composed prompt is
+        # still injected into text-generation tasks below.
+        behavior = evaluation.behavior
+        personality_context = {
+            "profile_id": self._personality_manager.active_profile_id,
+            "name": evaluation.profile.name,
+            "tone": behavior.tone.value,
+            "reasoning": behavior.reasoning.value,
+            "explanation": behavior.explanation.value,
+        }
+        planner_result = await self._planner_plan(
+            effective_request, planning_context, personality_context
+        )
 
         if planner_result.status == PlannerStatus.CAPABILITY_UNAVAILABLE:
             cap_name = (planner_result.required_capability or "unknown").capitalize()
@@ -552,14 +686,19 @@ class SamakthaOrchestrator:
                 trace_id=runtime_context.request_id,
                 payload={"session_id": session_id}
             )
+        self._apply_output_security(state)
         return state
 
-    async def _planner_plan(self, request: str, planning_context: Any | None):
+    async def _planner_plan(self, request: str, planning_context: Any | None, personality_context: dict | None = None):
         method = getattr(self._planner, "plan_with_capability_check")
         try:
             signature = inspect.signature(method)
+            kwargs: dict[str, Any] = {}
             if "planning_context" in signature.parameters:
-                return await method(request, planning_context=planning_context)
+                kwargs["planning_context"] = planning_context
+            if personality_context is not None and "personality_context" in signature.parameters:
+                kwargs["personality_context"] = personality_context
+            return await method(request, **kwargs)
         except Exception:
             pass
         return await method(request)
@@ -573,6 +712,7 @@ class SamakthaOrchestrator:
     ) -> PipelineState:
         """Resumes a paused pipeline execution by injecting user updates."""
         log.debug("resume_pipeline() is entered. task_id=%s", task_id)
+        self._ensure_provider_available()
         if not state.execution_plan or not state.workflow_state:
             raise ValueError("Cannot resume pipeline: missing execution plan or workflow state.")
             
@@ -778,7 +918,20 @@ class SamakthaOrchestrator:
                 payload={"session_id": resume_session_id}
             )
             
+        self._apply_output_security(state)
         return state
+    
+    def _apply_output_security(self, state: PipelineState) -> None:
+        """Redact leaked credentials from the user-facing result output."""
+        if self._security_output_filter is None:
+            return
+        result = state.runtime_result
+        if result is None:
+            return
+        if isinstance(result.output, dict) and result.output:
+            result.output = self._security_output_filter.filter_dict(result.output)
+        if result.error:
+            result.error = self._security_output_filter.filter_text(result.error)
     
     @staticmethod
     def _messages(

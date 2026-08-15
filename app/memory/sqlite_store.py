@@ -2,54 +2,42 @@ import json
 import sqlite3
 from datetime import datetime
 from threading import Lock
-from typing import Iterator, Optional
+from typing import Optional
 
+from app.db.base import ensure_table
+from app.db.config import connect, resolve_database_path
 from app.memory.models import MemoryEntry
 from app.memory.time_utils import normalize_datetime
 
-_DB_PATH = 'data/memory.db'
-_TABLE_SCHEMA = '''
-CREATE TABLE IF NOT EXISTS memory_entries (
-    id TEXT PRIMARY KEY,
-    key TEXT UNIQUE,
-    value TEXT,
-    category TEXT,
-    created_at TEXT,
-    updated_at TEXT
-    ,metadata TEXT DEFAULT '{}'
-    ,score REAL DEFAULT 0
-)
-'''
+_TABLE_NAME = "memory_entries"
+_SCHEMA_VERSION = 1
+
+_TABLE_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),
+    ("key", "TEXT UNIQUE"),
+    ("value", "TEXT"),
+    ("category", "TEXT"),
+    ("created_at", "TEXT"),
+    ("updated_at", "TEXT"),
+    ("metadata", "TEXT DEFAULT '{}'"),
+    ("score", "REAL DEFAULT 0"),
+]
+
 
 class SQLiteStore:
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or _DB_PATH
+        self.db_path = db_path or resolve_database_path()
         self._lock = Lock()
         self._ensure_db()
 
     def _get_conn(self):
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return connect(self.db_path)
 
     def _ensure_db(self):
         with self._lock:
             conn = self._get_conn()
             try:
-                conn.execute(_TABLE_SCHEMA)
-                columns = {
-                    row['name'] for row in conn.execute(
-                        'PRAGMA table_info(memory_entries)'
-                    ).fetchall()
-                }
-                if 'metadata' not in columns:
-                    conn.execute(
-                        "ALTER TABLE memory_entries ADD COLUMN metadata TEXT DEFAULT '{}'"
-                    )
-                if 'score' not in columns:
-                    conn.execute(
-                        'ALTER TABLE memory_entries ADD COLUMN score REAL DEFAULT 0'
-                    )
+                ensure_table(conn, _TABLE_NAME, _TABLE_COLUMNS, _SCHEMA_VERSION)
                 conn.commit()
             finally:
                 conn.close()

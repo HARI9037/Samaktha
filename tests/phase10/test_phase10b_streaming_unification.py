@@ -14,7 +14,7 @@ import asyncio
 import pytest
 
 from app.agent.production import _StreamingRuntimeBridge
-from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeTask
+from app.core.contracts import ApprovedRuntimeTask, RoutingDecision, RuntimeContext
 from app.core.contracts.streaming import StreamChunk, StreamEventType, StreamRequest
 from app.providers.base import BaseProvider
 from app.providers.manager import ProviderManager
@@ -22,6 +22,7 @@ from app.providers.models import ProviderInfo
 from app.providers.registry import ProviderRegistry
 from app.runtime.executor import ProviderExecutor
 from app.runtime.payload import build_provider_messages
+from tests.conftest import approved_task
 
 DOCUMENT_MESSAGES = [
     {"role": "system", "content": "composed persona"},
@@ -97,8 +98,8 @@ def build_bridge(recording) -> _StreamingRuntimeBridge:
     )
 
 
-def build_task(*, inputs: dict, action_type: str = "text_generation") -> RuntimeTask:
-    return RuntimeTask(
+def build_task(*, inputs: dict, action_type: str = "text_generation") -> ApprovedRuntimeTask:
+    return approved_task(
         task_id="provider-task",
         title="Read",
         description="Read NOR.pdf",

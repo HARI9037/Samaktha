@@ -55,6 +55,24 @@ class CapabilityRegistry:
         """Return True if the given capability domain has a registered tool."""
         return domain.lower() in self._entries
 
+    def register(self, entry: CapabilityEntry) -> None:
+        """Install a capability domain, rejecting duplicate domains.
+
+        Added for P2.1 Plugin Architecture so that plugin-declared
+        capability domains can be installed through the canonical registry.
+        The registry stays read-only for planning logic; this is a
+        registration API only.
+        """
+        domain = entry.domain.lower()
+        if domain in self._entries:
+            raise ValueError(f"Capability domain already installed: {entry.domain}")
+        self._entries[domain] = entry
+
+    def unregister_domain(self, domain: str) -> bool:
+        """Remove a capability domain (idempotent)."""
+        return self._entries.pop(domain.lower(), None) is not None
+
+
     def tool_for(self, domain: str) -> Optional[str]:
         """Return the tool_id for the given domain, or None if not installed."""
         entry = self._entries.get(domain.lower())
@@ -142,11 +160,6 @@ class CapabilityRegistry:
                     description="Read and write the system clipboard",
                 ),
                 CapabilityEntry(
-                    domain="notification",
-                    tool_id="notification",
-                    description="Send local desktop notifications",
-                ),
-CapabilityEntry(
                     domain="document",
                     tool_id="document",
                     description="Document reading, summarization, table extraction, and metadata",

@@ -84,6 +84,15 @@ class PersonalityEngine:
         """The structured identity profile used by this engine."""
         return self._profile
 
+    def set_profile(self, profile: IdentityProfile) -> None:
+        """P2.8 — switch the active identity profile at runtime.
+
+        The deterministic policies are profile-agnostic; only the structured
+        profile carried into evaluations changes, so a switch is safe between
+        evaluations.
+        """
+        self._profile = profile
+
     def evaluate(
         self,
         message: str,

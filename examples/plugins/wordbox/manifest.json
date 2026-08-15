@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "id": "wordbox",
+  "name": "WordBox Example Tool",
+  "version": "1.0.0",
+  "kind": "tool",
+  "description": "Example tool: counts words and characters in supplied text.",
+  "author": "Samaktha Team",
+  "entry": "wordbox",
+  "capabilities": [
+    { "name": "wordbox", "description": "Counts words and characters in text." }
+  ],
+  "permissions": [
+    { "scope": "read", "description": "Read-only text analysis." }
+  ],
+  "dependencies": []
+}

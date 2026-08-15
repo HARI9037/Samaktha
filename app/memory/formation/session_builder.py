@@ -46,6 +46,27 @@ def _dedupe_append(lst: list[str], value: str) -> None:
         lst.append(value)
 
 
+def _tool_evidence(entry: Any) -> tuple[str | None, str | None, dict[str, Any]]:
+    """Normalize tool-result evidence to ``(tool, action, args)``.
+
+    Supports both the flat canonical shape ``{"tool", "action", "args"}`` and
+    the runtime shape ``{"metadata": {"tool", "action", "args"}}`` produced by
+    the runtime's ToolExecutor. Only documented evidence fields are returned;
+    nothing is inferred.
+    """
+    if isinstance(entry, dict):
+        nested = entry.get("metadata")
+        if isinstance(nested, dict):
+            entry = nested
+        tool = entry.get("tool")
+        action = entry.get("action")
+        args = entry.get("args")
+        return tool, action, args if isinstance(args, dict) else {}
+    if hasattr(entry, "metadata") and isinstance(entry.metadata, dict):
+        return _tool_evidence(entry.metadata)
+    return None, None, {}
+
+
 class SessionBuilder:
     """Deterministic session extraction.
 
@@ -112,11 +133,10 @@ class SessionBuilder:
             if hasattr(execution_report, "tool_results"):
                 seen_tools: set[str] = set()
                 for t in execution_report.tool_results:
-                    if isinstance(t, dict):
-                        tool_name = t.get("metadata", {}).get("tool")
-                        if tool_name and tool_name not in seen_tools:
-                            seen_tools.add(tool_name)
-                            tool_calls.append(tool_name)
+                    tool_name, _action, _args = _tool_evidence(t)
+                    if tool_name and tool_name not in seen_tools:
+                        seen_tools.add(tool_name)
+                        tool_calls.append(tool_name)
 
             if hasattr(execution_report, "provider_results"):
                 for pr in execution_report.provider_results:
@@ -174,16 +194,9 @@ class SessionBuilder:
         """
         if execution_report is not None and hasattr(execution_report, "tool_results"):
             for t in execution_report.tool_results:
-                if not isinstance(t, dict):
-                    continue
-
-                metadata_dict = t.get("metadata", {})
-                tool_name = metadata_dict.get("tool")
+                tool_name, action, args = _tool_evidence(t)
                 if tool_name:
                     _dedupe_append(metadata.tools_used, str(tool_name))
-
-                action = metadata_dict.get("action", "")
-                args = metadata_dict.get("args") or {}
 
                 if tool_name == "filesystem":
                     path = (

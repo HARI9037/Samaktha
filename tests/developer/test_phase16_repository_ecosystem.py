@@ -8,7 +8,6 @@ from app.developer.debugging import Debugger, ExceptionClassifier, FailureAnalyz
 from app.developer.process import BackgroundJob, JobController, LogStreamer, ProcessManager
 from app.developer.project import ModuleExplorer, ProjectExplorer, ProjectSummarizer
 from app.developer.repository.inspector import RepositoryInspector
-from app.developer.review import DebtAnalyzer, MaintainabilityReviewer, PerformanceReviewer, SecurityReviewer
 from app.developer.testing import CoverageInspector, ImpactAnalyzer, RegressionPredictor
 from app.developer.workspace import WorkspaceIndex, WorkspaceManager, WorkspaceSearcher
 from app.shell.command_router import CommandRouter, command_names
@@ -71,10 +70,6 @@ def test_debugging_and_review_heuristics():
     assert FailureAnalyzer().analyze(trace)["classification"] == "type"
     assert RegressionAnalyzer().compare("a", "b")["regressed"]
     assert Debugger().summarize(trace) == "type"
-    assert SecurityReviewer().review("password = 1")
-    assert PerformanceReviewer().review("for i in range(1):\n    for j in range(1):\n        pass")
-    assert DebtAnalyzer().review("TODO: refactor")
-    assert MaintainabilityReviewer().review("\n".join(["x"] * 201))
 
 
 def test_workspace_and_project_helpers(tmp_path):

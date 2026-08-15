@@ -24,8 +24,18 @@ class ToolGuard:
         self._metrics = metrics or SecurityMetricsCollector()
         self._scanner = scanner or InputSecurityScanner()
         
-        # Tools that require CRITICAL authorization level
-        self._critical_tools = {"filesystem.delete", "system.exec"}
+        # Tools that require CRITICAL authorization level. Destructive
+        # personal-data operations (P1.1) follow the same rule as filesystem
+        # deletion and system command execution.
+        self._critical_tools = {
+            "filesystem.delete",
+            "system.exec",
+            "notes.delete",
+            "tasks.delete",
+            "contacts.delete",
+            "calendar.delete",
+            "reminder.cancel",
+        }
         
         # Tools that are outright blocked
         self._blocked_tools = set()

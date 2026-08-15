@@ -2,15 +2,25 @@
 
 ABC for all communication providers.
 No secrets, no credentials, no user authentication.
-Only interfaces.
 """
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
-from app.communication.models import CommunicationRequest, CommunicationResult
+from app.communication.config import CommunicationConfig, validate_smtp_config
+from app.communication.models import (
+    CommunicationProvider as CommunicationProviderEnum,
+)
+from app.communication.models import (
+    CommunicationRequest,
+    CommunicationResult,
+    CommunicationStatus,
+)
+
+log = logging.getLogger(__name__)
 
 
 class CommunicationProvider(ABC):
@@ -42,27 +52,106 @@ class CommunicationProvider(ABC):
 
 
 class SMTPProvider(CommunicationProvider):
-    """SMTP email provider interface."""
+    """SMTP email provider with real SMTP delivery.
+
+    Requires a configured ``CommunicationConfig``. Without one every operation
+    returns a deterministic ``not_configured`` result and never touches the
+    network.
+    """
+
+    def __init__(self, config: CommunicationConfig | None = None) -> None:
+        self._config = config
+        self._message_seq = 0
+
+    def get_config(self) -> CommunicationConfig | None:
+        return self._config
+
+    def is_configured(self) -> bool:
+        return not validate_smtp_config(self._config)
 
     async def connect(self) -> bool:
-        return False
+        return self.is_configured()
 
     async def disconnect(self) -> None:
         pass
 
     async def send(self, request: CommunicationRequest) -> CommunicationResult:
-        return CommunicationResult(
-            status="pending",
-            provider="smtp",
-            delivery_status="not_configured",
-            errors=["SMTP provider not configured"],
-        )
+        config_errors = validate_smtp_config(self._config)
+        if config_errors:
+            return CommunicationResult(
+                status=CommunicationStatus.FAILED,
+                provider=CommunicationProviderEnum.SMTP,
+                delivery_status="not_configured",
+                errors=config_errors,
+            )
+        validation_errors = await self.validate(request)
+        if validation_errors:
+            return CommunicationResult(
+                status=CommunicationStatus.FAILED,
+                provider=CommunicationProviderEnum.SMTP,
+                delivery_status="failed",
+                errors=validation_errors,
+            )
+        try:
+            message_id = self._deliver(request)
+            return CommunicationResult(
+                status=CommunicationStatus.SENT,
+                provider=CommunicationProviderEnum.SMTP,
+                message_id=message_id,
+                delivery_status="sent",
+                metadata={"from_address": self._config.from_address},
+            )
+        except Exception as exc:
+            log.error("SMTP send failed: %s", exc)
+            return CommunicationResult(
+                status=CommunicationStatus.FAILED,
+                provider=CommunicationProviderEnum.SMTP,
+                delivery_status="failed",
+                errors=[f"SMTP delivery error: {exc}"],
+            )
+
+    def _deliver(self, request: CommunicationRequest) -> str:
+        import smtplib
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["From"] = self._config.from_address
+        msg["To"] = request.recipient
+        msg["Subject"] = request.subject or "(no subject)"
+        msg.set_content(request.body or "")
+        self._message_seq += 1
+        message_id = f"smtp-{self._message_seq}"
+
+        if self._config.use_ssl:
+            server = smtplib.SMTP_SSL(
+                self._config.host, self._config.port, timeout=self._config.timeout_s
+            )
+        else:
+            server = smtplib.SMTP(
+                self._config.host, self._config.port, timeout=self._config.timeout_s
+            )
+        try:
+            if self._config.use_tls and not self._config.use_ssl:
+                server.starttls()
+            if self._config.username:
+                server.login(self._config.username, self._config.password)
+            failures = server.sendmail(
+                self._config.from_address, [request.recipient], msg.as_string()
+            )
+            if failures:
+                raise RuntimeError(f"SMTP rejected recipients: {sorted(failures)}")
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                pass
+        return message_id
 
     async def receive(self, limit: int = 10) -> list[CommunicationResult]:
         return []
 
     async def health(self) -> bool:
-        return False
+        return self.is_configured()
 
     async def validate(self, request: CommunicationRequest) -> list[str]:
         errors = []
@@ -370,4 +459,62 @@ class DesktopProvider(CommunicationProvider):
         errors = []
         if not request.recipient:
             errors.append("Recipient is required")
+        return errors
+
+
+class TestProvider(CommunicationProvider):
+    """Deterministic in-memory provider for tests and offline operation.
+
+    Records every sent message so tests can assert on delivery without any
+    external dependency. Health is always true once connected.
+    """
+
+    __test__ = False
+
+    def __init__(self) -> None:
+        self._sent: list[CommunicationResult] = []
+        self._seq = 0
+
+    @property
+    def sent_messages(self) -> list[CommunicationResult]:
+        return list(self._sent)
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        pass
+
+    async def send(self, request: CommunicationRequest) -> CommunicationResult:
+        validation_errors = await self.validate(request)
+        if validation_errors:
+            return CommunicationResult(
+                status=CommunicationStatus.FAILED,
+                provider=CommunicationProviderEnum.TEST,
+                delivery_status="failed",
+                errors=validation_errors,
+            )
+        self._seq += 1
+        result = CommunicationResult(
+            status=CommunicationStatus.SENT,
+            provider=CommunicationProviderEnum.TEST,
+            message_id=f"test-{self._seq}",
+            delivery_status="delivered",
+            metadata={"recipient": request.recipient, "subject": request.subject},
+        )
+        self._sent.append(result)
+        return result
+
+    async def receive(self, limit: int = 10) -> list[CommunicationResult]:
+        return self._sent[-limit:]
+
+    async def health(self) -> bool:
+        return True
+
+    async def validate(self, request: CommunicationRequest) -> list[str]:
+        errors = []
+        if not request.recipient:
+            errors.append("Recipient is required")
+        if not request.body and not request.attachments:
+            errors.append("Body or attachments are required")
         return errors

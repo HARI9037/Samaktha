@@ -162,8 +162,22 @@ async def test_api_exposes_optional_diagnostics_without_changing_core_fields():
                 },
             )
 
+    class _AppState:
+        settings = None
+        http_metrics = None
+
+    class _App:
+        state = _AppState()
+
+    class FakeRequest:
+        app = _App()
+
+        async def is_disconnected(self):
+            return False
+
     response = await execute_request(
         ExecuteRequest(message="hello"),
+        request=FakeRequest(),
         orchestrator=Orchestrator(),
     )
 

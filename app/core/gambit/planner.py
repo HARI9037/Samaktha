@@ -105,7 +105,21 @@ class Planner:
                 metadata["tool"] = selected
                 log.info("Planner resolved capability %s -> tool %s", domain or capability, selected)
 
-    async def plan(self, request: str, planning_context: PlanningContext | None = None) -> ExecutionPlan:
+    @staticmethod
+    def _personality_directive(personality_context: dict) -> str:
+        """Render a compact, deterministic personality directive string."""
+        profile_id = personality_context.get("profile_id", "unknown")
+        parts = [f"personality={profile_id}"]
+        name = personality_context.get("name")
+        if name:
+            parts.append(f"name={name}")
+        for key in ("tone", "reasoning", "explanation"):
+            value = personality_context.get(key)
+            if value:
+                parts.append(f"{key}={value}")
+        return "; ".join(parts)
+
+    async def plan(self, request: str, planning_context: PlanningContext | None = None, personality_context: dict | None = None) -> ExecutionPlan:
         """Build an ExecutionPlan directly (no capability check).
 
         Prefer plan_with_capability_check() for the production path so that
@@ -154,6 +168,16 @@ class Planner:
         else:
             planner_reasoning.append("No memory manager provided")
 
+        notes = [
+            "GAMBIT produced a plan only; runtime must execute it.",
+            "Every runtime action must pass through CAP before execution.",
+            "Model selection must be requested through the Router.",
+        ]
+        if personality_context:
+            directive = self._personality_directive(personality_context)
+            planner_reasoning.append(f"Personality directive applied: {directive}.")
+            notes.insert(0, f"Active personality: {directive}.")
+
         workflow = self._plan_builder.build(tasks)
         if planning_context is not None:
             self._planning_metrics.record(
@@ -174,17 +198,13 @@ class Planner:
             workflow=workflow,
             router_request=self._router_request_for_goal(goal),
             skill_matches=skill_matches,
-            notes=[
-                "GAMBIT produced a plan only; runtime must execute it.",
-                "Every runtime action must pass through CAP before execution.",
-                "Model selection must be requested through the Router.",
-            ],
+            notes=notes,
             used_skill_ids=used_skill_ids,
             used_skill_names=used_skill_names,
             planner_reasoning=planner_reasoning,
         )
 
-    async def plan_with_capability_check(self, request: str, planning_context: PlanningContext | None = None) -> PlannerResult:
+    async def plan_with_capability_check(self, request: str, planning_context: PlanningContext | None = None, personality_context: dict | None = None) -> PlannerResult:
         """Build a plan with a Capability Registry gate.
 
         Flow:
@@ -251,6 +271,16 @@ class Planner:
         else:
             planner_reasoning.append("Capability registry check passed.")
 
+        notes = [
+            "GAMBIT produced a plan only; runtime must execute it.",
+            "Every runtime action must pass through CAP before execution.",
+            "Model selection must be requested through the Router.",
+        ]
+        if personality_context:
+            directive = self._personality_directive(personality_context)
+            planner_reasoning.append(f"Personality directive applied: {directive}.")
+            notes.insert(0, f"Active personality: {directive}.")
+
         workflow = self._plan_builder.build(tasks)
 
         plan = ExecutionPlan(
@@ -260,11 +290,7 @@ class Planner:
             workflow=workflow,
             router_request=self._router_request_for_goal(goal),
             skill_matches=skill_matches,
-            notes=[
-                "GAMBIT produced a plan only; runtime must execute it.",
-                "Every runtime action must pass through CAP before execution.",
-                "Model selection must be requested through the Router.",
-            ],
+            notes=notes,
             used_skill_ids=used_skill_ids,
             used_skill_names=used_skill_names,
             planner_reasoning=planner_reasoning,

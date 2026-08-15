@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,51 @@ logger = logging.getLogger(__name__)
 _CACHE_DIR = Path(tempfile.gettempdir()) / "samaktha_ocr_cache"
 _WORKER_PATH = Path(__file__).resolve().parent / "ocr_worker.py"
 _EASYOCR_AVAILABLE: bool | None = None
+_TESSERACT_CMD: str | None = None
+
+
+def _tesseract_command() -> str | None:
+    """Resolve the tesseract executable path.
+
+    Priority: ``TESSERACT_CMD`` env var, ``tesseract`` on PATH, then the
+    standard Windows install location (``C:\\Program Files\\Tesseract-OCR``).
+    Returns ``None`` when no tesseract binary can be found.
+    """
+    global _TESSERACT_CMD
+    if _TESSERACT_CMD is not None:
+        return _TESSERACT_CMD or None
+
+    candidates: list[str] = []
+    env_cmd = os.environ.get("TESSERACT_CMD")
+    if env_cmd:
+        candidates.append(env_cmd)
+
+    which = shutil.which("tesseract")
+    if which:
+        candidates.append(which)
+
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    candidates.append(os.path.join(program_files, "Tesseract-OCR", "tesseract.exe"))
+
+    resolved: str | None = None
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            resolved = candidate
+            break
+
+    _TESSERACT_CMD = resolved or ""
+    return resolved
+
+
+def _configure_tesseract() -> None:
+    """Point pytesseract at the resolved tesseract binary, if any."""
+    try:
+        import pytesseract
+    except ImportError:
+        return
+    command = _tesseract_command()
+    if command and pytesseract.pytesseract.tesseract_cmd == "tesseract":
+        pytesseract.pytesseract.tesseract_cmd = command
 
 
 class OCRParser(DocumentParser):
@@ -135,6 +181,7 @@ class OCRParser(DocumentParser):
         )
 
     def _is_tesseract_available(self) -> bool:
+        _configure_tesseract()
         try:
             import pytesseract
             pytesseract.get_tesseract_version()
@@ -143,6 +190,7 @@ class OCRParser(DocumentParser):
             return False
 
     def _parse_via_tesseract(self, path: Path) -> ParseResult:
+        _configure_tesseract()
         try:
             import pytesseract
             from PIL import Image

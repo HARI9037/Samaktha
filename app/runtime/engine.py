@@ -5,17 +5,17 @@ import logging
 from datetime import datetime, timezone
 from time import perf_counter
 
-from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask, ApprovedRuntimeTask
+from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask
 from app.core.contracts.planning import TaskStatus
-from app.core.contracts.pause import ExecutionPause
 from app.core.contracts.workers import WorkerType
 from app.runtime.base import Runtime
+from app.runtime.governance import enforce_cap_permit
 
 log = logging.getLogger(__name__)
 from app.runtime.dispatcher import RuntimeDispatcher
 from app.runtime.metrics import RuntimeMetricsCollector, RuntimeMetricsSnapshot
 from app.runtime.worker_registry import WorkerRegistry
-from app.runtime.worker_metrics import WorkerMetricsCollector
+from app.runtime.worker_metrics import WorkerMetricsCollector, WorkerMetricsSnapshot
 from app.runtime.checkpoint import CheckpointStore
 from app.runtime.recovery import RecoveryManager
 from app.runtime_parallel import (
@@ -38,12 +38,14 @@ class RuntimeExecutionPool:
         worker_registry: WorkerRegistry | None = None, 
         worker_metrics: WorkerMetricsCollector | None = None,
         recovery_manager: RecoveryManager | None = None,
+        max_parallelism: int | None = None,
     ):
         self._dispatcher = dispatcher
         self._metrics = metrics
         self._worker_registry = worker_registry
         self._worker_metrics = worker_metrics
         self._recovery_manager = recovery_manager
+        self._max_parallelism = max_parallelism
         
     async def execute_batch(
         self, 
@@ -52,6 +54,14 @@ class RuntimeExecutionPool:
     ) -> list[RuntimeResult]:
         
         started = perf_counter()
+        
+        semaphore = asyncio.Semaphore(self._max_parallelism) if self._max_parallelism and self._max_parallelism > 0 else None
+        
+        async def _bounded_single(task: RuntimeTask, routing: RoutingDecision) -> RuntimeResult:
+            if semaphore is None:
+                return await _execute_single(task, routing)
+            async with semaphore:
+                return await _execute_single(task, routing)
         
         if context and context.trace:
             context.trace.add_event(
@@ -65,51 +75,17 @@ class RuntimeExecutionPool:
             started_at = datetime.now(timezone.utc)
             started_task = perf_counter()
             
-            # 1. Check for valid ExecutionPermit
-            if not isinstance(task, ApprovedRuntimeTask) or task.permit is None:
-                return RuntimeResult(
-                    task_id=task.task_id,
-                    status=TaskStatus.FAILED,
-                    routing=routing,
-                    error="Runtime execution blocked: Task lacks a valid ExecutionPermit from CAP.",
-                    started_at=started_at,
-                    finished_at=datetime.now(timezone.utc),
-                    duration_ms=(perf_counter() - started_task) * 1000,
-                    metadata={"diagnostic": "unapproved_task"},
-                )
+            # 1. Check for valid ExecutionPermit (single canonical CAP gate)
+            blocked = enforce_cap_permit(
+                task,
+                routing,
+                started_at=started_at,
+                duration_ms=(perf_counter() - started_task) * 1000,
+            )
+            if blocked is not None:
+                return blocked
             
             log.debug("The resumed RuntimeTask.permit.decision is: %s", task.permit.decision)
-            
-            if task.permit.decision == "ask_user":
-                log.debug("Workflow paused a second time? decision=%s", task.permit.decision)
-                return RuntimeResult(
-                    task_id=task.task_id,
-                    status=TaskStatus.PAUSED,
-                    routing=routing,
-                    pause=ExecutionPause(
-                        reason="cap_approval",
-                        metadata={"action_type": task.action_type},
-                    ),
-                    error="approval required: CAP governance requests user confirmation",
-                    started_at=started_at,
-                    finished_at=datetime.now(timezone.utc),
-                    duration_ms=(perf_counter() - started_task) * 1000,
-                    metadata={"diagnostic": "approval_required"},
-                )
-            elif task.permit.decision != "allow":
-                return RuntimeResult(
-                    task_id=task.task_id,
-                    status=TaskStatus.FAILED,
-                    routing=routing,
-                    error="approval required: CAP governance blocked user request",
-                    started_at=started_at,
-                    finished_at=datetime.now(timezone.utc),
-                    duration_ms=(perf_counter() - started_task) * 1000,
-                    metadata={"diagnostic": "approval_blocked"},
-                )
-
-
-            # 2. Select Worker
             worker_id = "local-dispatcher"
             if self._worker_registry:
                 req_type = WorkerType(task.worker_requirement) if task.worker_requirement else None
@@ -199,7 +175,7 @@ class RuntimeExecutionPool:
             })
 
         results = await asyncio.gather(*[
-            _execute_single(task, routing)
+            _bounded_single(task, routing)
             for task, routing in tasks_and_routings
         ], return_exceptions=True)
         
@@ -247,11 +223,13 @@ class RuntimeEngine(Runtime):
         worker_registry: WorkerRegistry | None = None,
         checkpoint_store: CheckpointStore | None = None,
         recovery_manager: RecoveryManager | None = None,
+        max_parallelism: int | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._worker_registry = worker_registry
         self._checkpoint_store = checkpoint_store
         self._recovery_manager = recovery_manager
+        self._max_parallelism = max_parallelism
         
         self._started = False
         self._metrics = RuntimeMetricsCollector()
@@ -259,6 +237,9 @@ class RuntimeEngine(Runtime):
 
     def get_metrics(self) -> RuntimeMetricsSnapshot:
         return self._metrics.get_metrics()
+
+    def get_worker_metrics(self) -> WorkerMetricsSnapshot:
+        return self._worker_metrics.get_metrics()
 
     async def start(self) -> None:
         self._started = True
@@ -276,45 +257,16 @@ class RuntimeEngine(Runtime):
         started_at = datetime.now(timezone.utc)
         started = perf_counter()
         
-        if not isinstance(task, ApprovedRuntimeTask) or task.permit is None:
-            return RuntimeResult(
-                task_id=task.task_id,
-                status=TaskStatus.FAILED,
-                routing=routing,
-                error="Runtime execution blocked: Task lacks a valid ExecutionPermit from CAP.",
-                started_at=started_at,
-                finished_at=datetime.now(timezone.utc),
-                duration_ms=(perf_counter() - started) * 1000,
-                metadata={"diagnostic": "unapproved_task"},
-            )
-            
-        if task.permit.decision == "ask_user":
-            return RuntimeResult(
-                task_id=task.task_id,
-                status=TaskStatus.PAUSED,
-                routing=routing,
-                pause=ExecutionPause(
-                    reason="cap_approval",
-                    metadata={"action_type": task.action_type},
-                ),
-                error="approval required: CAP governance requests user confirmation",
-                started_at=started_at,
-                finished_at=datetime.now(timezone.utc),
-                duration_ms=(perf_counter() - started) * 1000,
-                metadata={"diagnostic": "approval_required"},
-            )
-        elif task.permit.decision != "allow":
-            return RuntimeResult(
-                task_id=task.task_id,
-                status=TaskStatus.FAILED,
-                routing=routing,
-                error="approval required: CAP governance blocked user request",
-                started_at=started_at,
-                finished_at=datetime.now(timezone.utc),
-                duration_ms=(perf_counter() - started) * 1000,
-                metadata={"diagnostic": "approval_blocked"},
-            )
-            
+        # 1. Check for valid ExecutionPermit (single canonical CAP gate)
+        blocked = enforce_cap_permit(
+            task,
+            routing,
+            started_at=started_at,
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        if blocked is not None:
+            return blocked
+        
         executor = self._dispatcher.dispatch(task.action_type)
         tool_id = task.metadata.get("tool") if task.action_type == "tool" else task.action_type
         log.info("RuntimeEngine: dispatch — action_type=%s tool_id=%s executor=%s", task.action_type, tool_id, executor.__class__.__name__ if executor else None)
@@ -361,6 +313,7 @@ class RuntimeEngine(Runtime):
                 self._worker_registry,
                 self._worker_metrics,
                 self._recovery_manager,
+                self._max_parallelism,
             )
             return await pool.execute_batch(context, tasks_and_routings)
         graph = ExecutionGraph(
@@ -382,5 +335,6 @@ class RuntimeEngine(Runtime):
             worker_registry=self._worker_registry,
             worker_metrics=self._worker_metrics,
             metrics=self._metrics,
+            max_parallelism=self._max_parallelism or 100,
         )
         return await scheduler.schedule(context, graph, tasks_and_routings)

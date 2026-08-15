@@ -16,6 +16,7 @@ from app.tools.base import Tool
 from app.tools.base import ToolResult
 from app.tools.framework.models import ToolPermission
 from app.tools.framework.capabilities import ToolCategory
+from app.tools.storage import delete_row, open_table, rebuild, save
 
 log = logging.getLogger(__name__)
 
@@ -86,13 +87,19 @@ class Event:
 
 
 class CalendarStore:
-    """In-memory calendar store with conflict detection."""
+    """Durable calendar store with conflict detection (P1.1)."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         self._events: dict[str, Event] = {}
+        self._db = open_table("events", db_path)
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        rebuild(self._events, self._db, Event.from_dict)
 
     def create(self, event: Event) -> Event:
         self._events[event.id] = event
+        save(self._db, event)
         return event
 
     def get(self, event_id: str) -> Event | None:
@@ -105,13 +112,20 @@ class CalendarStore:
         for key, value in kwargs.items():
             if hasattr(event, key):
                 setattr(event, key, value)
+        save(self._db, event)
         return event
 
     def delete(self, event_id: str) -> bool:
         if event_id in self._events:
             del self._events[event_id]
+            delete_row(self._db, event_id)
             return True
         return False
+
+    def save(self, event: Event) -> None:
+        """Persist a directly-mutated event."""
+        self._events[event.id] = event
+        save(self._db, event)
 
     def list_all(self) -> list[Event]:
         return list(self._events.values())
@@ -169,8 +183,8 @@ class CalendarTool(Tool):
         return "calendar"
     """Local-first calendar tool with events, conflicts, and recurrence."""
 
-    def __init__(self) -> None:
-        self._store = CalendarStore()
+    def __init__(self, db_path: str | None = None) -> None:
+        self._store = CalendarStore(db_path=db_path)
         self._capabilities = ["event_create", "event_read", "event_update", "event_delete", "event_agenda", "event_conflicts", "event_list", "event_recurring"]
 
     @property

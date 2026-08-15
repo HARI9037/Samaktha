@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "id": "health_probe",
+  "name": "Health Probe Example Provider",
+  "version": "1.0.0",
+  "kind": "provider",
+  "description": "Example provider: a deterministic communication provider for smoke tests.",
+  "author": "Samaktha Team",
+  "entry": "health_probe",
+  "capabilities": [],
+  "permissions": [],
+  "dependencies": []
+}

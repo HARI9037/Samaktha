@@ -1,12 +1,25 @@
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from uuid import uuid4
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+import logging
+import os
+from typing import Any
 
 from app.api.execute import router as execute_router
 from app.api.health import router as health_router
-from app.config.settings import Settings
+from app.api.limits import RateLimiter, client_key, content_length
+from app.api.metrics import HttpMetricsCollector, router as metrics_router
+from app.api.metrics import provider_metrics_adapter, snapshot_adapter
+from app.api.personality import router as personality_router
+from app.config.settings import Settings, get_settings
 from app.core.cap import ContextEngine
 from app.conversation import ConversationStateManager
 from app.core.gambit import Planner
 from app.core.orchestrator import SamakthaOrchestrator
+from app.core.telemetry import TelemetryRegistry
 from app.providers import (
     GroqProvider,
     LocalProvider,
@@ -42,7 +55,14 @@ from app.runtime import (
     ToolExecutor,
 )
 from app.runtime.streaming import StreamingExecutor
-import os
+from app.security.input_scanner import InputSecurityScanner
+from app.security.output_filter import OutputSecurityFilter
+from app.security.security_metrics import SecurityMetricsCollector
+from app.security.tool_guard import ToolGuard
+from app.governance import GovernanceEngine
+from app.voice.metrics import VoiceMetricsCollector
+
+log = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -50,19 +70,151 @@ def create_app(settings: Settings) -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         debug=settings.debug,
+        lifespan=_app_lifespan,
     )
-    app.state.orchestrator = create_orchestrator()
+    app.state.settings = settings
+
+    http_metrics = HttpMetricsCollector()
+    app.state.http_metrics = http_metrics
+    app.state.rate_limiter = RateLimiter(settings.api_rate_limit_per_minute)
+    telemetry = TelemetryRegistry()
+    telemetry.register("http", http_metrics)
+    app.state.telemetry = telemetry
+
+    app.state.orchestrator = create_orchestrator(settings)
+    telemetry.register("security", snapshot_adapter(app.state.orchestrator.security_metrics))
+    telemetry.register("streaming", snapshot_adapter(app.state.orchestrator.streaming_executor))
+    # P2.8 — voice execution observability. Voice runs in the same process only
+    # when a VoiceSession is started; this process-scoped collector reports the
+    # live counters (zeros until a session exists) through /metrics.
+    app.state.voice_metrics = VoiceMetricsCollector()
+    telemetry.register("voice", app.state.voice_metrics)
+    app.state.orchestrator.telemetry_registry = telemetry
+    _register_system_telemetry(telemetry, app.state.orchestrator)
+
+    @app.middleware("http")
+    async def http_limits_middleware(request: Request, call_next):
+        metrics = request.app.state.http_metrics
+        limits_settings = request.app.state.settings
+        request.state.request_id = request.headers.get("x-request-id") or str(uuid4())
+        from app.core.logging import clear_request_id, set_request_id
+
+        set_request_id(request.state.request_id)
+        try:
+            length = content_length(request)
+            if (
+                length is not None
+                and limits_settings.api_max_request_bytes
+                and length > limits_settings.api_max_request_bytes
+            ):
+                metrics.record_request_too_large()
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": {
+                            "code": "request_too_large",
+                            "message": (
+                                f"Request body exceeds the "
+                                f"{limits_settings.api_max_request_bytes}-byte limit"
+                            ),
+                            "request_id": request.state.request_id,
+                        }
+                    },
+                )
+
+            allowed, retry_after = request.app.state.rate_limiter.allow(client_key(request))
+            if not allowed:
+                metrics.record_rate_limited()
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": {
+                            "code": "rate_limited",
+                            "message": "Too many requests",
+                            "request_id": request.state.request_id,
+                        }
+                    },
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+            metrics.record_request()
+            return await call_next(request)
+        finally:
+            clear_request_id()
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request: Request, exc: Exception):
+        request_id = getattr(request.state, "request_id", "unknown")
+        log.exception(
+            "unhandled exception on %s %s (request_id=%s)",
+            request.method,
+            request.url.path,
+            request_id,
+        )
+        metrics = getattr(request.app.state, "http_metrics", None)
+        if metrics is not None:
+            metrics.record_failed()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": {
+                    "code": "internal",
+                    "message": "Internal server error",
+                    "request_id": request_id,
+                }
+            },
+        )
+
     app.include_router(health_router)
     app.include_router(execute_router)
+    app.include_router(metrics_router)
+    app.include_router(personality_router)
     return app
 
 
-def create_orchestrator() -> SamakthaOrchestrator:
+def _register_system_telemetry(telemetry: TelemetryRegistry, orchestrator: Any) -> None:
+    """Register every subsystem's metric collector into the shared registry.
+
+    P2.7 — all collectors record during real execution; registering them here
+    exposes the live counters through the aggregated ``/metrics`` endpoint.
+    Collectors are adapted lazily, so registration itself never executes work.
+    """
+    telemetry.register("runtime", snapshot_adapter(orchestrator.runtime))
+    telemetry.register(
+        "workers",
+        snapshot_adapter(lambda: orchestrator.runtime.get_worker_metrics()),
+    )
+    telemetry.register("tool", snapshot_adapter(orchestrator.tool_manager))
+    telemetry.register("memory", snapshot_adapter(orchestrator.memory_manager))
+    telemetry.register("workflow", snapshot_adapter(orchestrator.workflow_engine))
+    telemetry.register("orchestrator", snapshot_adapter(orchestrator))
+    telemetry.register("router", snapshot_adapter(orchestrator.model_router))
+    telemetry.register("provider", provider_metrics_adapter(orchestrator.provider_manager))
+    telemetry.register("governance", snapshot_adapter(orchestrator.governance))
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """Start the reminder scheduler on startup and stop it gracefully on
+    shutdown (P1.2)."""
+    scheduler = getattr(app.state.orchestrator, "reminder_scheduler", None)
+    if scheduler is not None:
+        await scheduler.start()
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            await scheduler.stop()
+
+
+def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrator:
+    # Provider credentials are optional at composition time: the application
+    # and /health must remain reachable without keys. Missing provider
+    # configuration is a clean execution-time error, enforced by the
+    # orchestrator before any provider/tool execution (see
+    # SamakthaOrchestrator._ensure_provider_available).
+    settings = settings or get_settings()
     provider_settings = ProviderSettings()
-    # Phase 11.2 — production startup fails loudly instead of silently
-    # degrading to a development provider.
-    provider_settings.validate_startup()
-    provider_settings.validate_production()
 
     provider_registry = ProviderRegistry()
     health_checker = ProviderHealthChecker(provider_settings)
@@ -217,9 +369,14 @@ def create_orchestrator() -> SamakthaOrchestrator:
         model_registry.register(model)
     model_manager = ModelManager(model_registry)
 
-    # Ensure data directory exists for SQLite
-    os.makedirs('data', exist_ok=True)
-    sqlite_store = SQLiteStore(db_path='data/memory.db')
+    # SQLite path is configured once (settings.sqlite_url); no hardcoded DB
+    # locations remain in production composition.
+    from app.config.settings import resolve_sqlite_path
+
+    db_path = resolve_sqlite_path(settings.sqlite_url)
+    db_dir = os.path.dirname(db_path) or "."
+    os.makedirs(db_dir, exist_ok=True)
+    sqlite_store = SQLiteStore(db_path=db_path)
     repository = MemoryRepository(store=sqlite_store)
     memory_manager = MemoryManager(repository=repository)
     memory_controller = MemoryController(memory_manager)
@@ -386,7 +543,22 @@ def create_orchestrator() -> SamakthaOrchestrator:
     from app.tools.tasks import TasksTool
     from app.tools.contacts import ContactsTool
     from app.tools.calendar import CalendarTool
-    reminder_tool = ReminderTool()
+    reminder_tool = ReminderTool(db_path=db_path)
+
+    async def _reminder_notification_callback(reminder):
+        result = await notification_tool.run(
+            {
+                "title": f"Reminder: {reminder.title}",
+                "message": reminder.description or reminder.title,
+            }
+        )
+        if not result.ok:
+            log.warning(
+                "ReminderScheduler: notification callback failed: %s", result.error
+            )
+
+    reminder_scheduler = reminder_tool.scheduler
+    reminder_scheduler.register_callback(_reminder_notification_callback)
     tool_registry.register(
         tool_id="reminder",
         tool=reminder_tool,
@@ -403,7 +575,7 @@ def create_orchestrator() -> SamakthaOrchestrator:
             policy=reminder_tool.policy,
         ),
     )
-    notes_tool = NotesTool()
+    notes_tool = NotesTool(db_path=db_path)
     tool_registry.register(
         tool_id="notes",
         tool=notes_tool,
@@ -420,7 +592,7 @@ def create_orchestrator() -> SamakthaOrchestrator:
             policy=notes_tool.policy,
         ),
     )
-    tasks_tool = TasksTool()
+    tasks_tool = TasksTool(db_path=db_path)
     tool_registry.register(
         tool_id="tasks",
         tool=tasks_tool,
@@ -437,7 +609,7 @@ def create_orchestrator() -> SamakthaOrchestrator:
             policy=tasks_tool.policy,
         ),
     )
-    contacts_tool = ContactsTool()
+    contacts_tool = ContactsTool(db_path=db_path)
     tool_registry.register(
         tool_id="contacts",
         tool=contacts_tool,
@@ -454,7 +626,7 @@ def create_orchestrator() -> SamakthaOrchestrator:
             policy=contacts_tool.policy,
         ),
     )
-    calendar_tool = CalendarTool()
+    calendar_tool = CalendarTool(db_path=db_path)
     tool_registry.register(
         tool_id="calendar",
         tool=calendar_tool,
@@ -510,9 +682,19 @@ def create_orchestrator() -> SamakthaOrchestrator:
     )
     tool_manager = ToolManager(tool_registry)
 
+    # P0.2 — one security control plane per process: the input scanner gates
+    # every request at the pipeline entry, the output filter redacts leaked
+    # credentials from every response, and the tool guard gates every tool
+    # execution. All three share a single metrics collector.
+    security_metrics = SecurityMetricsCollector()
+    input_scanner = InputSecurityScanner()
+    output_filter = OutputSecurityFilter(metrics=security_metrics)
+    tool_guard = ToolGuard(tool_manager=tool_manager, metrics=security_metrics)
+
     runtime_registry = RuntimeRegistry()
-    runtime_registry.register("provider", ProviderExecutor(provider_manager))
-    runtime_registry.register("tool", ToolExecutor(tool_manager))
+    governance = GovernanceEngine()
+    runtime_registry.register("provider", ProviderExecutor(provider_manager, governance=governance))
+    runtime_registry.register("tool", ToolExecutor(tool_manager, tool_guard=tool_guard, governance=governance))
     runtime = RuntimeEngine(RuntimeDispatcher(runtime_registry))
 
     router_registrations: list[ProviderModelRegistration] = []
@@ -608,16 +790,38 @@ def create_orchestrator() -> SamakthaOrchestrator:
         preferred_provider=provider_settings.default_provider,
     )
 
+    workflow_engine = WorkflowEngine()
+
+    # P2.8 — personality lifecycle wired into the production orchestrator. The
+    # registry catalogs personalities, the manager owns the active selection,
+    # and persistence re-activates the last chosen profile across restarts.
+    from app.personality import (
+        PersonalityLifecycleManager,
+        PersonalityPersistence,
+        default_personality_registry,
+    )
+
+    personality_registry = default_personality_registry()
+    personality_manager = PersonalityLifecycleManager(
+        personality_registry,
+        default_profile_id=settings.personality_profile,
+        persistence=PersonalityPersistence(settings.personality_state_path),
+    )
+
     orchestrator = SamakthaOrchestrator(
         context_engine=ContextEngine(memory_reader=memory_manager),
         planner=Planner(memory_manager=memory_manager),
         router=model_router,
         runtime=runtime,
-        workflow_engine=WorkflowEngine(),
+        workflow_engine=workflow_engine,
         memory_manager=memory_manager,
         memory_controller=memory_controller,
         session_manager=session_manager,
         conversation_state_manager=conversation_state_manager,
+        security_scanner=input_scanner,
+        security_output_filter=output_filter,
+        personality_registry=personality_registry,
+        personality_manager=personality_manager,
     )
     # Expose existing runtime streaming as a connection point for frontends;
     # this does not alter the orchestrator's synchronous workflow path.
@@ -633,4 +837,15 @@ def create_orchestrator() -> SamakthaOrchestrator:
     orchestrator.memory_controller = memory_controller
     orchestrator.session_manager = session_manager
     orchestrator.conversation_state_manager = conversation_state_manager
+    orchestrator.security_metrics = security_metrics
+    orchestrator.input_scanner = input_scanner
+    orchestrator.output_filter = output_filter
+    orchestrator.tool_guard = tool_guard
+    orchestrator.reminder_scheduler = reminder_scheduler
+    # P2.7 — telemetry accessors (public handles to subsystem collectors).
+    orchestrator.runtime = runtime
+    orchestrator.workflow_engine = workflow_engine
+    orchestrator.model_router = model_router
+    orchestrator.tool_manager = tool_manager
+    orchestrator.governance = governance
     return orchestrator

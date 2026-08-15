@@ -66,7 +66,7 @@ SamakthaHeader {{
     color: {SAMAKTHA_DIM};
 }}
 
-#status-panel {{
+#voice-status-panel {{
     height: 1;
     width: 1fr;
     padding: 0 2;
@@ -87,7 +87,7 @@ SamakthaHeader {{
     color: {SAMAKTHA_DIM};
 }}
 
-#status-panel > Horizontal {{
+#voice-status-panel > Horizontal {{
     height: 1;
     width: 1fr;
     align: left middle;

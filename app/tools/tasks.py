@@ -15,6 +15,7 @@ from app.tools.base import Tool
 from app.tools.base import ToolResult
 from app.tools.framework.models import ToolPermission
 from app.tools.framework.capabilities import ToolCategory
+from app.tools.storage import delete_row, open_table, rebuild, save
 
 log = logging.getLogger(__name__)
 
@@ -77,13 +78,19 @@ class Task:
 
 
 class TasksStore:
-    """In-memory tasks store."""
+    """Durable tasks store: in-memory cache backed by SQLite (P1.1)."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         self._tasks: dict[str, Task] = {}
+        self._db = open_table("tasks", db_path)
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        rebuild(self._tasks, self._db, Task.from_dict)
 
     def create(self, task: Task) -> Task:
         self._tasks[task.id] = task
+        save(self._db, task)
         return task
 
     def get(self, task_id: str) -> Task | None:
@@ -96,13 +103,20 @@ class TasksStore:
         for key, value in kwargs.items():
             if hasattr(task, key):
                 setattr(task, key, value)
+        save(self._db, task)
         return task
 
     def delete(self, task_id: str) -> bool:
         if task_id in self._tasks:
             del self._tasks[task_id]
+            delete_row(self._db, task_id)
             return True
         return False
+
+    def save(self, task: Task) -> None:
+        """Persist a directly-mutated task (e.g. tool-completed flows)."""
+        self._tasks[task.id] = task
+        save(self._db, task)
 
     def list_all(self) -> list[Task]:
         return list(self._tasks.values())
@@ -130,8 +144,8 @@ class TasksTool(Tool):
         return "tasks"
     """Tool for managing tasks with priority, status, due date, and reminders."""
 
-    def __init__(self) -> None:
-        self._store = TasksStore()
+    def __init__(self, db_path: str | None = None) -> None:
+        self._store = TasksStore(db_path=db_path)
         self._capabilities = ["task_create", "task_read", "task_update", "task_delete", "task_list", "task_filter", "task_complete"]
 
     @property
@@ -285,6 +299,7 @@ class TasksTool(Tool):
 
         task.status = "done"
         task.completed_at = datetime.now(timezone.utc)
+        self._store.save(task)
         return ToolResult(ok=True, data={"task": task.to_dict(), "message": f"Task '{task.title}' completed."})
 
     async def voice_speak(self, text: str) -> str:

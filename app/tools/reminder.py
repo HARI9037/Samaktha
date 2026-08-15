@@ -7,8 +7,11 @@ voice support, and memory integration.
 from __future__ import annotations
 
 import asyncio
+import calendar
+import inspect
 import logging
 import uuid
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from typing import Any, AsyncIterator
 
@@ -16,8 +19,24 @@ from app.tools.base import Tool
 from app.tools.base import ToolResult
 from app.tools.framework.models import ToolPermission
 from app.tools.framework.capabilities import ToolCategory
+from app.tools.storage import delete_row, open_table, rebuild, save
 
 log = logging.getLogger(__name__)
+
+
+def _next_occurrence(due: datetime, repeat: str) -> datetime | None:
+    """Compute the next occurrence of a repeating reminder."""
+    if repeat == "daily":
+        return due + timedelta(days=1)
+    if repeat == "weekly":
+        return due + timedelta(days=7)
+    if repeat == "monthly":
+        month = due.month - 1 + 1
+        year = due.year + month // 12
+        month = month % 12 + 1
+        day = min(due.day, calendar.monthrange(year, month)[1])
+        return due.replace(year=year, month=month, day=day)
+    return None
 
 
 class Reminder:
@@ -70,22 +89,61 @@ class Reminder:
 
 
 class ReminderScheduler:
-    """Lightweight scheduler for reminders.
+    """Durable reminder scheduler with an async polling lifecycle (P1.2).
 
-    Uses a simple polling approach with no busy loops.
+    - ``start()`` / ``stop()`` manage a single background poll loop; calling
+      ``start()`` twice does not create duplicate loops.
+    - The loop polls for due reminders and fires registered callbacks.
+    - Repeating reminders are rescheduled to their next occurrence.
+    - Errors are captured, logged, and observable via the ``errors`` property.
+    - Reminders are durable (P1.1); state is rebuilt from disk on startup so
+      scheduled jobs survive process restarts.
     """
 
-    def __init__(self) -> None:
+    DEFAULT_POLL_INTERVAL_S = 30.0
+    MAX_ERRORS = 100
+    DEFAULT_KEPT_COMPLETED_REMINDERS = 200
+
+    def __init__(
+        self,
+        db_path: str | None = None,
+        poll_interval: float = DEFAULT_POLL_INTERVAL_S,
+        keep_completed: int | None = DEFAULT_KEPT_COMPLETED_REMINDERS,
+    ) -> None:
         self._reminders: dict[str, Reminder] = {}
         self._callbacks: list[Any] = []
         self._running = False
+        self._task: asyncio.Task | None = None
+        self._poll_interval = poll_interval
+        self._keep_completed = keep_completed
+        self._errors: deque[str] = deque(maxlen=self.MAX_ERRORS)
+        self._db = open_table("reminders", db_path)
+        self._rebuild()
+        self._prune_if_over_cap()
+
+    def _rebuild(self) -> None:
+        rebuild(self._reminders, self._db, Reminder.from_dict)
+
+    # ------------------------------------------------------------------
+    # Durable reminder store
+    # ------------------------------------------------------------------
 
     def add_reminder(self, reminder: Reminder) -> None:
+        if reminder.id in self._reminders:
+            raise ValueError(f"reminder already exists: {reminder.id}")
         self._reminders[reminder.id] = reminder
+        save(self._db, reminder)
+
+    def save_reminder(self, reminder: Reminder) -> None:
+        """Persist a directly-mutated reminder (update/snooze/complete)."""
+        self._reminders[reminder.id] = reminder
+        save(self._db, reminder)
+        self._prune_if_over_cap()
 
     def remove_reminder(self, reminder_id: str) -> bool:
         if reminder_id in self._reminders:
             del self._reminders[reminder_id]
+            delete_row(self._db, reminder_id)
             return True
         return False
 
@@ -110,24 +168,109 @@ class ReminderScheduler:
     def register_callback(self, callback: Any) -> None:
         self._callbacks.append(callback)
 
+    # ------------------------------------------------------------------
+    # Completed-history pruning (P1.4)
+    # ------------------------------------------------------------------
+
+    def prune_completed(self, keep: int | None = None) -> int:
+        """Delete completed reminders beyond the newest ``keep`` (default cap).
+
+        Active and repeating reminders are never touched. Returns the number
+        of reminders removed from both memory and the durable store.
+        """
+        if keep is None:
+            keep = self._keep_completed
+        if keep is None:
+            return 0
+        completed = sorted(
+            (r for r in self._reminders.values() if r.completed),
+            key=lambda r: (r.created_at, r.due_at or r.created_at),
+        )
+        overflow = completed[:-keep] if keep > 0 else completed
+        for reminder in overflow:
+            self.remove_reminder(reminder.id)
+        return len(overflow)
+
+    def _prune_if_over_cap(self) -> None:
+        if self._keep_completed is None:
+            return
+        completed = sum(1 for r in self._reminders.values() if r.completed)
+        if completed > self._keep_completed:
+            self.prune_completed(self._keep_completed)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @property
+    def errors(self) -> list[str]:
+        """Recent scheduler errors (newest last), bounded and observable."""
+        return list(self._errors)
+
+    def _record_error(self, message: str) -> None:
+        self._errors.append(message)
+        log.error("ReminderScheduler: %s", message)
+
+    async def start(self) -> None:
+        """Start the background poll loop (idempotent — no duplicate loops)."""
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._poll_loop(), name="reminder-scheduler")
+
+    async def stop(self) -> None:
+        """Gracefully stop the poll loop and await its cancellation."""
+        self._running = False
+        task = self._task
+        self._task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001 - lifecycle error must not propagate
+                self._record_error(f"poll loop ended with error: {exc}")
+
+    async def _poll_loop(self) -> None:
+        while self._running:
+            try:
+                await self.check_due()
+            except Exception as exc:  # noqa: BLE001 - keep the loop alive
+                self._record_error(f"poll iteration failed: {exc}")
+            await asyncio.sleep(self._poll_interval)
+
     async def check_due(self) -> list[Reminder]:
         due = self.get_due_reminders()
         for reminder in due:
-            for cb in self._callbacks:
-                try:
-                    if asyncio.iscoroutinefunction(cb):
-                        await cb(reminder)
-                    else:
-                        cb(reminder)
-                except Exception:
-                    log.debug("Reminder callback failed", exc_info=True)
+            await self._fire(reminder)
+            if reminder.repeat in ("", "none"):
+                reminder.completed = True
+                self.save_reminder(reminder)
+            else:
+                self._reschedule_if_repeating(reminder)
         return due
 
-    def start(self) -> None:
-        self._running = True
-
-    def stop(self) -> None:
-        self._running = False
+    async def _fire(self, reminder: Reminder) -> None:
+        for cb in self._callbacks:
+            try:
+                if inspect.iscoroutinefunction(cb):
+                    await cb(reminder)
+                else:
+                    cb(reminder)
+            except Exception as exc:  # noqa: BLE001 - one bad callback must not break the loop
+                self._record_error(f"callback failed for reminder {reminder.id}: {exc}")
+    def _reschedule_if_repeating(self, reminder: Reminder) -> None:
+        if reminder.repeat in ("", "none") or reminder.due_at is None:
+            return
+        next_due = _next_occurrence(reminder.due_at, reminder.repeat)
+        if next_due is not None:
+            reminder.due_at = next_due
+            self.save_reminder(reminder)
 
 
 class ReminderTool(Tool):
@@ -136,9 +279,13 @@ class ReminderTool(Tool):
         return "reminder"
     """Tool for managing reminders with scheduling and notifications."""
 
-    def __init__(self) -> None:
-        self._scheduler = ReminderScheduler()
+    def __init__(self, db_path: str | None = None) -> None:
+        self._scheduler = ReminderScheduler(db_path=db_path)
         self._capabilities = ["reminder_create", "reminder_list", "reminder_cancel", "reminder_update", "reminder_snooze"]
+
+    @property
+    def scheduler(self) -> ReminderScheduler:
+        return self._scheduler
 
     @property
     def capabilities(self):
@@ -262,6 +409,7 @@ class ReminderTool(Tool):
         if "repeat" in arguments:
             reminder.repeat = arguments["repeat"]
 
+        self._scheduler.save_reminder(reminder)
         return ToolResult(ok=True, data={"reminder": reminder.to_dict(), "message": f"Reminder {reminder_id} updated."})
 
     def _snooze_reminder(self, arguments: dict) -> ToolResult:
@@ -272,6 +420,7 @@ class ReminderTool(Tool):
             return ToolResult(ok=False, data={"error": f"Reminder {reminder_id} not found."})
 
         reminder.snoozed_until = datetime.now(timezone.utc) + timedelta(minutes=snooze_minutes)
+        self._scheduler.save_reminder(reminder)
         return ToolResult(ok=True, data={"reminder": reminder.to_dict(), "message": f"Reminder {reminder_id} snoozed for {snooze_minutes} minutes."})
 
     def _complete_reminder(self, arguments: dict) -> ToolResult:
@@ -281,6 +430,7 @@ class ReminderTool(Tool):
             return ToolResult(ok=False, data={"error": f"Reminder {reminder_id} not found."})
 
         reminder.completed = True
+        self._scheduler.save_reminder(reminder)
         return ToolResult(ok=True, data={"reminder": reminder.to_dict(), "message": f"Reminder {reminder_id} completed."})
 
     async def voice_speak(self, text: str) -> str:

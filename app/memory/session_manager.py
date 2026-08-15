@@ -18,6 +18,9 @@ Phase 20.2.2 hardening
 - Duplicate history protection: ``append_history`` skips duplicate event IDs.
 - Session rotation: configurable ``max_history_entries``; oldest entries are
   moved to a ``session_memory_archive.json`` sidecar, never deleted.
+- Cache bounding (P1.4): configurable ``max_cached_sessions``; the
+  least-recently-used sessions are evicted from the in-memory cache (never
+  from disk), so memory growth is bounded while durability is unaffected.
 - Atomic writes delegated to ``session_store.write_json`` /
   ``session_store.write_text_atomic``.
 """
@@ -30,6 +33,7 @@ import re
 import shutil
 import threading
 import warnings
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -74,6 +78,11 @@ _LONG_TERM_MEMORY_TYPES = (
 # Archive sidecar filename (alongside session_memory.json).
 _ARCHIVE_FILENAME = "session_memory_archive.json"
 
+# Default cap on sessions kept in the in-memory cache. Sessions are durable
+# on disk, so eviction only forces a reload on next access (memory bounded,
+# P1.4).
+DEFAULT_MAX_CACHED_SESSIONS = 256
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -101,13 +110,15 @@ class SessionManager:
         memory_controller: Any | None = None,
         clock: Callable[[], str] = _utc_now,
         max_history_entries: int | None = None,
+        max_cached_sessions: int | None = DEFAULT_MAX_CACHED_SESSIONS,
     ) -> None:
         self._base_dir = Path(base_dir or DEFAULT_BASE_DIR)
         self._memory_controller = memory_controller
         self._clock = clock
         self._max_history_entries = max_history_entries
+        self._max_cached_sessions = max_cached_sessions
         self._index = SessionIndex(self._base_dir)
-        self._cache: dict[str, Session] = {}
+        self._cache: "OrderedDict[str, Session]" = OrderedDict()
         self._counter = 0
         self._lock = threading.Lock()  # Phase 20.2.2 — thread safety
 
@@ -125,6 +136,35 @@ class SessionManager:
 
     def _now(self) -> str:
         return self._clock()
+
+    # ------------------------------------------------------------------
+    # Cache bounding (P1.4) — sessions are durable on disk, so eviction
+    # only means the next access reloads from disk. Least-recently-used
+    # sessions are evicted first.
+    # ------------------------------------------------------------------
+
+    def _cache_session(self, session_id: str, session: Session) -> None:
+        self._cache[session_id] = session
+        self._cache.move_to_end(session_id)
+        self._bound_cache()
+
+    def _bound_cache(self) -> None:
+        if self._max_cached_sessions is None:
+            return
+        while len(self._cache) > self._max_cached_sessions:
+            _, evicted = self._cache.popitem(last=False)
+            log.debug(
+                "SessionManager: evicted cached session %r (bound=%d)",
+                evicted.session_id,
+                self._max_cached_sessions,
+            )
+
+    def prune_cache(self) -> int:
+        """Evict cached sessions beyond the bound; returns count removed."""
+        with self._lock:
+            before = len(self._cache)
+            self._bound_cache()
+            return before - len(self._cache)
 
     def _next_session_id(self, now: str) -> str:
         self._counter += 1
@@ -225,7 +265,7 @@ class SessionManager:
             session = Session(metadata=metadata, memory=memory)
             session.metadata.topic_summary = self._build_topic_summary(session)
             self._write_session(session)
-            self._cache[resolved_id] = session
+            self._cache_session(resolved_id, session)
             return session
 
     def session_exists(self, session_id: str) -> bool:
@@ -244,6 +284,7 @@ class SessionManager:
     def _load_session_locked(self, session_id: str) -> Session:
         """Internal load (must be called under self._lock)."""
         if session_id in self._cache:
+            self._cache.move_to_end(session_id)
             return self._cache[session_id]
         if not self._index.contains(session_id):
             raise KeyError(f"session not found: {session_id}")
@@ -333,7 +374,7 @@ class SessionManager:
                 memory = SessionMemory(session_id=session_id)
 
         session = Session(metadata=metadata, memory=memory)
-        self._cache[session_id] = session
+        self._cache_session(session_id, session)
         return session
 
     def save_session(self, session: Session) -> None:
@@ -341,7 +382,7 @@ class SessionManager:
         with self._lock:
             session.metadata.updated_at = self._now()
             self._write_session(session)
-            self._cache[session.session_id] = session
+            self._cache_session(session.session_id, session)
 
     # ------------------------------------------------------------------
     # Metadata updates
@@ -382,7 +423,7 @@ class SessionManager:
             session.metadata.updated_at = self._now()
             session.metadata.topic_summary = self._build_topic_summary(session)
             self._write_session(session)
-            self._cache[session_id] = session
+            self._cache_session(session_id, session)
             return session.metadata
 
     # ------------------------------------------------------------------
@@ -420,7 +461,7 @@ class SessionManager:
             session.memory.history.append(entry)
             session.metadata.updated_at = self._now()
             self._write_session(session)
-            self._cache[session_id] = session
+            self._cache_session(session_id, session)
 
     def load_archived_history(self, session_id: str) -> list[SessionHistoryEntry]:
         """Return rotated history entries from the archive sidecar, if any."""
@@ -488,7 +529,7 @@ class SessionManager:
             session.metadata.updated_at = now
             session.metadata.topic_summary = self._build_topic_summary(session)
             self._write_session(session)
-            self._cache[session_id] = session
+            self._cache_session(session_id, session)
             return entry
 
     # ------------------------------------------------------------------

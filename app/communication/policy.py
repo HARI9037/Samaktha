@@ -20,6 +20,7 @@ COMMUNICATION_PERMISSIONS = {
     CommunicationProvider.WEBHOOK: ["network", "webhook"],
     CommunicationProvider.PUSH: ["network", "push"],
     CommunicationProvider.DESKTOP: ["local", "notification"],
+    CommunicationProvider.TEST: ["local", "test"],
 }
 
 
@@ -35,6 +36,7 @@ COMMUNICATION_RISK = {
     CommunicationProvider.WEBHOOK: "HIGH",
     CommunicationProvider.PUSH: "MEDIUM",
     CommunicationProvider.DESKTOP: "LOW",
+    CommunicationProvider.TEST: "LOW",
 }
 
 

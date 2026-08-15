@@ -306,7 +306,13 @@ def test_router_returns_unavailable_decision_when_all_filtered_by_health():
 # --- O8/O9: production composition and single routing implementation -------
 
 
-def test_orchestrator_startup_aborts_without_production_provider(monkeypatch):
+def test_orchestrator_startup_allows_missing_keys_and_fails_at_execution(monkeypatch):
+    """P0.3 — provider validation is decoupled from application construction.
+
+    ``create_app``/``create_orchestrator`` must succeed without credentials so
+    the application and /health stay reachable. Missing provider configuration
+    surfaces as a clean execution-time error instead of a startup failure.
+    """
     monkeypatch.setenv("SAMAKTHA_GROQ_API_KEY", "")
     monkeypatch.setenv("SAMAKTHA_OPENAI_API_KEY", "")
     monkeypatch.setenv("SAMAKTHA_OPENROUTER_API_KEY", "")
@@ -315,10 +321,28 @@ def test_orchestrator_startup_aborts_without_production_provider(monkeypatch):
     monkeypatch.setenv("SAMAKTHA_DEV_MODE", "false")
     monkeypatch.setenv("MOCK_AGENT", "")
 
-    from app.core.app import create_orchestrator
+    from fastapi.testclient import TestClient
 
-    with pytest.raises(ProviderStartupError, match="Groq API key missing"):
-        create_orchestrator()
+    from app.config.settings import Settings
+    from app.core.app import create_app, create_orchestrator
+    from app.core.contracts import RuntimeContext
+
+    orchestrator = create_orchestrator()
+    assert orchestrator.provider_settings is not None
+
+    async def run_test() -> None:
+        with pytest.raises(ProviderStartupError, match="No production provider is configured"):
+            await orchestrator.run(
+                request="hello",
+                runtime_context=RuntimeContext(request_id="req-1"),
+            )
+
+    asyncio.run(run_test())
+
+    app = create_app(Settings())
+    client = TestClient(app)
+    health = client.get("/health")
+    assert health.status_code == 200
 
 
 def test_production_composition_never_registers_mock(monkeypatch):

@@ -8,7 +8,15 @@ from app.runtime_parallel.graph import ExecutionGraph
 @dataclass
 class DependencyResolver:
     def validate(self, graph: ExecutionGraph) -> None:
-        self.topological_order(graph)
+        if self.detect_cycles(graph):
+            raise ValueError("cycle detected in execution graph")
+        known = set(graph.task_ids)
+        for task, deps in graph.dependencies.items():
+            if task not in known:
+                raise ValueError(f"unknown task in dependencies: {task!r}")
+            for dep in deps:
+                if dep not in known:
+                    raise ValueError(f"unknown dependency: {dep!r} required by {task!r}")
 
     def detect_cycles(self, graph: ExecutionGraph) -> bool:
         visiting: set[str] = set()

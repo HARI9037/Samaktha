@@ -15,7 +15,7 @@ Dispatch is by file extension:
   automatic pagination. No images, no advanced layout.
 - Unknown extensions fall back to UTF-8 text (previous behavior).
 
-No new dependencies are introduced.
+Runtime dependencies: python-docx (docx), openpyxl (xlsx), PyMuPDF (pdf).
 """
 
 from __future__ import annotations

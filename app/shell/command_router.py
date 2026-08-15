@@ -274,6 +274,36 @@ class CommandRouter:
         except Exception:
             pass
 
+    def reload_session(self, session_id: str | None) -> CommandResult:
+        """Re-read the persisted active session state for the TUI reload action."""
+        if self._session_manager is None or not session_id:
+            return CommandResult(
+                handled=True,
+                output="No session to reload.",
+                action="reload_session",
+                payload={"session_id": session_id or "default", "message_count": 0},
+            )
+        try:
+            metadata = self._session_manager.load_session(session_id).metadata
+        except Exception:
+            return CommandResult(
+                handled=True,
+                output=f"Session not found: {session_id}",
+                action="reload_session",
+                payload={"session_id": session_id, "message_count": None},
+            )
+        label = format_session_label(metadata.created_at)
+        return CommandResult(
+            handled=True,
+            output=(
+                "Reloaded session\n\n"
+                f"Session:\n{label}\n\n"
+                f"Messages:\n{metadata.message_count}"
+            ),
+            action="reload_session",
+            payload={"session_id": session_id, "message_count": metadata.message_count},
+        )
+
     # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------
@@ -418,7 +448,41 @@ class CommandRouter:
         return self._developer_summary("Workspace")
 
     def _cmd_review(self, active_session_id: str | None, args: list[str]) -> CommandResult:
-        return self._developer_summary("Review")
+        from app.developer.review import ReviewEngine
+
+        engine = ReviewEngine()
+        result = engine.review_repository(Path.cwd())
+        counts = result.by_severity()
+        lines = [
+            "Review",
+            "",
+            f"Scanned {len(result.files_scanned)} files, {result.count()} findings",
+            (
+                f"HIGH: {counts['high']} | MEDIUM: {counts['medium']} | "
+                f"LOW: {counts['low']} | INFO: {counts['info']}"
+            ),
+        ]
+        if result.errors:
+            lines.append(f"Errors: {len(result.errors)}")
+        findings = result.sorted_findings()
+        for finding in findings[:20]:
+            location = finding.file
+            if finding.line is not None:
+                location = f"{location}:{finding.line}"
+            lines.append("")
+            lines.append(
+                f"- [{finding.severity.value.upper()}] {finding.rule} — {location}"
+            )
+            lines.append(f"  {finding.message}")
+            if finding.evidence:
+                lines.append(f"  evidence: {finding.evidence[:200]}")
+        if len(findings) > 20:
+            lines.append("")
+            lines.append(f"... and {len(findings) - 20} more findings")
+        for error in result.errors[:10]:
+            lines.append("")
+            lines.append(f"⚠ {error}")
+        return CommandResult(handled=True, output="\n".join(lines))
 
     def _cmd_debug(self, active_session_id: str | None, args: list[str]) -> CommandResult:
         return self._developer_summary("Debug")

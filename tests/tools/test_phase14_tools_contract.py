@@ -28,6 +28,15 @@ from app.tools.registry import ToolRegistry
 from app.tools.reminder import ReminderTool
 from app.tools.tasks import TasksTool
 
+
+@pytest.fixture(autouse=True)
+def tmp_canonical_db(tmp_path, monkeypatch):
+    """Isolate the personal tools' durable stores from the real DB (P1.1)."""
+    from app.config.settings import Settings
+
+    settings = Settings(sqlite_url=f"sqlite:///{tmp_path / 'contract.db'}")
+    monkeypatch.setattr("app.db.config.get_settings", lambda: settings)
+
 # (tool_factory, create_args, id_key, list_key, read_supported)
 PERSONAL_TOOLS = [
     (
