@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.core.contracts.state import ExecutionStatus
+from app.core.contracts.runtime import RuntimeResult
 
 
 class WorkflowState(BaseModel):
@@ -17,7 +18,9 @@ class WorkflowState(BaseModel):
     failed_step: int | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
-    results: list[Any] = Field(default_factory=list)
+    # Typed so checkpoint round-trips preserve runtime evidence methods and
+    # status enums instead of degrading completed results into dictionaries.
+    results: list[RuntimeResult] = Field(default_factory=list)
     completed_task_ids: set[str] = Field(default_factory=set)
     failed_task_ids: set[str] = Field(default_factory=set)
     errors: list[str] = Field(default_factory=list)

@@ -5,6 +5,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from app.core.contracts.policy import ExecutionConstraints
+
 
 class GoalComplexity(StrEnum):
     """Estimated complexity for a user goal."""
@@ -80,6 +82,10 @@ class GoalIntent(StrEnum):
     READ_MESSAGES = "read_messages"
     SEARCH_MESSAGES = "search_messages"
     SEARCH_CONTACT = "search_contact"
+    MANAGE_REMINDER = "manage_reminder"
+    MANAGE_NOTE = "manage_note"
+    MANAGE_TASK = "manage_task"
+    MANAGE_CONTACT = "manage_contact"
 
 
 class Goal(BaseModel):
@@ -98,6 +104,9 @@ class Goal(BaseModel):
     requires_fast_response: bool = False
     estimated_context_tokens: int = 2000
     constraints: list[str] = Field(default_factory=list)
+    intent_action: str | None = None
+    intent_arguments: dict = Field(default_factory=dict)
+    missing_arguments: list[str] = Field(default_factory=list)
 
 
 class Skill(BaseModel):
@@ -130,6 +139,9 @@ class RouterRequest(BaseModel):
     requires_fast_response: bool = False
     max_latency_ms: float | None = None
     max_cost_per_1k_tokens: float | None = None
+    execution_constraints: ExecutionConstraints = Field(
+        default_factory=ExecutionConstraints
+    )
 
 
 class PlanTask(BaseModel):
@@ -267,6 +279,9 @@ class PlannerStatus(StrEnum):
     message via CAPABILITY_UNAVAILABLE_MESSAGE without invoking the Provider.
     """
 
+    NEEDS_INPUT = "needs_input"
+    """A deterministic tool route exists but required user data is absent."""
+
 
 class PlannerResult(BaseModel):
     """Envelope returned by Planner.plan_with_capability_check().
@@ -279,4 +294,5 @@ class PlannerResult(BaseModel):
     plan: ExecutionPlan | None = None
     required_capability: str | None = None
     """Human-readable capability name when status == CAPABILITY_UNAVAILABLE."""
+    missing_arguments: list[str] = Field(default_factory=list)
 

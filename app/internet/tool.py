@@ -7,6 +7,8 @@ its own: it can only reason over the verified results this tool returns.
 Governance: the tool refuses to run without a CAP permit decision injected by
 the Orchestrator (``_cap_permit``), and it never raises — every SearchError is
 turned into a graceful ToolResult the workflow can surface to the user.
+
+P7B hardening: SSRF protection, redirect validation, streaming bounds.
 """
 
 from __future__ import annotations
@@ -48,13 +50,25 @@ class InternetTool(Tool):
         ranker: ResultRanker | None = None,
         verifier: SearchVerifier | None = None,
         fetcher: ContentFetcher | None = None,
+        # P7B security options
+        allow_private_addresses: bool = False,
+        allow_localhost: bool = False,
+        max_redirects: int = 5,
+        max_response_bytes: int = 2_000_000,
+        sensitive_header_allowlist: tuple[str, ...] = (),
     ) -> None:
         self._provider = provider or BraveSearchProvider()
         self._policy = policy or SearchPolicy()
         self._cache = cache or SearchCache()
         self._ranker = ranker or ResultRanker(self._policy)
         self._verifier = verifier or SearchVerifier(self._policy)
-        self._fetcher = fetcher or ContentFetcher()
+        self._fetcher = fetcher or ContentFetcher(
+            allow_private_addresses=allow_private_addresses,
+            allow_localhost=allow_localhost,
+            max_redirects=max_redirects,
+            max_response_bytes=max_response_bytes,
+            sensitive_header_allowlist=sensitive_header_allowlist,
+        )
 
     @property
     def name(self) -> str:
@@ -154,7 +168,8 @@ class InternetTool(Tool):
         url = str(arguments.get("url") or "").strip()
         if not url:
             return ToolResult(ok=False, error="A url is required for fetch.")
-        result = await self._fetcher.fetch(url)
+        headers = arguments.get("headers") or {}
+        result = await self._fetcher.fetch(url, headers=headers)
         if not result.ok:
             return ToolResult(ok=False, error=result.error or "Fetch failed.")
         return ToolResult(

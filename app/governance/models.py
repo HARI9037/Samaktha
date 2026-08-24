@@ -145,6 +145,9 @@ class GovernanceDecision(BaseModel):
     policy_id: Optional[str] = None
     policy_hits: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
+    permit_id: Optional[str] = None
+    operation_digest: Optional[str] = None
+    authorization_source: Optional[str] = None
 
     @property
     def allowed(self) -> bool:
@@ -181,6 +184,9 @@ class ExecutionRecord(BaseModel):
     status: DecisionStatus
     permissions: tuple[str, ...] = Field(default_factory=tuple)
     error: Optional[str] = None
+    permit_id: Optional[str] = None
+    operation_digest: Optional[str] = None
+    authorization_source: Optional[str] = None
     previous_hash: str = ""
     hash: str = ""
 
@@ -199,6 +205,9 @@ class ExecutionRecord(BaseModel):
                 "status": self.status,
                 "permissions": list(self.permissions),
                 "error": self.error,
+                "permit_id": self.permit_id,
+                "operation_digest": self.operation_digest,
+                "authorization_source": self.authorization_source,
                 "previous_hash": self.previous_hash,
             },
         )

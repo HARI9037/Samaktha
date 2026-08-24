@@ -87,7 +87,7 @@ async def test_filesystem_tool_path_traversal():
             "path": "../outside.txt"
         })
         assert traversal_result.ok is False
-        assert "traversal" in traversal_result.error.lower()
+        assert traversal_result.data["security_reason"] == "outside_allowed_root"
 
 
 @pytest.mark.asyncio

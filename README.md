@@ -1,274 +1,162 @@
 # Samaktha Core
 
-**Current Stable Release:** Samaktha Core v0.5.0
+**Version 0.5.0 — engineering-ready controlled-pilot candidate**
 
-> **A local-first AI agent infrastructure framework for controlled, observable, and policy-governed execution.**
+Samaktha is a local-first AI-agent infrastructure project for policy-governed,
+observable execution. Models may plan or generate content, but deterministic
+application code controls authorization, provider selection, tools, recovery,
+and execution evidence.
 
-Samaktha explores a core engineering problem in LLM-powered applications:
+This repository is ready for a private Windows pilot. It is not a public
+release, and no real-user pilot result is claimed yet.
 
-**How do you separate AI cognition from the execution of real-world actions?**
-
-Instead of allowing an LLM to directly decide and perform side effects, Samaktha separates planning, governance, workflow coordination, runtime execution, providers, tools, memory, and context into explicit subsystems.
-
-## Why Samaktha?
-
-Many AI applications collapse these responsibilities into a single agent loop. That makes behavior harder to inspect, test, constrain, and evolve.
-
-Samaktha takes a different approach:
+## Canonical production architecture
 
 ```text
-Think → Govern → Plan → Coordinate → Execute → Observe
+Interface (API / CLI / TUI / Voice adapter)
+  → ExecutionCoordinator
+  → SamakthaOrchestrator
+  → CAP policy, approval, and exact ExecutionPermit
+  → GAMBIT deterministic planning
+  → WorkflowEngine
+  → Router
+  → RuntimeEngine
+      → ProviderExecutor → ProviderManager → provider
+      → ToolExecutor → ToolSecurityEnforcer → ToolManager → tool
+  → scoped Memory / durable Evidence / signed Checkpoints
 ```
 
-The architecture is designed so that **cognition can propose actions while deterministic infrastructure controls how those actions are actually executed.**
+`create_orchestrator()` is the production composition root. Runtime is the
+only user-reachable provider/tool execution boundary. Tool success comes from
+actual execution evidence, never generated prose.
 
-> **Think in cloud → Act locally → Confirm everything.**
+### Architectural invariants
 
----
+- CAP issues the final permit bound to the exact principal, action, target,
+  payload, permissions, risk, and execution constraints.
+- GAMBIT plans; it does not execute providers or tools.
+- Runtime validates every task permit before executor dispatch, including
+  batch/parallel work.
+- Router and provider fallback preserve typed local-only/privacy constraints.
+- Tool actions pass through `ToolExecutor` and `ToolSecurityEnforcer`.
+- Memory and sessions are scoped by principal, session, and workspace.
+- Checkpoints are integrity protected; uncertain non-idempotent effects are not
+  replayed automatically.
+- Evidence is correlated, sanitized, persistent, and separate from generated
+  response prose.
+- Plugin discovery is not enablement. Enabled plugins remain trusted in-process
+  code and execute through the canonical Runtime/tool-security path.
 
-## 🧠 Architecture at a Glance
+See [Architecture State](docs/ARCHITECTURE_STATE.md) for the maintained public
+architecture contract.
 
-```mermaid
-graph TD
-    User([User Request]) --> Orchestrator
-    Orchestrator --> ContextEngine
-    Orchestrator --> GAMBIT[GAMBIT Planner & Learner]
-    Orchestrator --> CAP[CAP Governance]
-    Orchestrator --> WorkflowEngine
+## Capability status
 
-    GAMBIT --> ExecutionPlan
-    CAP --> Approval[Approval & Policy]
+| Capability | Pilot status | Notes |
+|---|---|---|
+| Provider conversation | **Conditional** | Requires a configured healthy local or cloud provider; local-only work cannot fall back to cloud. |
+| Filesystem | **Production ready** | Governed roots, approval, path/link controls, and execution evidence. |
+| Internet | **Conditional** | Read-only network capability when configured; SSRF, redirect, port, header, and response bounds apply. |
+| Shell | **Production ready / advanced** | Allowlisted executable and arguments, governed working directory, timeout, and output bounds. |
+| Memory, sessions, reminders, notes, tasks, contacts, calendar | **Local only** | Scoped local persistence; no account or device synchronization. |
+| Clipboard, notifications, limited Windows operations | **Local only** | Permission and platform dependent. |
+| Email | **Simulated by default** | SMTP is engineering/advanced configuration; provider acceptance is not delivery confirmation. |
+| Messaging | **Simulated** | No external SMS or chat provider is connected. |
+| Plugins | **Engineering only** | Explicit lifecycle and canonical execution exist; excluded from the initial user cohort. |
+| Document extraction | **Internal** | Not independently advertised as a user capability. |
+| Browser/media | **Unavailable** | Not registered in production. |
 
-    WorkflowEngine --> Router
-    WorkflowEngine --> Runtime
+The detailed pilot contract is [PILOT_SCOPE.md](docs/pilot/PILOT_SCOPE.md).
 
-    Runtime --> ProviderManager
-    Runtime --> ToolManager
+## Requirements and installation
 
-    ProviderManager --> Providers[(Cloud / Local Models)]
-    ToolManager --> Tools[(System Tools)]
+- Python 3.12 or newer for source development
+- Windows for the validated 0.5.0 packaged pilot
 
-    ContextEngine --> MemoryManager[(Memory / SQLite)]
-    MemoryManager --> GAMBIT
-```
-
-### Core Subsystems
-
-| Subsystem           | Responsibility                                          |
-| ------------------- | ------------------------------------------------------- |
-| **CAP**             | Governance, policy, approval, and execution boundaries  |
-| **GAMBIT**          | Planning, reflection, learning, and goal interpretation |
-| **Workflow**        | Sequential execution coordination                       |
-| **Runtime**         | Deterministic task execution and tracing                |
-| **Router**          | Model/provider selection                                |
-| **Memory**          | Sessions, context, persistence, and learned skills      |
-| **ProviderManager** | Canonical boundary for model providers                  |
-| **ToolManager**     | Canonical boundary for external/system tools            |
-
-### Extended Capability Layers
-
-* **Personality Engine** — behavior, intent, reflection, and response-style control.
-* **Conversation Engine** — conversational continuity and memory synthesis.
-* **Intelligence Layer** — RAG, knowledge graphs, learning, and reflection pipelines.
-* **Internet Layer** — web intelligence and retrieval.
-* **Tool Ecosystem** — filesystem, shell, calendar, contacts, notes, reminders, tasks, notifications, clipboard, and voice tools.
-* **Voice Runtime** — streaming STT/TTS, VAD, and wake-word support.
-* **Communication Hub** — communication integrations.
-* **Developer Ecosystem** — developer-oriented tools and helpers.
-* **Parallel / Multi-Agent Execution** — parallel task execution through `runtime_parallel`.
-* **Windows TUI** — native terminal interface with themes, status information, and command history.
-
----
-
-## 🖥️ Samaktha in Action
-
-### 1. Human-in-the-Loop Execution
-
-Before a tool operation is performed, CAP can request explicit user approval.
-
-![CAP approval flow](docs/assets/cap-approval.png)
-
----
-
-### 2. Governed Tool Execution
-
-After approval, Samaktha executes the requested operation and reports the resulting system action.
-
-![Samaktha tool execution](docs/assets/tool-execution.png)
-
----
-
-### 3. Result on the Local System
-
-The executed operation produces the requested artifact directly on the local Windows system.
-
-![Local tool result](docs/assets/tool-result.png)
-
----
-
-### 4. Persistent Conversation Memory
-
-Samaktha can retrieve relevant context from previous sessions.
-
-![Persistent conversation memory](docs/assets/memory-retrieval.png)
-
----
-
-## 📦 Repository Structure
-
-```text
-Samaktha/
-├── app/
-│   ├── agent/             # Agent personalities and production routing
-│   ├── api/               # HTTP API layer
-│   ├── communication/     # Communication integrations
-│   ├── config/            # Application settings
-│   ├── conversation/      # Conversational intelligence and memory
-│   ├── core/              # CAP, GAMBIT, contracts, orchestration, events
-│   ├── developer/         # Developer ecosystem tools
-│   ├── fileparsers/       # Document parsing and writing
-│   ├── intelligence/      # RAG, knowledge graph, learning pipelines
-│   ├── internet/          # Web intelligence and retrieval
-│   ├── memory/            # Storage, sessions, skills, context retrieval
-│   ├── models/            # Shared data models
-│   ├── personality/       # Personality and reflection engine
-│   ├── providers/         # LLM provider implementations
-│   ├── router/            # Execution routing
-│   ├── runtime/           # Deterministic execution and tool integration
-│   ├── runtime_parallel/  # Parallel execution engine
-│   ├── security/          # Input scanning and redaction
-│   ├── shell/             # Shell integration
-│   ├── tools/             # Capability registry and adapters
-│   ├── tui/               # Windows-native terminal UI
-│   ├── utils/             # Shared utilities
-│   ├── voice/             # STT/TTS, VAD, wake-word
-│   ├── windows/           # Windows-specific helpers
-│   └── workflow/          # Sequential coordination
-├── docs/                  # Architecture, audits, changelog, release notes
-├── tests/                 # Regression and subsystem tests
-├── main.py                # Backend / TUI entry point
-└── pyproject.toml         # Packaging and project metadata
-```
-
----
-
-## ⚙️ Requirements
-
-* Python **3.12+**
-
-## 🚀 Installation
-
-```bash
+```powershell
 git clone https://github.com/HARI9037/Samaktha.git
 cd Samaktha
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Linux/macOS: source .venv/bin/activate
-pip install -e .
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-## Running Locally
+Provider credentials are process-environment secrets. `.env` files, runtime
+databases, signing keys, checkpoint state, and diagnostic output are ignored and
+must never be committed.
 
-**Backend / FastAPI mode:**
+## Running Samaktha
 
-```bash
-python main.py
+```powershell
+# First-run state and health
+.\.venv\Scripts\samaktha.exe bootstrap
+.\.venv\Scripts\samaktha.exe bootstrap --status
+.\.venv\Scripts\samaktha.exe doctor
+
+# Interfaces
+.\.venv\Scripts\samaktha.exe tui
+.\.venv\Scripts\samaktha.exe backend
 ```
 
-**Windows-native TUI mode:**
+`doctor --export` creates an explicit local, sanitized diagnostic bundle. It
+does not upload data and excludes prompts, memory, files, credentials, signing
+material, and checkpoint payloads.
 
-```bash
-python main.py --tui
+Controlled-pilot operators should begin with
+[PILOT_INSTALLATION.md](docs/pilot/PILOT_INSTALLATION.md) and
+[PILOT_RUNBOOK.md](docs/pilot/PILOT_RUNBOOK.md).
+
+## Testing
+
+The canonical P14 acceptance environment used Python 3.14.5:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = "1"
+$env:PYTHONNOUSERSITE = "1"
+.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider -q
 ```
 
-## Environment Variables
+Verified P14 engineering baseline:
 
-Create a `.env` file in the project root with the provider keys you intend to use:
-
-```env
-OPENAI_API_KEY=sk-...
-GROQ_API_KEY=gsk-...
-OPENROUTER_API_KEY=...
+```text
+2851 passed
+0 failed
+0 skipped
+149 warnings
 ```
 
-`.env` is gitignored and must never be committed.
+Maintained suites include architecture guards, exact-production governance and
+capability tests, memory isolation, recovery, tool security, persistent
+evidence, plugins, packaging, stress, adversarial security, and pilot readiness.
 
----
+## Packaging
 
-## 🧪 Testing & Verification
+- `samaktha.spec` is the canonical PyInstaller ONEDIR specification.
+- `scripts/build_windows.ps1` performs the Windows build and smoke checks.
+- `samaktha.iss` is the per-user Inno Setup source; user data is preserved on
+  uninstall.
+- `build/`, `dist/`, installer output, and runtime state are generated and are
+  not committed.
 
-Samaktha maintains a strict regression suite covering its core boundaries and subsystems.
+The current pilot executable is unsigned. Pilot users must verify the artifact
+hash supplied in [PILOT_RELEASE_NOTES.md](docs/pilot/PILOT_RELEASE_NOTES.md).
 
-Run the full suite with:
+## Documentation
 
-```bash
-pytest
-```
+- [Architecture State](docs/ARCHITECTURE_STATE.md)
+- [Changelog](docs/CHANGELOG.md)
+- [Plugin Guide](docs/PLUGINS.md)
+- [Pilot Scope](docs/pilot/PILOT_SCOPE.md)
+- [Pilot Security and Privacy](docs/pilot/PILOT_SECURITY_AND_PRIVACY.md)
+- [Known Pilot Limitations](docs/pilot/PILOT_KNOWN_LIMITATIONS.md)
+- [Pilot Release Notes](docs/pilot/PILOT_RELEASE_NOTES.md)
 
-The repository currently contains **1,782 tests** covering the evolving architecture.
+Version-specific phase documents remain historical engineering records; they do
+not override the current architecture state or pilot capability contract.
 
-The test suite is an important part of the project's design philosophy:
+## License
 
-> New capabilities should be introduced without silently weakening existing execution and governance boundaries.
+Samaktha is proprietary software. This public repository is provided for
+demonstration, portfolio, transparency, and educational viewing. No license is
+granted to copy, modify, redistribute, or commercially use the project.
 
----
-
-## ✅ Current Capability Surface
-
-The current codebase includes implementations across the following areas:
-
-* Multi-provider model routing: OpenAI, Groq, OpenRouter, and local providers.
-* Execution tracing and operation metrics.
-* SQLite-backed memory and session persistence.
-* Tool capability management and execution boundaries.
-* Skill extraction, persistence, lifecycle management, decay, and archival.
-* Multimodal context injection for image, audio, and video data.
-* Streaming execution through SSE.
-* Tool composition and tool chains.
-* Security and privacy mechanisms including input filtering, output redaction, and ToolGuard.
-* Personality, behavioral, and reflection systems.
-* Session memory and conversational continuity.
-* RAG and knowledge-graph-backed intelligence.
-* Voice runtime components including STT, TTS, VAD, and wake-word support.
-* Parallel and multi-agent task execution.
-* Windows-native TUI with themes and command history.
-
-These capabilities are actively evolving; the project should be evaluated from the implementation and tests in the repository rather than from architectural intent alone.
-
----
-
-## 📚 Documentation
-
-* [Changelog](docs/CHANGELOG.md)
-* [Release Notes](docs/RELEASE_NOTES_v0.3.md)
-* [Architecture State](docs/ARCHITECTURE_STATE.md)
-
-Detailed phase designs and audit reports are available under `docs/`.
-
----
-
-## 🗺️ Roadmap & Known Limitations
-
-Samaktha is an actively evolving infrastructure project.
-
-Current areas of development include:
-
-* Expanding semantic memory and retrieval coverage.
-* Evolving continuous long-term learning systems.
-* Further hardening execution and security boundaries.
-* Expanding provider, tool, and communication integrations.
-* Improving the native Windows experience.
-
-The project intentionally distinguishes **implemented capabilities** from **future architectural goals**; the documentation and test suite are the source of truth for current behavior.
-
----
-
-## 🔐 License
-
-Samaktha is proprietary software.
-
-This repository is publicly available for demonstration, portfolio, transparency, and educational viewing purposes only.
-
-No license is granted to copy, modify, redistribute, or commercially use any part of this project.
-
-**Copyright © 2026 Sreehari R Nair. All Rights Reserved.**
+Copyright © 2026 Sreehari R Nair. All rights reserved.

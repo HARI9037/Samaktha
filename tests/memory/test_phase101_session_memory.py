@@ -212,6 +212,9 @@ def test_session_index_stores_metadata_only(tmp_path):
     entry_keys = set(raw["session-a"].keys())
     assert entry_keys == {
         "session_id",
+        "principal_id",
+        "workspace_id",
+        "profile_id",
         "created_at",
         "updated_at",
         "title",

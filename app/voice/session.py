@@ -346,11 +346,19 @@ class VoiceSession:
             updates = {}
 
         permit_decision = "allow" if decision in {"allow", "yes", "approve", "continue", "ok", "y"} else "deny"
-        updates["permit"] = {"decision": permit_decision, "reasons": [f"Voice approval: {decision}"]}
+        updates["approval_decision"] = permit_decision
+        updates["approval_reasons"] = [f"Voice approval: {decision}"]
 
         try:
-            result = await self._runtime.resume(self._session_id, self._pending_task_id, updates)
-            return result
+            resume_result = self._runtime.resume(
+                self._session_id, self._pending_task_id, updates
+            )
+            if hasattr(resume_result, "__aiter__"):
+                items = []
+                async for item in resume_result:
+                    items.append(item)
+                return items
+            return await resume_result
         except Exception as exc:
             log.error("Failed to resume pipeline after approval: %s", exc)
             return None

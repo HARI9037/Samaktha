@@ -122,7 +122,9 @@ def test_runner_only_imports_agent():
     runner_path = os.path.join(TUI_DIR, "runner.py")
     imports = _get_imports(runner_path)
     app_imports = [i for i in imports if i.startswith("app.") and "tui" not in i and "agent" not in i]
-    # Allow unittest.mock for stub builder, nothing else from app.*
-    assert app_imports == [], (
-        f"runner.py has unexpected app.* imports: {app_imports}"
+    # Allow unittest.mock for stub builder, bootstrap for P11 first-run init
+    allowed = {"app.bootstrap"}
+    unexpected = [i for i in app_imports if i not in allowed]
+    assert not unexpected, (
+        f"runner.py has unexpected app.* imports: {unexpected}"
     )

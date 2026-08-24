@@ -6,7 +6,16 @@ file paths or file names to the provider—only extracted content.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from app.core.contracts.conversation import (
+    ConversationMessage,
+    MessageRole,
+    PreparedContext,
+)
+from app.core.contracts.planning import TaskStatus
+from app.core.contracts.runtime import RuntimeResult
 
 
 _MAX_CONTENT_CHARS = 12_000   # max chars from any single tool output injected into context
@@ -37,7 +46,79 @@ numbered title + URL you actually used. If no result supports an answer, say \
 
 
 class ContextBuilder:
-    """Assembles structured context from tool execution outputs for LLM consumption."""
+    """Adapts completed Runtime tool evidence into PreparedContext.
+
+    ``build`` and ``build_messages`` are retained as legacy compatibility
+    helpers. Canonical production uses only ``append_runtime_evidence`` and
+    never asks this class to construct system or conversation context.
+    """
+
+    def append_runtime_evidence(
+        self,
+        prepared_context: PreparedContext,
+        results: list[RuntimeResult],
+    ) -> PreparedContext:
+        """Append idempotent evidence originating from completed tool results."""
+        existing_ids = {
+            str(message.metadata.get("runtime_task_id"))
+            for message in prepared_context.model_messages
+            if message.metadata.get("context_source") == "runtime_tool_evidence"
+        }
+        evidence_messages: list[ConversationMessage] = []
+        for result in results:
+            if result.status != TaskStatus.COMPLETED:
+                continue
+            if result.metadata.get("runtime_action_type") != "tool":
+                continue
+            if result.task_id in existing_ids:
+                continue
+            rendered = self._format_output(result.output)
+            if not rendered and result.output:
+                rendered = json.dumps(result.output, sort_keys=True, default=str)
+            if not rendered:
+                continue
+            current_request = next(
+                (
+                    message.content
+                    for message in reversed(prepared_context.model_messages)
+                    if message.role == MessageRole.USER
+                ),
+                "",
+            )
+            if current_request:
+                rendered = rendered.replace(current_request, "[current request]")
+            evidence_messages.append(
+                ConversationMessage(
+                    role=MessageRole.ASSISTANT,
+                    content=(
+                        f"[RUNTIME TOOL EVIDENCE — task {result.task_id}]\n"
+                        f"{rendered}"
+                    ),
+                    metadata={
+                        "context_source": "runtime_tool_evidence",
+                        "runtime_task_id": result.task_id,
+                        "tool": result.metadata.get("tool"),
+                    },
+                )
+            )
+        if not evidence_messages:
+            return prepared_context
+
+        # Keep the current request as the final USER message. This preserves
+        # prompt fallbacks and makes the user request occur exactly once.
+        insert_at = len(prepared_context.model_messages)
+        for index in range(len(prepared_context.model_messages) - 1, -1, -1):
+            if prepared_context.model_messages[index].role == MessageRole.USER:
+                insert_at = index
+                break
+        prepared_context.model_messages[insert_at:insert_at] = evidence_messages
+        prepared_context.workflow_context["tool_evidence_count"] = str(
+            sum(
+                message.metadata.get("context_source") == "runtime_tool_evidence"
+                for message in prepared_context.model_messages
+            )
+        )
+        return prepared_context
 
     def build(
         self,

@@ -35,7 +35,10 @@ def test_capability_registry_has_single_notification_domain():
     registry = cap_reg_module.CapabilityRegistry.default()
     notification = [e for e in registry.entries() if e.domain == "notification"]
     assert len(notification) == 1
-    assert notification[0].tool_id == "notification"
+    # Conservative standalone registries advertise no implementation. The
+    # production registry is derived from create_orchestrator's ToolRegistry.
+    assert notification[0].tool_id is None
+    assert notification[0].availability.value == "unavailable"
 
 
 def test_capability_registry_installed_domains_unique():

@@ -4,7 +4,7 @@ A Samaktha example **tool-only plugin**: a single `Tool` that counts words
 and characters in supplied text. It shows how a plugin contributes tools
 without any lifecycle logic of its own.
 
-See [docs/PLUGINS.md](../../docs/PLUGINS.md) for the full plugin author guide.
+See [docs/PLUGINS.md](../../../docs/PLUGINS.md) for the full plugin author guide.
 
 ## Layout
 

@@ -122,7 +122,7 @@ async def _build_orchestrator(
     internet_tool: InternetTool,
     manager: MemoryManager,
     *,
-    subject_ids: tuple[str, ...] = ("req-1", "req-2"),
+    subject_ids: tuple[str, ...] = ("ses-1", "req-2"),
 ):
     tool_registry = ToolRegistry()
     tool_registry.register(
@@ -132,6 +132,12 @@ async def _build_orchestrator(
             tool_id="internet",
             description="internet",
             capabilities=["search"],
+            supported_actions=["search"],
+            permissions=["network"],
+            product_domain="internet",
+            execution_mode="production_ready",
+            natural_language_intents=["search_internet"],
+            advertised=True,
         ),
     )
     # Pre-approve the governed internet action so the real CAP pipeline
@@ -150,7 +156,9 @@ async def _build_orchestrator(
     controller = MemoryController(manager)
     return SamakthaOrchestrator(
         context_engine=ContextEngine(),
-        planner=Planner(),
+        planner=Planner(
+            capability_registry=CapabilityRegistry.from_tool_registry(tool_registry)
+        ),
         router=ModelRouter(
             RouterRegistry(
                 [

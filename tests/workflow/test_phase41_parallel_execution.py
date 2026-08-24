@@ -168,7 +168,7 @@ async def test_runtime_pool_preserves_results() -> None:
             
     pool = RuntimeExecutionPool(DummyDispatcher(), RuntimeMetricsCollector())
     tasks_and_routings = [
-        (approved_task(task_id=f"t{i}", title="test", description="test", action_type="test"), RoutingDecision(provider_id="x", model_id="y", reasoning_summary="z"))
+        (approved_task(task_id=f"t{i}", title="test", description="test", action_type="test", subject_id="req1"), RoutingDecision(provider_id="x", model_id="y", reasoning_summary="z"))
         for i in range(3)
     ]
     
@@ -316,7 +316,7 @@ async def test_runtime_error_in_batch() -> None:
     from app.runtime.registry import RuntimeRegistry
     pool = RuntimeExecutionPool(CrashingDispatcher(RuntimeRegistry()), RuntimeMetricsCollector())
     tasks_and_routings = [
-        (approved_task(task_id="t1", title="test", description="test", action_type="test"), RoutingDecision(provider_id="x", model_id="y", reasoning_summary="z"))
+        (approved_task(task_id="t1", title="test", description="test", action_type="test", subject_id="req1"), RoutingDecision(provider_id="x", model_id="y", reasoning_summary="z"))
     ]
     
     results = await pool.execute_batch(RuntimeContext(request_id="req1"), tasks_and_routings)
@@ -346,4 +346,3 @@ async def test_no_tasks_produces_failure() -> None:
     result = await engine.execute(plan, runtime=DelayingRecordingRuntime(), router=RecordingRouter())
     assert result.success is False
     assert "No workflow tasks were produced" in result.errors[0]
-

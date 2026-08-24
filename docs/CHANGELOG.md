@@ -5,7 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased — 0.5.0 Controlled Pilot RC]
+
+### Engineering convergence
+
+- Converged authorization on CAP-issued, signed execution permits bound to exact
+  principals and operations, with Runtime enforcement and correlated governance
+  evidence.
+- Made the product capability registry and production ToolRegistry authoritative
+  for planning, user-visible support, and execution truth.
+- Converged provider context on typed `PreparedContext`, including scoped memory,
+  conversation history, personality, and completed Runtime tool evidence.
+- Added principal/session/workspace memory isolation, bounded execution lifecycle,
+  signed checkpoint recovery, and persistent sanitized evidence.
+- Hardened filesystem, shell, network, reminder, provider fallback, plugin, and
+  integration boundaries without introducing a second execution path.
+- Composed the explicit PluginManager lifecycle into production while preserving
+  discovery-without-enablement and canonical Runtime/ToolExecutor execution.
+- Added reproducible Windows ONEDIR packaging, per-user bootstrap paths,
+  single-instance protection, diagnostics, and controlled-pilot documentation.
+- Added architecture, exact-production, stress, packaged, adversarial-security,
+  and pilot-readiness regression suites.
+
+### Pilot readiness
+
+- Added Unicode-safe packaged CLI output and canonical rotating TUI logs.
+- Added `doctor --export`, which creates a local sanitized aggregate diagnostic
+  bundle without prompts, memory, file contents, credentials, or automatic
+  upload.
+- Clarified approval, denial, cancellation, timeout, simulation, provider
+  acceptance, and unavailable-state presentation.
+- Verified the engineering baseline with 2,851 passing tests and zero failures
+  under Python 3.14.5.
+
+This candidate is unsigned and intended only for a private controlled pilot. It
+is not a new historical 0.5.0 release date and does not claim field-pilot or
+public-release completion.
+
 ## [v0.5.0] - 2026-07-19
+
+> Historical release record. Some experimental subsystems listed below are not
+> part of the current canonical user execution path; the Unreleased pilot-RC
+> section and `ARCHITECTURE_STATE.md` describe current production composition.
 
 ### Added
 - **Advanced Provider Ecosystem**: Multi-provider support (OpenAI, Anthropic, Groq, local) via `ProviderManager`.

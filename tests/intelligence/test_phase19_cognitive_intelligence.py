@@ -141,14 +141,14 @@ def test_confidence_routing_is_deterministic(tmp_path):
     assert policy.choose(context) == policy.choose(context)
 
 
-def test_cross_session_retrieval_includes_history(tmp_path):
+def test_cross_session_retrieval_excludes_session_history(tmp_path):
     sessions = SessionManager(base_dir=tmp_path, clock=lambda: "2026-08-03T10:00:00+00:00")
     s1 = sessions.create_session(session_id="s1")
     sessions.add_memory_entry(s1.session_id, "pattern", "pytest timeout", "fact")
     controller = MemoryController(MemoryManager())
     retrieval = RetrievalEngine(controller, session_manager=sessions)
     bundle = retrieval.assemble_context("pytest timeout", session_id="s2")
-    assert any(ev.source == "session_history" for ev in bundle.evidence)
+    assert not any(ev.source == "session_history" for ev in bundle.evidence)
 
 
 def test_knowledge_graph_expands_lightweight_relationships():

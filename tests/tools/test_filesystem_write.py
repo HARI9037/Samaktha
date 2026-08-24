@@ -22,8 +22,8 @@ def write_dir(tmp_path):
 
 
 @pytest.fixture
-def tool(write_dir):
-    return FileSystemTool(write_dir=str(write_dir))
+def tool(write_dir, tmp_path):
+    return FileSystemTool(root_dir=tmp_path, write_dir=str(write_dir))
 
 
 async def test_write_absolute_path_preserved_exactly(tool, tmp_path):
@@ -132,11 +132,16 @@ async def test_write_pdf_via_tool_round_trips(tool, write_dir):
     assert "Report" in read_back.data.get("content", "")
 
 
-async def test_write_overwrites_existing_file(tool, write_dir):
+async def test_write_requires_explicit_overwrite(tool, write_dir):
     first = await tool.run({"action": "write", "path": "same.txt", "content": "v1"})
     assert first.ok
     second = await tool.run({"action": "write", "path": "same.txt", "content": "v2-longer"})
-    assert second.ok
+    assert not second.ok
+    assert "overwrite" in second.error.lower()
+    second = await tool.run({
+        "action": "write", "path": "same.txt", "content": "v2-longer", "overwrite": True,
+    })
+    assert second.ok, second.error
     assert (write_dir / "same.txt").read_text(encoding="utf-8") == "v2-longer"
 
 

@@ -7,6 +7,7 @@ from typing import Any
 from app.intelligence.confidence import ConfidenceDomains, ConfidenceSnapshot
 from app.intelligence.context import ContextBundle, ContextEvidence
 from app.memory.time_utils import normalize_datetime
+from app.core.contracts.memory import MemoryAccessContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,15 +23,33 @@ class RetrievalEngine:
     repository_index: Any | None = None
     code_index: Any | None = None
 
-    def retrieve(self, query: str, *, session_id: str | None = None, top_k: int = 10) -> RetrievalResult:
-        evidence = self._collect(query, session_id=session_id, top_k=top_k)
+    def retrieve(
+        self, query: str, *, session_id: str | None = None,
+        top_k: int = 10, access_context: MemoryAccessContext | None = None,
+    ) -> RetrievalResult:
+        access_context = access_context or MemoryAccessContext.local_default(
+            session_id=session_id
+        )
+        evidence = self._collect(
+            query, session_id=session_id, top_k=top_k,
+            access_context=access_context,
+        )
         bundle = self._bundle(query, evidence)
         return RetrievalResult(evidence=tuple(evidence), bundle=bundle)
 
-    def assemble_context(self, query: str, *, session_id: str | None = None, top_k: int = 10) -> ContextBundle:
-        return self.retrieve(query, session_id=session_id, top_k=top_k).bundle
+    def assemble_context(
+        self, query: str, *, session_id: str | None = None,
+        top_k: int = 10, access_context: MemoryAccessContext | None = None,
+    ) -> ContextBundle:
+        return self.retrieve(
+            query, session_id=session_id, top_k=top_k,
+            access_context=access_context,
+        ).bundle
 
-    def _collect(self, query: str, *, session_id: str | None, top_k: int) -> list[ContextEvidence]:
+    def _collect(
+        self, query: str, *, session_id: str | None, top_k: int,
+        access_context: MemoryAccessContext,
+    ) -> list[ContextEvidence]:
         """Collect context evidence in strict priority order.
 
         Phase 20.2.1 priority tiers (metadata always before history):
@@ -50,15 +69,26 @@ class RetrievalEngine:
         mc = self.memory_controller
         if mc is not None:
             # Tiers 1–3: current session
-            items.extend(self._from_session_metadata(session_id, query))
-            items.extend(self._from_current_session(session_id, query))
-            # Tier 4–5: previous sessions (via _from_session_history which
-            # now also emits session_metadata evidence)
-            items.extend(self._from_session(mc, query, session_id, top_k))
-            items.extend(self._from_session_history(query, session_id, top_k, cross_session=cross_session))
-            # Tiers 6–7: long-term memory then skills
-            items.extend(self._from_long_term(mc, query, top_k))
-            items.extend(self._from_skills(mc, query, top_k))
+            items.extend(self._from_session_metadata(
+                session_id, query, access_context=access_context
+            ))
+            items.extend(self._from_current_session(
+                session_id, query, access_context=access_context
+            ))
+            # The controller is the sole long-term access boundary. It
+            # establishes ownership/security eligibility before ranking.
+            for memory, score in mc.retrieve(
+                query=query,
+                top_k=top_k,
+                access_context=access_context,
+            ):
+                items.append(self._wrap(
+                    memory.id,
+                    "long_term",
+                    memory.content,
+                    memory.metadata,
+                    f"authorized memory score={score:.4f}",
+                ))
         # Tiers 8–9: repository and code indexes
         if self.repository_index is not None:
             items.extend(self._from_repository_index(query))
@@ -77,7 +107,10 @@ class RetrievalEngine:
             result.append(self._wrap(item.id, "session", item.content, item.metadata, "session memory"))
         return result
 
-    def _from_session_metadata(self, session_id: str | None, query: str) -> list[ContextEvidence]:
+    def _from_session_metadata(
+        self, session_id: str | None, query: str,
+        access_context: MemoryAccessContext | None = None,
+    ) -> list[ContextEvidence]:
         """Phase 20.2 — search the deterministic metadata index first.
 
         When ``session_id`` is None (cross-session query), scans all sessions.
@@ -125,7 +158,9 @@ class RetrievalEngine:
 
         for sid in session_ids_to_scan:
             try:
-                session = load_session(sid)
+                session = load_session(
+                    sid, principal_id=(access_context or MemoryAccessContext.local_default()).principal_id
+                )
             except Exception:
                 continue
             meta = getattr(session, "metadata", None)
@@ -275,7 +310,10 @@ class RetrievalEngine:
                     result.append(self._wrap(f"{sid}:{getattr(entry, 'key', '')}", "session_history", text, metadata, "cross-session memory"))
         return result
 
-    def _from_current_session(self, session_id: str | None, query: str) -> list[ContextEvidence]:
+    def _from_current_session(
+        self, session_id: str | None, query: str,
+        access_context: MemoryAccessContext | None = None,
+    ) -> list[ContextEvidence]:
         result: list[ContextEvidence] = []
         manager = self.session_manager
         if manager is None or not session_id:
@@ -284,7 +322,10 @@ class RetrievalEngine:
         if not callable(load_session):
             return result
         try:
-            session = load_session(session_id)
+            session = load_session(
+                session_id,
+                principal_id=(access_context or MemoryAccessContext.local_default()).principal_id,
+            )
         except Exception:
             return result
         memory = getattr(session, "memory", None)

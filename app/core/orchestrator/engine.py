@@ -7,6 +7,7 @@ log = logging.getLogger(__name__)
 from app.core.cap import ApprovalEngine, ContextEngine, PolicyEngine
 from app.memory.controller.facade import MemoryController
 from app.memory.formation.engine import MemoryFormationEngine
+from app.core.contracts.memory import MemoryAccessContext
 from app.core.contracts import (
     ContextRequest,
     ConversationMessage,
@@ -18,7 +19,11 @@ from app.core.contracts import (
 from app.core.contracts.policy import (
     ApprovalDecision,
     ApprovalRequest,
+    ApprovalSubmission,
     PlannedAction,
+    authorization_payload,
+    authorization_subject_id,
+    authorization_target,
 )
 from app.core.contracts.planning import PlannerStatus, TaskKind, TaskStatus
 from app.core.gambit import Planner
@@ -30,7 +35,7 @@ from app.runtime.base import Runtime
 from app.core.contracts.trace import ExecutionTrace
 from app.workflow import WorkflowEngine
 from app.core.orchestrator.pipeline import PipelineEvent
-from app.agent.prompts import CAPABILITY_UNAVAILABLE_MESSAGE
+from app.agent.prompts import CAPABILITY_NEEDS_INPUT_MESSAGE, CAPABILITY_UNAVAILABLE_MESSAGE
 from app.conversation import ConversationStateManager
 from app.personality import (
     IntentEngine,
@@ -300,6 +305,16 @@ class SamakthaOrchestrator:
         from app.core.events import RuntimeEventBus
 
         session_id = runtime_context.session_id or "default"
+        memory_access = MemoryAccessContext(
+            principal_id=runtime_context.user_id or MemoryAccessContext.local_default().principal_id,
+            session_id=session_id,
+            workspace_id=runtime_context.metadata.get("workspace_id"),
+            profile_id=runtime_context.metadata.get("profile_id"),
+            security_level=runtime_context.metadata.get("memory_security_level", "low"),
+        )
+        runtime_context.metadata["memory_access_context"] = memory_access.model_dump(
+            mode="json"
+        )
         if runtime_context.event_bus is None:
             runtime_context.event_bus = RuntimeEventBus(session_id)
 
@@ -337,9 +352,15 @@ class SamakthaOrchestrator:
             )
 
         policy = self._policy_engine.evaluate(user_action)
+        subject_id = authorization_subject_id(
+            user_id=runtime_context.user_id,
+            session_id=runtime_context.session_id,
+            request_id=runtime_context.request_id,
+        )
+        runtime_context.metadata["authorization_subject_id"] = subject_id
         approval = await self._approval_engine.decide(
             ApprovalRequest(action=user_action, policy=policy),
-            subject_id=runtime_context.user_id or runtime_context.request_id,
+            subject_id=subject_id,
         )
 
         if runtime_context.event_bus:
@@ -372,25 +393,31 @@ class SamakthaOrchestrator:
                 )
             return state
 
-        # 3. Build Context (which uses MemoryTool internally)
+        # 3. Retrieve candidate memories and run the existing visibility and
+        # personality slice before ContextEngine constructs PreparedContext.
+        # Only visibility-approved memory reaches the single system block.
+        # vertical slice: deterministic visibility gate + behavior engine +
+        # prompt composer. The composed system prompt is the single prompt
+        # source for text-generation tasks.
+        retrieved_items = self._retrieve_memory_items(request, memory_access)
+        evaluation = self._personality_engine.evaluate(
+            request, retrieved_memories=retrieved_items)
+        composition = self._prompt_composer.compose(
+            evaluation, include_current_task=False
+        )
+        state.personality_evaluation = evaluation
+        state.prompt_composition = composition
         state.context = await self._context_engine.build(
             ContextRequest(
                 session_id=runtime_context.session_id or runtime_context.request_id,
                 user_id=runtime_context.user_id or "anonymous",
                 messages=self._messages(request, conversation),
+                system_prompt=composition.system_prompt,
+                visible_memory_ids=[
+                    memory.memory_id for memory in evaluation.visible_memories
+                ],
             )
         )
-        
-        # 3b. Retrieve candidate memories and run the Phase 9 personality
-        # vertical slice: deterministic visibility gate + behavior engine +
-        # prompt composer. The composed system prompt is the single prompt
-        # source for text-generation tasks.
-        retrieved_items = self._retrieve_memory_items(request)
-        evaluation = self._personality_engine.evaluate(
-            request, retrieved_memories=retrieved_items)
-        composition = self._prompt_composer.compose(evaluation)
-        state.personality_evaluation = evaluation
-        state.prompt_composition = composition
         log.info(
             "Orchestrator: personality evaluation — greeting=%s visible=%d/%d",
             evaluation.greeting.is_greeting,
@@ -404,6 +431,7 @@ class SamakthaOrchestrator:
             planning_context = self._intelligence_manager.build_planning_context(
                 effective_request,
                 session_id=runtime_context.session_id,
+                access_context=memory_access,
             )
 
         if runtime_context.event_bus:
@@ -441,6 +469,22 @@ class SamakthaOrchestrator:
             self._metrics.record_pipeline(success=False)
             return state
 
+        if planner_result.status == PlannerStatus.NEEDS_INPUT:
+            missing = ", ".join(planner_result.missing_arguments) or "required action data"
+            user_message = CAPABILITY_NEEDS_INPUT_MESSAGE.format(missing=missing)
+            state.runtime_result = RuntimeResult(
+                task_id=runtime_context.request_id,
+                status=TaskStatus.FAILED,
+                error=user_message,
+                metadata={
+                    "needs_input": True,
+                    "missing_arguments": list(planner_result.missing_arguments),
+                },
+            )
+            self._format_result_error(state)
+            self._metrics.record_pipeline(success=False)
+            return state
+
         # Capability is available — use the produced plan
         state.execution_plan = planner_result.plan
         log.info("Orchestrator: plan has %d tasks", len(state.execution_plan.tasks))
@@ -453,31 +497,35 @@ class SamakthaOrchestrator:
                 payload={"task_count": len(state.execution_plan.tasks), "plan_id": state.execution_plan.plan_id}
             )
         
-        # 4b. Inject the composed deterministic prompt into text-generation
-        # tasks. Tool tasks keep their own deterministic arguments.
-        if composition.system_prompt:
-            for t in state.execution_plan.tasks:
-                if (
-                    t.kind == TaskKind.EXECUTE_VIA_RUNTIME
-                    and t.execution_action_type != "tool"
-                ):
-                    t.metadata["system_prompt"] = composition.system_prompt
+        # 4b. PreparedContext is the authoritative provider-context boundary.
+        # Tool tasks keep deterministic arguments; provider tasks receive the
+        # same typed context object, later augmented only with Runtime evidence.
+        for t in state.execution_plan.tasks:
+            if (
+                t.kind == TaskKind.EXECUTE_VIA_RUNTIME
+                and t.execution_action_type != "tool"
+            ):
+                t.metadata["prepared_context"] = state.context
 
         # Session-scoped memory deletion needs the active session id.
         for t in state.execution_plan.tasks:
-            if (
-                t.metadata.get("tool") == "memory"
-                and t.metadata.get("action") == "delete_session"
-            ):
+            if t.metadata.get("tool") == "memory":
                 args = t.metadata.setdefault("args", {})
-                if not args.get("session_id"):
+                args["_memory_access_context"] = memory_access.model_dump(
+                    mode="json"
+                )
+                if (
+                    t.metadata.get("action") == "delete_session"
+                    and not args.get("session_id")
+                ):
                     args["session_id"] = runtime_context.session_id or ""
         
-        # 5. CAP evaluates execution plan tasks
-        from app.core.contracts.policy import ExecutionPermit
+        # 5. CAP evaluates execution plan tasks and is the sole permit issuer.
         for task in state.execution_plan.tasks:
             if task.kind == TaskKind.EXECUTE_VIA_RUNTIME:
-                action_str = task.metadata.get("action", task.title)
+                action_str = task.metadata.get(
+                    "policy_action", task.metadata.get("action", task.title)
+                )
                 # Map intents back to base actions
                 if action_str.startswith("read_"):
                     action_str = "read"
@@ -494,26 +542,73 @@ class SamakthaOrchestrator:
                 if task.metadata.get("tool") == "internet":
                     action_str = "internet"
 
+                task_args = dict(task.metadata.get("args", {}))
+                if task.execution_action_type == "tool" and task.metadata.get("action"):
+                    task_args.setdefault("action", task.metadata["action"])
+                execution_inputs = {
+                    "prompt": state.execution_plan.goal.raw_request,
+                    "plan_task_id": task.task_id,
+                    "plan_task_kind": task.kind.value,
+                    **task_args,
+                }
+                if task.metadata.get("prepared_context") is not None:
+                    execution_inputs["prepared_context"] = task.metadata[
+                        "prepared_context"
+                    ]
+                target = authorization_target(
+                    task.execution_action_type,
+                    task.metadata.get("tool"),
+                )
+                bound_payload = authorization_payload(
+                    task.execution_action_type,
+                    execution_inputs,
+                )
                 planned_task_action = PlannedAction(
                     action_id=task.task_id,
                     action_type=action_str,
                     description=task.description,
-                    payload=task.metadata.get("args", {}),
+                    target=target,
+                    payload=bound_payload,
                     metadata=task.metadata,
                 )
-                task_policy = self._policy_engine.evaluate(planned_task_action)
-                task_approval = await self._approval_engine.decide(
-                    ApprovalRequest(action=planned_task_action, policy=task_policy),
-                    subject_id=runtime_context.user_id or runtime_context.request_id,
-                )
-                task.metadata["permit"] = ExecutionPermit(
+                operation = PlannedAction(
                     action_id=task.task_id,
-                    decision=task_approval.decision,
-                    reasons=task_approval.reasons,
-                ).model_dump()
+                    action_type=task.execution_action_type,
+                    description=task.description,
+                    target=target,
+                    payload=bound_payload,
+                )
+                task_policy = self._policy_engine.evaluate(planned_task_action)
+                permit = await self._approval_engine.authorize(
+                    ApprovalRequest(
+                        action=planned_task_action,
+                        operation=operation,
+                        policy=task_policy,
+                    ),
+                    subject_id=subject_id,
+                    session_id=runtime_context.session_id,
+                    workspace_id=(
+                        runtime_context.workspace_id
+                        or runtime_context.metadata.get("workspace_id")
+                    ),
+                )
+                task.metadata["permit"] = permit.model_dump()
+                task.metadata["required_permissions"] = [
+                    scope.value for scope in permit.required_permissions
+                ]
+                task.metadata["execution_constraints"] = (
+                    permit.constraints.model_dump()
+                )
+                base_router_request = task.router_request or state.execution_plan.router_request
+                task.router_request = base_router_request.model_copy(
+                    update={
+                        "requires_local_model": permit.constraints.requires_local_model,
+                        "execution_constraints": permit.constraints,
+                    }
+                )
                 if task.metadata.get("tool") == "internet":
                     task.metadata.setdefault("args", {})["_cap_permit"] = (
-                        task_approval.decision.value
+                        permit.decision.value
                     )
 
         # 6. Workflow Engine
@@ -523,11 +618,16 @@ class SamakthaOrchestrator:
                 trace_id=runtime_context.request_id,
                 payload={"plan_id": state.execution_plan.plan_id, "task_count": len(state.execution_plan.tasks)}
             )
+        runtime_context.metadata["_pipeline_state_ref"] = state
+        checkpoint = runtime_context.metadata.get("reliability_checkpoint")
+        if callable(checkpoint):
+            checkpoint(pipeline_state=state, recovery_safe=True)
         workflow_result = await self._workflow_engine.execute(
             execution_plan=state.execution_plan,
             runtime=self._runtime,
             router=self._router,
             context=runtime_context,
+            prepared_context=state.context,
         )
         state.workflow_state = workflow_result.workflow_state
         state.runtime_result = self._final_runtime_result(workflow_result)
@@ -554,7 +654,9 @@ class SamakthaOrchestrator:
         
         # 6b. Persist document reads to memory
         if self._memory_manager and workflow_result.outputs:
-            await self._persist_documents_to_memory(workflow_result.outputs, request)
+            await self._persist_documents_to_memory(
+                workflow_result.outputs, request, memory_access
+            )
 
         # 6b2. Phase 11.4 — observe runtime outputs into the session's
         # short-lived working memory (generated text, tool results, search
@@ -635,10 +737,14 @@ class SamakthaOrchestrator:
                     request=request,
                     response=response_content,
                     session_id=runtime_context.session_id,
-                    metadata={"internet_sourced": self._used_internet(workflow_result.outputs)},
+                    metadata={
+                        "internet_sourced": self._used_internet(workflow_result.outputs),
+                        "session_deleted": self._deleted_session(workflow_result.outputs),
+                    },
                     execution_report=state.execution_report,
                     workflow_result=workflow_result,
                     approval_result=approval if 'approval' in locals() else None,
+                    access_context=memory_access,
                 )
                 if runtime_context.event_bus:
                     runtime_context.event_bus.publish(
@@ -719,51 +825,106 @@ class SamakthaOrchestrator:
         import time
         started_at = time.perf_counter()
         
-        # We apply the overrides through the PauseManager
+        if "permit" in updates:
+            raise ValueError(
+                "Interfaces may submit an approval decision, not an ExecutionPermit."
+            )
+
+        decision_value = updates.get("approval_decision")
+        if decision_value is not None:
+            from app.core.contracts.policy import ExecutionPermit
+
+            plan_task = next(
+                (task for task in state.execution_plan.tasks if task.task_id == task_id),
+                None,
+            )
+            if plan_task is None:
+                raise ValueError(f"Cannot resume pipeline: unknown task '{task_id}'.")
+            pending_data = plan_task.metadata.get("permit")
+            if not pending_data:
+                raise ValueError("Cannot approve a task without a pending ExecutionPermit.")
+            pending = ExecutionPermit.model_validate(pending_data)
+            subject_id = pending.subject_id
+            runtime_context.metadata["authorization_subject_id"] = subject_id
+            final_permit = self._approval_engine.resolve(
+                pending,
+                ApprovalSubmission(
+                    action_id=task_id,
+                    decision=decision_value,
+                    reasons=list(updates.get("approval_reasons", [])),
+                ),
+                subject_id=subject_id,
+                source=str(runtime_context.metadata.get("source") or "interface"),
+            )
+            plan_task.metadata["permit"] = final_permit.model_dump()
+            if plan_task.metadata.get("tool") == "internet":
+                plan_task.metadata.setdefault("args", {})["_cap_permit"] = (
+                    final_permit.decision.value
+                )
+
+        resume_updates = {
+            key: value
+            for key, value in updates.items()
+            if key not in {"approval_decision", "approval_reasons"}
+        }
+        # Non-authorization overrides still flow through PauseManager. CAP's
+        # signed permit is never accepted from this untrusted interface data.
         self._workflow_engine._pause_manager.update_resume_context(
             plan_id=state.execution_plan.plan_id,
-            overrides={task_id: updates}
+            overrides={task_id: resume_updates}
         )
         
-        # Re-run the Phase 9 personality slice only if it was never evaluated.
+        # Legacy states may lack the personality diagnostic, but canonical
+        # model context is never recomputed during resume.
         if not state.prompt_composition:
-            retrieved_items = self._retrieve_memory_items(state.request or "")
+            memory_access = self._memory_access_context(runtime_context)
+            retrieved_items = self._retrieve_memory_items(
+                state.request or "", memory_access
+            )
             evaluation = self._personality_engine.evaluate(
                 state.request or "", retrieved_memories=retrieved_items)
             state.personality_evaluation = evaluation
-            state.prompt_composition = self._prompt_composer.compose(evaluation)
+            state.prompt_composition = self._prompt_composer.compose(
+                evaluation, include_current_task=False
+            )
 
-        # Inject the composed prompt into tasks that don't already have it.
-        if state.prompt_composition and state.execution_plan:
+        # Reattach the exact PreparedContext object stored in PipelineState.
+        if state.context is not None and state.execution_plan:
             for t in state.execution_plan.tasks:
                 if (
-                    "system_prompt" not in t.metadata
-                    and t.kind == TaskKind.EXECUTE_VIA_RUNTIME
+                    t.kind == TaskKind.EXECUTE_VIA_RUNTIME
                     and t.execution_action_type != "tool"
                 ):
-                    t.metadata["system_prompt"] = (
-                        state.prompt_composition.system_prompt
-                    )
+                    t.metadata["prepared_context"] = state.context
 
         # Session-scoped memory deletion needs the active session id.
         if state.execution_plan:
+            memory_access = self._memory_access_context(runtime_context)
             for t in state.execution_plan.tasks:
-                if (
-                    t.metadata.get("tool") == "memory"
-                    and t.metadata.get("action") == "delete_session"
-                ):
+                if t.metadata.get("tool") == "memory":
                     args = t.metadata.setdefault("args", {})
-                    if not args.get("session_id"):
+                    args["_memory_access_context"] = memory_access.model_dump(
+                        mode="json"
+                    )
+                    if (
+                        t.metadata.get("action") == "delete_session"
+                        and not args.get("session_id")
+                    ):
                         args["session_id"] = runtime_context.session_id or ""
         
         # Make sure the resume_state is passed to context
         runtime_context.metadata["resume_state"] = state.workflow_state
         
+        runtime_context.metadata["_pipeline_state_ref"] = state
+        checkpoint = runtime_context.metadata.get("reliability_checkpoint")
+        if callable(checkpoint):
+            checkpoint(pipeline_state=state, recovery_safe=True)
         workflow_result = await self._workflow_engine.execute(
             execution_plan=state.execution_plan,
             runtime=self._runtime,
             router=self._router,
             context=runtime_context,
+            prepared_context=state.context,
         )
         state.workflow_state = workflow_result.workflow_state
         state.runtime_result = self._final_runtime_result(workflow_result)
@@ -850,7 +1011,8 @@ class SamakthaOrchestrator:
         # (now completed) interaction (Phase 8.2).
         if self._memory_manager and workflow_result.outputs:
             await self._persist_documents_to_memory(
-                workflow_result.outputs, state.request or ""
+                workflow_result.outputs, state.request or "",
+                self._memory_access_context(runtime_context),
             )
         if state.runtime_result and state.runtime_result.output:
             response_content = self._response_content(state.runtime_result.output)
@@ -871,9 +1033,13 @@ class SamakthaOrchestrator:
                     request=state.request or "",
                     response=response_content,
                     session_id=runtime_context.session_id,
-                    metadata={"internet_sourced": self._used_internet(workflow_result.outputs)},
+                    metadata={
+                        "internet_sourced": self._used_internet(workflow_result.outputs),
+                        "session_deleted": self._deleted_session(workflow_result.outputs),
+                    },
                     execution_report=state.execution_report,
                     workflow_result=workflow_result,
+                    access_context=self._memory_access_context(runtime_context),
                 )
                 if runtime_context.event_bus:
                     from app.core.events import RuntimeEventType
@@ -943,7 +1109,31 @@ class SamakthaOrchestrator:
             role=MessageRole.USER, content=request))
         return messages
 
-    def _retrieve_memory_items(self, request: str) -> list[Any]:
+    @staticmethod
+    def _memory_access_context(
+        runtime_context: RuntimeContext,
+    ) -> MemoryAccessContext:
+        data = runtime_context.metadata.get("memory_access_context")
+        if data:
+            return MemoryAccessContext.model_validate(data)
+        return MemoryAccessContext(
+            principal_id=(
+                runtime_context.user_id
+                or MemoryAccessContext.local_default().principal_id
+            ),
+            session_id=runtime_context.session_id or "default",
+            workspace_id=runtime_context.metadata.get("workspace_id"),
+            profile_id=runtime_context.metadata.get("profile_id"),
+            security_level=runtime_context.metadata.get(
+                "memory_security_level", "low"
+            ),
+        )
+
+    def _retrieve_memory_items(
+        self,
+        request: str,
+        access_context: MemoryAccessContext,
+    ) -> list[Any]:
         """Retrieve candidate memories for the Phase 9 visibility gate.
 
         Returns raw memory items (not a rendered string); the personality
@@ -959,6 +1149,7 @@ class SamakthaOrchestrator:
                 include_semantic=True,
                 include_skills=True,
                 include_preferences=True,
+                access_context=access_context,
             )
             return [item for item, _score in results if item is not None]
         except Exception:
@@ -992,6 +1183,7 @@ class SamakthaOrchestrator:
         self,
         request: str,
         response: str,
+        access_context: MemoryAccessContext,
     ) -> None:
         """Save user request and assistant response to memory.
 
@@ -1005,6 +1197,8 @@ class SamakthaOrchestrator:
             self._memory_controller.write_conversation(
                 content=f"User: {request}\nAssistant: {response}",
                 tags=["auto-saved"],
+                session_id=access_context.session_id,
+                access_context=access_context,
             )
         except Exception:
             log.warning("Failed to persist conversation to memory", exc_info=True)
@@ -1019,6 +1213,7 @@ class SamakthaOrchestrator:
         workflow_result: Any | None = None,
         approval_result: Any | None = None,
         runtime_summary: str | None = None,
+        access_context: MemoryAccessContext | None = None,
     ) -> None:
         """Run autonomous memory formation for a completed interaction.
 
@@ -1045,11 +1240,20 @@ class SamakthaOrchestrator:
                     workflow_result=workflow_result,
                     approval_result=approval_result,
                     runtime_summary=runtime_summary,
+                    access_context=(
+                        access_context
+                        or MemoryAccessContext.local_default(session_id=session_id)
+                    ),
                 )
             except Exception:
                 log.warning("Failed to form memories for interaction", exc_info=True)
             return
-        await self._persist_conversation_to_memory(request, response)
+        await self._persist_conversation_to_memory(
+            request,
+            response,
+            access_context
+            or MemoryAccessContext.local_default(session_id=session_id),
+        )
 
     @staticmethod
     def _used_internet(outputs: list[Any]) -> bool:
@@ -1057,6 +1261,20 @@ class SamakthaOrchestrator:
         for output in outputs:
             data = getattr(output, "output", None)
             if isinstance(data, dict) and data.get("internet") is True:
+                return True
+        return False
+
+    @staticmethod
+    def _deleted_session(outputs: list[Any]) -> bool:
+        """True when completed tool evidence confirms session deletion."""
+
+        for output in outputs:
+            data = getattr(output, "output", None)
+            if (
+                isinstance(data, dict)
+                and data.get("action") == "delete_session"
+                and data.get("deleted") is True
+            ):
                 return True
         return False
 
@@ -1096,6 +1314,7 @@ class SamakthaOrchestrator:
         self,
         outputs: list[Any],
         request: str,
+        access_context: MemoryAccessContext,
     ) -> None:
         """Store documents read during workflow into DocumentMemoryStore + ContextMemoryStore."""
         if not self._memory_controller:
@@ -1122,6 +1341,17 @@ class SamakthaOrchestrator:
                     source=path,
                     summary=text[:500],
                     tags=["read", ext.replace(".", "")],
+                    owner_id=access_context.principal_id,
+                    scope=(
+                        "workspace"
+                        if access_context.workspace_id
+                        else "session"
+                        if access_context.session_id
+                        else "user"
+                    ),
+                    session_id=access_context.session_id,
+                    workspace_id=access_context.workspace_id,
+                    profile_id=access_context.profile_id,
                 )
                 stored = self._memory_controller.memory_manager.store_document(record)
                 mem_item = self._memory_controller.write_document(
@@ -1129,6 +1359,8 @@ class SamakthaOrchestrator:
                     source_path=path,
                     doc_name=doc_name,
                     tags=[ext.replace(".", "")],
+                    session_id=access_context.session_id,
+                    access_context=access_context,
                 )
                 self._memory_controller.memory_manager.link_document_context(stored.document_id, mem_item.id)
                 log.debug("Stored document in memory: %s (id=%s)", doc_name, stored.document_id)

@@ -9,16 +9,20 @@ are surfaced but non-blocking.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import platform
 import shutil
 import sqlite3
 import tempfile
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from app import get_application_paths
+from app.config.settings import Settings, get_settings
 from app.db.config import connect, resolve_database_path
 from app.providers.config import ProviderSettings
 
@@ -32,10 +36,13 @@ class DiagnosticStatus(str, Enum):
 #: Sections whose failures abort startup. OCR and tools are best-effort.
 _CRITICAL_SECTIONS = {
     "Environment",
+    "Installation",
     "Providers",
     "Router",
     "Memory",
     "Runtime",
+    "Evidence",
+    "Recovery",
 }
 
 
@@ -93,19 +100,28 @@ class SystemDiagnostics:
         self,
         settings: ProviderSettings | None = None,
         orchestrator: Any = None,
+        application_settings: Settings | None = None,
     ) -> None:
         self._settings = settings or ProviderSettings()
         self._orchestrator = orchestrator
+        self._application_settings = application_settings
+
+    def _app_settings(self) -> Settings:
+        return self._application_settings or get_settings()
 
     def run(self) -> DiagnosticReport:
         checks: list[DiagnosticCheck] = []
         checks.extend(self._environment_checks())
+        checks.extend(self._installation_checks())
         checks.extend(self._provider_checks())
         checks.extend(self._model_checks())
         checks.extend(self._memory_checks())
         checks.extend(self._router_checks())
         checks.extend(self._workflow_checks())
         checks.extend(self._runtime_checks())
+        checks.extend(self._evidence_checks())
+        checks.extend(self._recovery_checks())
+        checks.extend(self._plugin_checks())
         checks.extend(self._ocr_checks())
         checks.extend(self._tool_checks())
         return DiagnosticReport(checks=checks, version=self._version())
@@ -140,6 +156,65 @@ class SystemDiagnostics:
         except Exception as exc:
             checks.append(
                 DiagnosticCheck("Environment", "Temp Dir", DiagnosticStatus.ERROR, str(exc)))
+        return checks
+
+    def _installation_checks(self) -> list[DiagnosticCheck]:
+        paths = get_application_paths()
+        checks = [
+            DiagnosticCheck(
+                "Installation",
+                "Mode",
+                DiagnosticStatus.OK,
+                "installed" if paths.is_installed else "development",
+            )
+        ]
+        application_settings = self._app_settings()
+        workspace = Path(application_settings.filesystem_default_root)
+        workspace_ok = workspace.is_dir() and os.access(workspace, os.W_OK)
+        checks.append(
+            DiagnosticCheck(
+                "Installation",
+                "Workspace",
+                DiagnosticStatus.OK if workspace_ok else DiagnosticStatus.ERROR,
+                "writable" if workspace_ok else "missing or not writable",
+            )
+        )
+        log_ok = paths.log_root.is_dir() and os.access(paths.log_root, os.W_OK)
+        checks.append(
+            DiagnosticCheck(
+                "Installation",
+                "Log Store",
+                DiagnosticStatus.OK if log_ok else DiagnosticStatus.ERROR,
+                "writable" if log_ok else "missing or not writable",
+            )
+        )
+        try:
+            from app.bootstrap import is_bootstrap_current
+
+            bootstrap_ok = is_bootstrap_current()
+        except Exception:
+            bootstrap_ok = False
+        checks.append(
+            DiagnosticCheck(
+                "Installation",
+                "Bootstrap",
+                DiagnosticStatus.OK if bootstrap_ok else DiagnosticStatus.ERROR,
+                "current" if bootstrap_ok else "not initialized or stale",
+            )
+        )
+        signing_key = Path(application_settings.permit_signing_key_path)
+        try:
+            signing_ok = signing_key.is_file() and signing_key.stat().st_size >= 32
+        except OSError:
+            signing_ok = False
+        checks.append(
+            DiagnosticCheck(
+                "Installation",
+                "Permit Signing",
+                DiagnosticStatus.OK if signing_ok else DiagnosticStatus.ERROR,
+                "present" if signing_ok else "missing or invalid",
+            )
+        )
         return checks
 
     def _provider_checks(self) -> list[DiagnosticCheck]:
@@ -185,6 +260,12 @@ class SystemDiagnostics:
             else:
                 checks.append(
                     DiagnosticCheck("Providers", label, DiagnosticStatus.OK, "Healthy"))
+
+        if self._settings.groq_api_key:
+            groq_key_status = "configured"
+            checks.append(DiagnosticCheck("Providers", "Groq API Key", DiagnosticStatus.OK, groq_key_status))
+            checks.append(DiagnosticCheck("Providers", "Groq Base URL", DiagnosticStatus.OK, self._settings.groq_base_url))
+            checks.append(DiagnosticCheck("Providers", "Groq Model", DiagnosticStatus.OK, self._settings.groq_model))
         return checks
 
     def _model_checks(self) -> list[DiagnosticCheck]:
@@ -222,7 +303,12 @@ class SystemDiagnostics:
 
     def _memory_checks(self) -> list[DiagnosticCheck]:
         checks: list[DiagnosticCheck] = []
-        data_dir = Path(os.getcwd()) / "data"
+        db_path = (
+            resolve_database_path(self._application_settings)
+            if self._application_settings is not None
+            else resolve_database_path()
+        )
+        data_dir = Path(db_path).parent
         try:
             data_dir.mkdir(exist_ok=True)
             writable = os.access(str(data_dir), os.W_OK)
@@ -233,7 +319,6 @@ class SystemDiagnostics:
         else:
             checks.append(DiagnosticCheck("Memory", "Data Dir", DiagnosticStatus.ERROR, "data dir not writable"))
 
-        db_path = resolve_database_path()
         try:
             conn = connect(db_path)
             try:
@@ -250,6 +335,73 @@ class SystemDiagnostics:
         else:
             checks.append(DiagnosticCheck("Memory", "Vector Index", DiagnosticStatus.WARN, "not attached"))
         return checks
+
+    def _evidence_checks(self) -> list[DiagnosticCheck]:
+        store = getattr(self._orchestrator, "evidence_store", None)
+        if store is None:
+            status = (
+                DiagnosticStatus.ERROR
+                if self._app_settings().evidence_enabled
+                else DiagnosticStatus.OK
+            )
+            return [
+                DiagnosticCheck(
+                    "Evidence",
+                    "Evidence Store",
+                    status,
+                    "missing" if status == DiagnosticStatus.ERROR else "disabled",
+                )
+            ]
+        health = store.health_check()
+        healthy = health.get("status") == "healthy"
+        return [
+            DiagnosticCheck(
+                "Evidence",
+                "Evidence Store",
+                DiagnosticStatus.OK if healthy else DiagnosticStatus.ERROR,
+                str(health.get("status", "unknown")),
+            )
+        ]
+
+    def _recovery_checks(self) -> list[DiagnosticCheck]:
+        store = getattr(self._orchestrator, "checkpoint_store", None)
+        application_settings = self._app_settings()
+        if not application_settings.checkpoint_enabled:
+            return [
+                DiagnosticCheck(
+                    "Recovery", "Checkpoint Store", DiagnosticStatus.OK, "disabled"
+                )
+            ]
+        root = Path(application_settings.checkpoint_location)
+        healthy = store is not None and root.is_dir() and os.access(root, os.W_OK)
+        invalid_count = len(store.list_invalid()) if healthy else 0
+        status = (
+            DiagnosticStatus.OK
+            if healthy and invalid_count == 0
+            else DiagnosticStatus.ERROR
+        )
+        detail = "healthy" if status == DiagnosticStatus.OK else (
+            f"{invalid_count} invalid checkpoint(s)" if healthy else "missing or not writable"
+        )
+        return [DiagnosticCheck("Recovery", "Checkpoint Store", status, detail)]
+
+    def _plugin_checks(self) -> list[DiagnosticCheck]:
+        manager = getattr(self._orchestrator, "plugin_manager", None)
+        if manager is None:
+            return [
+                DiagnosticCheck(
+                    "Plugins", "Plugin Manager", DiagnosticStatus.WARN, "not attached"
+                )
+            ]
+        discovered = manager.list_plugins()
+        loaded = manager.list_loaded()
+        return [
+            DiagnosticCheck("Plugins", "Plugin Manager", DiagnosticStatus.OK, "ready"),
+            DiagnosticCheck(
+                "Plugins", "Discovered", DiagnosticStatus.OK, str(len(discovered))
+            ),
+            DiagnosticCheck("Plugins", "Loaded", DiagnosticStatus.OK, str(len(loaded))),
+        ]
 
     def _router_checks(self) -> list[DiagnosticCheck]:
         checks: list[DiagnosticCheck] = []
@@ -357,3 +509,166 @@ def render_report(report: DiagnosticReport) -> str:
     lines.append("")
     lines.append(f"System Health: {report.health_percentage()}%")
     return "\n".join(lines).rstrip()
+
+
+DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 1
+
+
+def build_safe_diagnostic_bundle(
+    report: DiagnosticReport,
+    *,
+    orchestrator: Any = None,
+) -> dict[str, Any]:
+    """Build privacy-preserving pilot support data without user content."""
+    from app import __version__
+    from app.bootstrap import CURRENT_BOOTSTRAP_SCHEMA_VERSION, is_bootstrap_current
+
+    paths = get_application_paths()
+    checks = [
+        {
+            "section": check.section,
+            "label": check.label,
+            "status": check.status.value,
+        }
+        for check in report.checks
+    ]
+
+    provider_rows: list[dict[str, Any]] = []
+    provider_settings = getattr(orchestrator, "provider_settings", None)
+    provider_manager = getattr(orchestrator, "provider_manager", None)
+    statuses = {
+        status.provider_id: status
+        for status in (
+            provider_manager.list_provider_status()
+            if provider_manager is not None
+            else []
+        )
+    }
+    if provider_settings is not None:
+        for provider_id in ("groq", "openai", "openrouter", "local", "mock"):
+            if provider_id == "mock" and not provider_settings.mock_allowed():
+                continue
+            status = statuses.get(provider_id)
+            provider_rows.append(
+                {
+                    "provider": provider_id,
+                    "enabled": provider_settings.is_provider_enabled(provider_id),
+                    "configured": provider_settings.is_provider_configured(provider_id),
+                    "available": bool(status.available) if status is not None else False,
+                }
+            )
+
+    capability_registry = getattr(orchestrator, "product_capability_registry", None)
+    capabilities = []
+    if capability_registry is not None:
+        capabilities = [
+            {
+                "name": entry.domain,
+                "availability": entry.availability.value,
+            }
+            for entry in capability_registry.advertised_entries()
+        ]
+
+    evidence = {"status": "not_attached", "executions": 0, "events": 0}
+    evidence_store = getattr(orchestrator, "evidence_store", None)
+    if evidence_store is not None:
+        health = evidence_store.health_check()
+        evidence = {
+            "status": str(health.get("status", "unknown")),
+            "executions": int(health.get("executions", 0) or 0),
+            "events": int(health.get("events", 0) or 0),
+        }
+
+    plugin_manager = getattr(orchestrator, "plugin_manager", None)
+    plugins = {"status": "not_attached", "discovered": 0, "loaded": 0}
+    if plugin_manager is not None:
+        plugins = {
+            "status": "ready",
+            "discovered": len(plugin_manager.list_plugins()),
+            "loaded": len(plugin_manager.list_loaded()),
+        }
+
+    checkpoint_store = getattr(orchestrator, "checkpoint_store", None)
+    recovery = {
+        "status": "ready" if checkpoint_store is not None else "not_attached",
+        "invalid_checkpoints": (
+            len(checkpoint_store.list_invalid()) if checkpoint_store is not None else 0
+        ),
+    }
+
+    return {
+        "schema_version": DIAGNOSTIC_BUNDLE_SCHEMA_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "application": {
+            "name": "Samaktha",
+            "version": __version__,
+            "mode": "installed" if paths.is_installed else "development",
+            "bootstrap_schema": CURRENT_BOOTSTRAP_SCHEMA_VERSION,
+            "bootstrap_current": is_bootstrap_current(),
+        },
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "runtime_python": platform.python_version(),
+        },
+        "health": {
+            "critical": report.is_critical(),
+            "percentage": report.health_percentage(),
+            "checks": checks,
+        },
+        "providers": provider_rows,
+        "capabilities": capabilities,
+        "stores": {
+            "memory": "healthy"
+            if any(
+                check.section == "Memory"
+                and check.label == "SQLite"
+                and check.status == DiagnosticStatus.OK
+                for check in report.checks
+            )
+            else "unhealthy",
+            "evidence": evidence,
+            "recovery": recovery,
+        },
+        "plugins": plugins,
+        "resources": {
+            "active_threads": __import__("threading").active_count(),
+        },
+        "path_categories": {
+            "configuration": "per_user_application_data",
+            "mutable_data": "per_user_application_data",
+            "logs": "per_user_application_data",
+            "installation": "read_only_application_files",
+        },
+        "privacy": {
+            "contains_prompts": False,
+            "contains_responses": False,
+            "contains_memory_contents": False,
+            "contains_file_contents": False,
+            "contains_environment": False,
+            "contains_checkpoint_payloads": False,
+            "contains_credentials": False,
+            "contains_signing_material": False,
+            "uploaded": False,
+        },
+    }
+
+
+def export_safe_diagnostic_bundle(
+    report: DiagnosticReport,
+    *,
+    orchestrator: Any = None,
+    output_dir: Path | None = None,
+) -> Path:
+    """Write one explicit, local, user-owned diagnostic JSON file."""
+    target_dir = output_dir or (get_application_paths().cache_root / "diagnostics")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    target = target_dir / f"samaktha-diagnostics-{timestamp}-{os.getpid()}.json"
+    temporary = target.with_suffix(".tmp")
+    payload = build_safe_diagnostic_bundle(report, orchestrator=orchestrator)
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    os.replace(temporary, target)
+    return target

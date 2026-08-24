@@ -152,7 +152,10 @@ async def test_fetch_action_runs_fetcher():
 
     tool = InternetTool(
         provider=FakeProvider(),
-        fetcher=ContentFetcher(transport=httpx.MockTransport(handler)),
+        fetcher=ContentFetcher(
+            transport=httpx.MockTransport(handler),
+            skip_dns_validation=True,
+        ),
     )
     result = await tool.run({"action": "fetch", "url": "https://x.example/a", "_cap_permit": "allow"})
     assert result.ok

@@ -3,19 +3,15 @@
 Verifies:
     - StreamRequest carries structured messages with a prompt fallback.
     - The composed system prompt is always a SYSTEM message, never a USER
-      message, on both the API and the TUI streaming path.
-    - The TUI streaming bridge and the API ProviderExecutor present the same
-      provider message model, so document/tool content reaches the provider.
+      message, on the canonical ProviderExecutor path shared by API and TUI.
     - ProviderManager forwards StreamRequest.messages into the provider
       payload, keeping prompt as a fallback for prompt-only transports.
 """
-import asyncio
-
 import pytest
 
-from app.agent.production import _StreamingRuntimeBridge
+import app.agent.production as production
 from app.core.contracts import ApprovedRuntimeTask, RoutingDecision, RuntimeContext
-from app.core.contracts.streaming import StreamChunk, StreamEventType, StreamRequest
+from app.core.contracts.streaming import StreamEventType, StreamRequest
 from app.providers.base import BaseProvider
 from app.providers.manager import ProviderManager
 from app.providers.models import ProviderInfo
@@ -71,31 +67,6 @@ def build_provider_manager(provider) -> ProviderManager:
         ),
     )
     return ProviderManager(registry)
-
-
-class RecordingStreaming:
-    """Streaming executor that captures the StreamRequest it receives."""
-
-    def __init__(self) -> None:
-        self.seen: list[StreamRequest] = []
-
-    async def stream_execute(self, request, context):
-        self.seen.append(request)
-        yield StreamChunk(
-            stream_id="stream",
-            event_type=StreamEventType.TOKEN,
-            content="summary",
-            timestamp=0,
-            sequence_number=1,
-        )
-
-
-def build_bridge(recording) -> _StreamingRuntimeBridge:
-    return _StreamingRuntimeBridge(
-        real_runtime=None,
-        streaming_executor=recording,
-        output_queue=asyncio.Queue(),
-    )
 
 
 def build_task(*, inputs: dict, action_type: str = "text_generation") -> ApprovedRuntimeTask:
@@ -164,65 +135,12 @@ def test_build_provider_messages_prompt_only_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# TUI bridge — document/tool messages reach the provider verbatim
+# TUI convergence — there is no interface-level provider bridge
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_bridge_forwards_document_messages_verbatim():
-    streaming = RecordingStreaming()
-    bridge = build_bridge(streaming)
-    inputs = {
-        "system_prompt": "composed persona",
-        "messages": DOCUMENT_MESSAGES,
-        "prompt": DOCUMENT_MESSAGES[-1]["content"],
-    }
-    await bridge.run(
-        RuntimeContext(request_id="req-tui"),
-        build_task(inputs=inputs),
-        RoutingDecision(provider_id="rec", model_id="mock-model", reasoning_summary="provider"),
-    )
-
-    request = streaming.seen[0]
-    assert request.messages == DOCUMENT_MESSAGES
-    assert request.messages[0]["role"] == "system"
-    assert "NOR gate" in request.messages[-1]["content"]
-    assert request.prompt == DOCUMENT_MESSAGES[-1]["content"]
-    assert request.prompt != "composed persona"
-
-
-@pytest.mark.asyncio
-async def test_bridge_system_prompt_is_system_message_not_user():
-    streaming = RecordingStreaming()
-    bridge = build_bridge(streaming)
-    await bridge.run(
-        RuntimeContext(request_id="req-tui"),
-        build_task(inputs={"system_prompt": "You are Samaktha.", "prompt": "read NOR.pdf"}),
-        RoutingDecision(provider_id="rec", model_id="mock-model", reasoning_summary="provider"),
-    )
-
-    request = streaming.seen[0]
-    assert request.messages == [
-        {"role": "system", "content": "You are Samaktha."},
-        {"role": "user", "content": "read NOR.pdf"},
-    ]
-    assert request.messages[0]["role"] == "system"
-    assert request.messages[-1]["content"] == "read NOR.pdf"
-
-
-@pytest.mark.asyncio
-async def test_bridge_prompt_fallback_without_messages():
-    streaming = RecordingStreaming()
-    bridge = build_bridge(streaming)
-    await bridge.run(
-        RuntimeContext(request_id="req-tui"),
-        build_task(inputs={"prompt": "read NOR.pdf"}),
-        RoutingDecision(provider_id="rec", model_id="mock-model", reasoning_summary="provider"),
-    )
-
-    request = streaming.seen[0]
-    assert request.messages is None
-    assert request.prompt == "read NOR.pdf"
+def test_tui_has_no_direct_streaming_provider_bridge():
+    assert not hasattr(production, "_StreamingRuntimeBridge")
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +167,7 @@ async def test_api_single_turn_system_prompt_is_system_message():
 
 
 @pytest.mark.asyncio
-async def test_api_executor_and_streaming_bridge_use_same_message_model():
+async def test_canonical_provider_executor_preserves_document_message_model():
     inputs = {
         "system_prompt": "composed persona",
         "messages": DOCUMENT_MESSAGES,
@@ -265,18 +183,9 @@ async def test_api_executor_and_streaming_bridge_use_same_message_model():
     )
     api_payload = provider.received_payloads[0]
 
-    streaming = RecordingStreaming()
-    bridge = build_bridge(streaming)
-    await bridge.run(
-        RuntimeContext(request_id="req-tui"),
-        build_task(inputs=dict(inputs)),
-        RoutingDecision(provider_id="rec", model_id="mock-model", reasoning_summary="provider"),
-    )
-    tui_request = streaming.seen[0]
-
-    assert tui_request.messages == api_payload["messages"] == DOCUMENT_MESSAGES
+    assert api_payload["messages"] == DOCUMENT_MESSAGES
     assert api_payload["messages"][0]["role"] == "system"
-    assert tui_request.prompt == api_payload["prompt"] == inputs["prompt"]
+    assert api_payload["prompt"] == inputs["prompt"]
 
 
 # ---------------------------------------------------------------------------

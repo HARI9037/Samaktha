@@ -12,6 +12,20 @@ log = logging.getLogger(__name__)
 
 class RuntimeEventType(str, Enum):
     """Hierarchical runtime event types."""
+    # PUBLIC EXECUTION LIFECYCLE
+    EXECUTION_CREATED = "EXECUTION.CREATED"
+    EXECUTION_STATE_CHANGED = "EXECUTION.STATE_CHANGED"
+    EXECUTION_COMPLETED = "EXECUTION.COMPLETED"
+    EXECUTION_FAILED = "EXECUTION.FAILED"
+    EXECUTION_CANCELLED = "EXECUTION.CANCELLED"
+    EXECUTION_TIMED_OUT = "EXECUTION.TIMED_OUT"
+    TOKEN = "PROVIDER.TOKEN"
+    RETRY_SCHEDULED = "RELIABILITY.RETRY_SCHEDULED"
+    RETRY_STARTED = "RELIABILITY.RETRY_STARTED"
+    CHECKPOINT_SAVED = "RECOVERY.CHECKPOINT_SAVED"
+    RECOVERY_STARTED = "RECOVERY.STARTED"
+    RECOVERY_COMPLETED = "RECOVERY.COMPLETED"
+    RECOVERY_FAILED = "RECOVERY.FAILED"
     # CAP
     CAP_STARTED = "CAP.STARTED"
     CAP_COMPLETED = "CAP.COMPLETED"
@@ -46,6 +60,7 @@ class RuntimeEventType(str, Enum):
     
     # APPROVAL
     APPROVAL_REQUESTED = "APPROVAL.REQUESTED"
+    APPROVAL_RESOLVED = "APPROVAL.RESOLVED"
     
     # SESSION
     SESSION_IDLE = "SESSION.IDLE"
@@ -55,6 +70,7 @@ class RuntimeEventPayload(BaseModel):
     """Standardized payload for runtime events."""
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     session_id: str
+    execution_id: str | None = None
     workflow_id: str | None = None
     trace_id: str | None = None
     task_id: str | None = None
@@ -77,9 +93,11 @@ class RuntimeEventBus:
     Per-session instance. Non-blocking publishing. Exception isolated.
     """
     
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, execution_id: str | None = None) -> None:
         self._session_id = session_id
+        self._execution_id = execution_id
         self._subscribers: dict[str, SubscriberCallback] = {}
+        self._history: list[RuntimeEvent] = []
         
     def subscribe(self, callback: SubscriberCallback) -> str:
         """Register a subscriber and return a subscription ID."""
@@ -97,6 +115,7 @@ class RuntimeEventBus:
         """Publish an event to all subscribers."""
         event_payload = RuntimeEventPayload(
             session_id=self._session_id,
+            execution_id=self._execution_id or trace_id,
             workflow_id=workflow_id,
             trace_id=trace_id,
             task_id=task_id,
@@ -106,9 +125,19 @@ class RuntimeEventBus:
             payload=payload or {}
         )
         event = RuntimeEvent(data=event_payload)
+        self._history.append(event)
         
         # Fire and forget non-blocking dispatch
-        asyncio.create_task(self._dispatch(event))
+        try:
+            asyncio.get_running_loop().create_task(self._dispatch(event))
+        except RuntimeError:
+            # Startup recovery may reconstruct history before an event loop
+            # exists. The event remains in history and has no live subscribers.
+            pass
+
+    def history(self) -> list[RuntimeEvent]:
+        """Return the execution-scoped events published so far."""
+        return list(self._history)
         
     async def _dispatch(self, event: RuntimeEvent) -> None:
         """Dispatch event to all subscribers, isolating exceptions."""

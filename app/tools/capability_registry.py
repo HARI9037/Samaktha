@@ -9,8 +9,13 @@ Architecture rule: This registry is read-only. Planning logic MUST NOT live here
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+from app.tools.models import CapabilityAvailability
+
+if TYPE_CHECKING:
+    from app.tools.registry import ToolRegistry
 
 
 @dataclass(frozen=True)
@@ -20,11 +25,19 @@ class CapabilityEntry:
     domain: str
     """Human-readable capability domain name (e.g. 'email', 'filesystem')."""
 
-    tool_id: str
+    tool_id: str | None
     """The tool_id that handles this domain in ToolRegistry."""
 
     description: str = ""
     """Optional short description for diagnostics."""
+
+    supported_actions: tuple[str, ...] = ()
+    permissions: tuple[str, ...] = ()
+    availability: CapabilityAvailability = CapabilityAvailability.INTERNAL_ONLY
+    side_effect_actions: tuple[str, ...] = ()
+    evidence_requirements: dict[str, str] = field(default_factory=dict)
+    natural_language_intents: tuple[str, ...] = ()
+    advertised: bool = False
 
 
 class CapabilityRegistry:
@@ -42,8 +55,14 @@ class CapabilityRegistry:
         tool_id = registry.tool_for("pdf")  # → "pdf"
     """
 
-    def __init__(self, entries: List[CapabilityEntry] | None = None) -> None:
+    def __init__(
+        self,
+        entries: List[CapabilityEntry] | None = None,
+        *,
+        source_registry: "ToolRegistry | None" = None,
+    ) -> None:
         self._entries: Dict[str, CapabilityEntry] = {}
+        self.source_registry = source_registry
         for entry in (entries or []):
             self._entries[entry.domain.lower()] = entry
 
@@ -53,7 +72,20 @@ class CapabilityRegistry:
 
     def is_installed(self, domain: str) -> bool:
         """Return True if the given capability domain has a registered tool."""
-        return domain.lower() in self._entries
+        entry = self._entries.get(domain.lower())
+        return bool(
+            entry
+            and entry.tool_id
+            and entry.availability != CapabilityAvailability.UNAVAILABLE
+        )
+
+    def is_action_available(self, domain: str, action: str) -> bool:
+        entry = self._entries.get(domain.lower())
+        return bool(
+            self.is_installed(domain)
+            and entry
+            and action in entry.supported_actions
+        )
 
     def register(self, entry: CapabilityEntry) -> None:
         """Install a capability domain, rejecting duplicate domains.
@@ -78,6 +110,15 @@ class CapabilityRegistry:
         entry = self._entries.get(domain.lower())
         return entry.tool_id if entry else None
 
+    def entry_for(self, domain: str) -> CapabilityEntry | None:
+        return self._entries.get(domain.lower())
+
+    def advertised_entries(self) -> List[CapabilityEntry]:
+        return sorted(
+            (entry for entry in self._entries.values() if entry.advertised),
+            key=lambda entry: entry.domain,
+        )
+
     # ------------------------------------------------------------------
     # Introspection helpers (diagnostics only, not for planning logic)
     # ------------------------------------------------------------------
@@ -100,110 +141,65 @@ class CapabilityRegistry:
     # Factory
     # ------------------------------------------------------------------
 
+    @classmethod
+    def from_tool_registry(cls, tool_registry: "ToolRegistry") -> "CapabilityRegistry":
+        """Derive product availability from the exact registered composition.
+
+        Only ToolInfo records carrying an explicit product_domain participate.
+        This prevents a class existing on disk, or a broad static declaration,
+        from becoming an advertised production capability.
+        """
+        entries: list[CapabilityEntry] = []
+        for info in tool_registry.list_tools():
+            if not info.product_domain:
+                continue
+            actions = tuple(info.supported_actions or info.capabilities)
+            availability = (
+                info.execution_mode
+                if info.available
+                else CapabilityAvailability.UNAVAILABLE
+            )
+            entries.append(
+                CapabilityEntry(
+                    domain=info.product_domain,
+                    tool_id=info.tool_id if info.available else None,
+                    description=info.description,
+                    supported_actions=actions,
+                    permissions=tuple(info.permissions),
+                    availability=availability,
+                    side_effect_actions=tuple(info.side_effect_actions),
+                    evidence_requirements=dict(info.evidence_requirements),
+                    natural_language_intents=tuple(info.natural_language_intents),
+                    advertised=bool(info.advertised and info.available),
+                )
+            )
+        registered_domains = {entry.domain for entry in entries}
+        for domain in sorted(_UNAVAILABLE_PRODUCT_CAPABILITIES - registered_domains):
+            entries.append(
+                CapabilityEntry(
+                    domain=domain,
+                    tool_id=None,
+                    availability=CapabilityAvailability.UNAVAILABLE,
+                    advertised=False,
+                )
+            )
+        return cls(entries, source_registry=tool_registry)
+
     @staticmethod
     def default() -> "CapabilityRegistry":
-        """Return a registry pre-populated with Samaktha's installed tools.
+        """Return no installed product capabilities.
 
-        Add entries here as new tools are implemented.
-        Known-but-uninstalled domains are declared in _KNOWN_DOMAINS below
-        so that the planner can produce a helpful error message.
+        Production must use from_tool_registry().  This conservative fallback
+        prevents standalone planners from advertising unwired tools.
         """
         return CapabilityRegistry(
-            entries=[
+            [
                 CapabilityEntry(
-                    domain="filesystem",
-                    tool_id="resolver",
-                    description=(
-                        "Local filesystem: read, write, list, move, copy, delete. Write supports .txt, "
-                        ".md, .markdown, .html, .htm, .csv, .docx, .xlsx, .pdf. When an explicit absolute "
-                        "path is supplied by the user, preserve it exactly."
-                    ),
-                ),
-                CapabilityEntry(
-                    domain="pdf",
-                    tool_id="pdf",
-                    description="PDF text extraction and metadata",
-                ),
-                CapabilityEntry(
-                    domain="image",
-                    tool_id="image",
-                    description="Image analysis and metadata",
-                ),
-                CapabilityEntry(
-                    domain="memory",
-                    tool_id="memory",
-                    description="Conversation and skill memory search",
-                ),
-                CapabilityEntry(
-                    domain="internet",
-                    tool_id="internet",
-                    description="Governed internet search, news, content fetch, and suggestions",
-                ),
-                CapabilityEntry(
-                    domain="windows",
-                    tool_id="windows",
-                    description="Windows OS: processes, clipboard, terminal",
-                ),
-                CapabilityEntry(
-                    domain="terminal",
-                    tool_id="shell",
-                    description="Execute terminal/shell commands (ShellTool)",
-                ),
-                CapabilityEntry(
-                    domain="shell",
-                    tool_id="shell",
-                    description="Execute approved shell commands with safety controls",
-                ),
-                CapabilityEntry(
-                    domain="clipboard",
-                    tool_id="clipboard",
-                    description="Read and write the system clipboard",
-                ),
-                CapabilityEntry(
-                    domain="document",
-                    tool_id="document",
-                    description="Document reading, summarization, table extraction, and metadata",
-                ),
-                CapabilityEntry(
-                    domain="reminder",
-                    tool_id="reminder",
-                    description="Personal reminder management with scheduling and notifications",
-                ),
-                CapabilityEntry(
-                    domain="note",
-                    tool_id="notes",
-                    description="Markdown notes with CRUD, search, and voice dictation",
-                ),
-                CapabilityEntry(
-                    domain="task",
-                    tool_id="tasks",
-                    description="Task management with priority, status, due dates, and reminders",
-                ),
-                CapabilityEntry(
-                    domain="contact",
-                    tool_id="contacts",
-                    description="Contact management with CRUD, search, and vCard import/export",
-                ),
-                CapabilityEntry(
-                    domain="calendar",
-                    tool_id="calendar",
-                    description="Local-first calendar with events, conflicts, and recurrence",
-                ),
-                CapabilityEntry(
-                    domain="email",
-                    tool_id="email",
-                    description="Email communication with compose, send, reply, forward, read, search",
-                ),
-                CapabilityEntry(
-                    domain="message",
-                    tool_id="message",
-                    description="Messaging communication with send, reply, history, draft, search",
-                ),
-                CapabilityEntry(
-                    domain="notification",
-                    tool_id="notification",
-                    description="Expanded notification system with desktop, toast, priority, scheduling, grouping",
-                ),
+                    domain=domain,
+                    tool_id=None,
+                    availability=CapabilityAvailability.UNAVAILABLE,
+                )
+                for domain in sorted(_KNOWN_DOMAINS)
             ]
         )
 
@@ -217,3 +213,5 @@ _KNOWN_DOMAINS = {
     # Not yet installed:
     "sms", "whatsapp", "telegram", "slack", "discord", "webhook", "push",
 }
+
+_UNAVAILABLE_PRODUCT_CAPABILITIES = {"browser", "media"}

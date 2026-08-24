@@ -521,7 +521,7 @@ class MainScreen(Screen):
                     ancestor.remove()
                     break
             
-            asyncio.create_task(self._submit_resume(task_id, {"permit": {"decision": decision, "reasons": ["User response via TUI"]}}))
+            asyncio.create_task(self._submit_resume(task_id, {"approval_decision": decision, "approval_reasons": ["User response via TUI"]}))
 
     async def _submit_resume(self, task_id: str, updates: dict) -> None:
         conv = self.query_one("#conversation", ConversationPanel)

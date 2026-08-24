@@ -21,9 +21,37 @@ class ExecuteResponse(BaseModel):
     """HTTP response body returned by the execute endpoint."""
 
     status: str
+    execution_id: str | None = None
     request_id: str | None = None
     session_id: str | None = None
     task_id: str | None = None
     response: str | None = None
     error: str | None = None
     diagnostics: ExecutionReport | None = None
+
+
+class ExecutionStateResponse(BaseModel):
+    execution_id: str
+    status: str
+    principal_id: str
+    session_id: str
+    pending_approval: bool = False
+    result_available: bool = False
+    created_at: str
+    updated_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
+
+
+class ApprovalDecisionRequest(BaseModel):
+    approval_id: str
+    decision: str = Field(pattern="^(allow|deny)$")
+    reasons: list[str] = Field(default_factory=list)
+
+
+class SessionCreateRequest(BaseModel):
+    session_id: str | None = None
+
+
+class SessionCreateResponse(BaseModel):
+    session_id: str

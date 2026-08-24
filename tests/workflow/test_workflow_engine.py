@@ -188,9 +188,18 @@ def test_orchestrator_uses_workflow_engine() -> None:
                 super().__init__()
                 self.called = False
 
-            async def execute(self, execution_plan, runtime, router, context=None):
+            async def execute(
+                self, execution_plan, runtime, router, context=None,
+                prepared_context=None,
+            ):
                 self.called = True
-                return await super().execute(execution_plan, runtime=runtime, router=router, context=context)
+                return await super().execute(
+                    execution_plan,
+                    runtime=runtime,
+                    router=router,
+                    context=context,
+                    prepared_context=prepared_context,
+                )
 
         provider_registry = ProviderRegistry()
         provider_registry.register("mock", MockProvider(), ProviderInfo(
@@ -250,6 +259,7 @@ def test_runtime_unchanged() -> None:
                 description="Generate a test response.",
                 action_type="text_generation",
                 inputs={"prompt": "hello"},
+                subject_id="req-7",
             ),
             RoutingDecision(provider_id="mock", model_id="mock-model",
                             reasoning_summary="selected"),

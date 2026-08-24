@@ -23,7 +23,13 @@ from datetime import datetime, timezone
 from enum import StrEnum, auto
 from typing import Any
 
-from app.core.contracts.memory import MemoryItem, MemoryType as CoreMemoryType
+from app.core.contracts.memory import (
+    MemoryAccessContext,
+    MemoryItem,
+    MemoryScope,
+    MemoryType as CoreMemoryType,
+)
+from app.core.contracts.security import SecurityLevel
 from app.memory.controller.cache import MemoryCache
 from app.memory.controller.consolidator import (
     _extract_keywords,
@@ -70,6 +76,8 @@ class PreferenceResolver:
         content: str,
         session_id: str | None = None,
         tags: list[str] | None = None,
+        access_context: MemoryAccessContext | None = None,
+        security_level: SecurityLevel = SecurityLevel.LOW,
     ) -> tuple[MemoryItem, bool]:
         """Resolve a new preference against existing ones.
 
@@ -79,12 +87,17 @@ class PreferenceResolver:
             item — the MemoryItem to persist (either new or updated canonical)
             is_new — True if this is a brand-new record, False if it updates an existing one
         """
-        existing = self._find_existing_preferences()
+        access_context = access_context or MemoryAccessContext.local_default(
+            session_id=session_id
+        )
+        existing = self._find_existing_preferences(access_context)
 
         best_match, relation = self._classify(content, existing)
 
         if relation is PreferenceRelation.NEW:
-            item = self._build_new_item(content, session_id, tags)
+            item = self._build_new_item(
+                content, session_id, tags, access_context, security_level
+            )
             log.debug("PreferenceResolver: new preference (no match)")
             return item, True
 
@@ -113,7 +126,9 @@ class PreferenceResolver:
             return replaced, False
 
         # CONTRADICT — keep both, return new item
-        item = self._build_new_item(content, session_id, tags)
+        item = self._build_new_item(
+            content, session_id, tags, access_context, security_level
+        )
         item.metadata["conflict_with"] = self._item_id(best_match)
         log.debug(
             "PreferenceResolver: contradictory preference (conflict with %s)",
@@ -185,7 +200,9 @@ class PreferenceResolver:
     # Existing preference lookup
     # ------------------------------------------------------------------
 
-    def _find_existing_preferences(self) -> list[MemoryItem]:
+    def _find_existing_preferences(
+        self, access_context: MemoryAccessContext
+    ) -> list[MemoryItem]:
         """Retrieve stored preference memories."""
         items: list[MemoryItem] = []
 
@@ -194,7 +211,12 @@ class PreferenceResolver:
         if cached:
             for item in cached:
                 meta = getattr(item, "metadata", {})
-                if isinstance(meta, dict) and meta.get("memory_type") == "preference":
+                if (
+                    isinstance(meta, dict)
+                    and meta.get("memory_type") == "preference"
+                    and item.owner_id == access_context.principal_id
+                    and item.scope is MemoryScope.USER
+                ):
                     items.append(item)
 
         # Fall back to MemoryManager
@@ -202,7 +224,12 @@ class PreferenceResolver:
             raw = self._memory_manager.get_recent_context(n=100)
             for item in raw:
                 meta = getattr(item, "metadata", {})
-                if isinstance(meta, dict) and meta.get("memory_type") == "preference":
+                if (
+                    isinstance(meta, dict)
+                    and meta.get("memory_type") == "preference"
+                    and item.owner_id == access_context.principal_id
+                    and item.scope is MemoryScope.USER
+                ):
                     items.append(item)
                     self._cache.store_recent_memory(item.id, item)
 
@@ -258,6 +285,8 @@ class PreferenceResolver:
         content: str,
         session_id: str | None = None,
         tags: list[str] | None = None,
+        access_context: MemoryAccessContext | None = None,
+        security_level: SecurityLevel = SecurityLevel.LOW,
     ) -> MemoryItem:
         """Create a new preference MemoryItem."""
         meta = build_metadata(
@@ -267,11 +296,25 @@ class PreferenceResolver:
             importance_kind="user_preference",
             tags=(tags or []) + ["preference"],
         )
+        access_context = access_context or MemoryAccessContext.local_default(
+            session_id=session_id
+        )
         item = MemoryItem(
             content=content,
             category=CoreMemoryType.CONTEXT,
             metadata=meta,
+            owner_id=access_context.principal_id,
+            scope=MemoryScope.USER,
+            profile_id=access_context.profile_id,
+            privacy_level=security_level,
         )
+        item.metadata.update({
+            "owner_id": item.owner_id,
+            "scope": item.scope.value,
+            "session_id": None,
+            "workspace_id": None,
+            "profile_id": item.profile_id,
+        })
         meta["checksum"] = compute_checksum(item.content, meta)
         return item
 

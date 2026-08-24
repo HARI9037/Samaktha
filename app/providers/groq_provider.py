@@ -15,7 +15,7 @@ class GroqProvider(BaseProvider):
             provider_id=self.name,
             api_key=settings.groq_api_key,
             model_id=settings.groq_model,
-            base_url="https://api.groq.com/openai/v1",
+            base_url=settings.groq_base_url,
             settings=settings,
             display_name="Groq",
         )

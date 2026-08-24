@@ -2,6 +2,7 @@ import time
 from typing import Any, AsyncIterator, Optional
 
 from app.core.contracts.streaming import StreamChunk, StreamEventType, StreamRequest
+from app.core.contracts.policy import ExecutionConstraints, ExecutionLocation
 
 from app.providers.base import BaseProvider
 from app.providers.config import ProviderSettings
@@ -35,6 +36,10 @@ class ProviderManager:
         """Resolve a provider from the registry."""
         return self._registry.get_provider(provider_id)
 
+    def prepare_semantic_retry(self, provider_id: str) -> None:
+        """Allow RuntimeEngine's next bounded attempt despite prior cooldown."""
+        self._health_checker.clear_cooldown(provider_id)
+
     def list_providers(self) -> list:
         """List all available providers."""
         return self._registry.list_providers()
@@ -66,7 +71,11 @@ class ProviderManager:
         )
         sequence_number += 1
 
-        candidates = self._candidate_infos(primary_id, request.capabilities)
+        candidates = self._candidate_infos(
+            primary_id,
+            request.capabilities,
+            request.execution_constraints,
+        )
         attempted: set[str] = set()
         last_error: Exception | None = None
         used_provider = primary_id
@@ -82,9 +91,12 @@ class ProviderManager:
             if provider is None:
                 continue
 
-            stream_payload = {
-                "model_id": request.metadata.get("model_id") or self._default_model(candidate),
-            }
+            candidate_model = self._candidate_model(
+                candidate,
+                request.metadata.get("model_id"),
+                primary_id,
+            )
+            stream_payload = {"model_id": candidate_model}
             if request.messages:
                 stream_payload["messages"] = request.messages
                 stream_payload["prompt"] = request.messages[-1].get("content", "")
@@ -113,7 +125,8 @@ class ProviderManager:
                 )
                 return
             except Exception as exc:
-                self._mark_cooldown(candidate_id)
+                if not self._is_model_specific_error(exc):
+                    self._mark_cooldown(candidate_id)
                 last_error = exc
                 if not self._settings.fallback_enabled:
                     break
@@ -130,6 +143,7 @@ class ProviderManager:
         self,
         provider_id: str,
         required_capabilities: list[str] | None,
+        execution_constraints: ExecutionConstraints | None = None,
     ) -> list:
         """Ordered execution candidates for fallback.
 
@@ -155,8 +169,15 @@ class ProviderManager:
         return [
             candidate
             for candidate in candidates
-            if not candidate.capabilities
-            or set(required).issubset(set(candidate.capabilities))
+            if (
+                not execution_constraints
+                or not execution_constraints.requires_local_model
+                or candidate.execution_location == ExecutionLocation.LOCAL
+            )
+            and (
+                not candidate.capabilities
+                or set(required).issubset(set(candidate.capabilities))
+            )
         ]
 
     def get_provider_status(self, provider_id: str) -> ProviderStatus:
@@ -212,6 +233,7 @@ class ProviderManager:
         payload: dict[str, Any],
         model_id: str | None = None,
         required_capabilities: list[str] | None = None,
+        execution_constraints: ExecutionConstraints | None = None,
     ) -> dict[str, Any]:
         """Execute a provider with deterministic fallback and metrics."""
         attempted: set[str] = set()
@@ -225,18 +247,23 @@ class ProviderManager:
                 finish_reason="unavailable",
             ).model_dump()
 
-        candidates = self._candidate_infos(provider_id, required_capabilities)
+        candidates = self._candidate_infos(
+            provider_id,
+            required_capabilities,
+            execution_constraints,
+        )
         final_response: ProviderResponse | None = None
         for candidate in candidates:
             if candidate.provider_id in attempted:
                 continue
             attempted.add(candidate.provider_id)
+            candidate_model = self._candidate_model(candidate, model_id, provider_id)
             if not self.get_provider_status(candidate.provider_id).available:
-                final_response = self._unavailable_response(candidate, model_id)
+                final_response = self._unavailable_response(candidate, candidate_model)
                 self._metrics.record(candidate.provider_id, final_response)
                 continue
 
-            context_error = self._validate_context(candidate, payload, model_id)
+            context_error = self._validate_context(candidate, payload, candidate_model)
             if context_error is not None:
                 self._metrics.record(candidate.provider_id, context_error)
                 return context_error.model_dump()
@@ -244,23 +271,14 @@ class ProviderManager:
             provider = self._registry.get_provider(candidate.provider_id)
             if provider is None:
                 continue
-            response: ProviderResponse | None = None
-            retry_limit = max(0, self._settings.max_retries)
-            for attempt in range(retry_limit + 1):
-                raw = await provider.execute({
-                    **payload,
-                    "model_id": model_id or self._default_model(candidate),
-                })
-                response = self._normalize_response(raw, candidate.provider_id, model_id)
-                transient = response.finish_reason in {
-                    "rate_limited", "server_error", "timeout", "unavailable", "http_error"
-                }
-                if response.success or not transient or attempt >= retry_limit:
-                    break
-            response = response or self._unavailable_response(candidate, model_id)
+            # ProviderManager owns compatible fallback; RuntimeEngine owns
+            # semantic retry so retries cannot be multiplied across layers.
+            raw = await provider.execute({**payload, "model_id": candidate_model})
+            response = self._normalize_response(raw, candidate.provider_id, candidate_model)
             self._metrics.record(candidate.provider_id, response)
             if response.finish_reason in {"rate_limited", "server_error", "timeout", "unavailable", "http_error"}:
-                self._mark_cooldown(candidate.provider_id)
+                if not self._is_model_specific_response(response):
+                    self._mark_cooldown(candidate.provider_id)
             if response.success:
                 return response.model_dump()
             final_response = response
@@ -284,15 +302,21 @@ class ProviderManager:
         payload: dict[str, Any],
         model_id: str | None = None,
         required_capabilities: list[str] | None = None,
+        execution_constraints: ExecutionConstraints | None = None,
     ):
         selected = self._registry.get_info(provider_id)
         if selected is None:
             return
-        candidates = self._candidate_infos(provider_id, required_capabilities)
+        candidates = self._candidate_infos(
+            provider_id,
+            required_capabilities,
+            execution_constraints,
+        )
         for candidate in candidates:
             if not self.get_provider_status(candidate.provider_id).available:
                 continue
-            context_error = self._validate_context(candidate, payload, model_id)
+            candidate_model = self._candidate_model(candidate, model_id, provider_id)
+            context_error = self._validate_context(candidate, payload, candidate_model)
             if context_error is not None:
                 return
             provider = self._registry.get_provider(candidate.provider_id)
@@ -300,14 +324,16 @@ class ProviderManager:
                 continue
             stream_payload = {
                 **payload,
-                "model_id": model_id or self._default_model(candidate),
+                "model_id": candidate_model,
             }
             try:
                 async for chunk in provider.execute_stream(stream_payload):
                     yield chunk
                 return
             except Exception:
-                self._mark_cooldown(candidate.provider_id)
+                # RuntimeEngine owns bounded retry; continue to the next
+                # compatible fallback candidate without global cooldown.
+                pass
                 if not self._settings.fallback_enabled:
                     return
 
@@ -396,3 +422,38 @@ class ProviderManager:
             return ""
         models = provider.supported_models or provider.models
         return models[0] if models else ""
+
+    @classmethod
+    def _candidate_model(
+        cls,
+        provider: ProviderInfo,
+        requested_model: str | None,
+        primary_provider_id: str,
+    ) -> str:
+        """Return a model registered for this exact fallback provider."""
+        available = provider.supported_models or provider.models
+        if (
+            provider.provider_id == primary_provider_id
+            and requested_model
+            and requested_model in available
+        ):
+            return requested_model
+        return cls._default_model(provider)
+
+    @staticmethod
+    def _is_model_specific_error(exc: Exception) -> bool:
+        """True when an exception represents a model-not-found error, not a provider failure."""
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (404, 400):
+            return True
+        text = str(exc).lower()
+        return any(term in text for term in ("model_not_found", "model not found", "invalid_model"))
+
+    @staticmethod
+    def _is_model_specific_response(response: ProviderResponse) -> bool:
+        """True when a ProviderResponse represents a model-specific error."""
+        status = response.metadata.get("status_code") if response.metadata else None
+        if status in (404, 400):
+            return True
+        msg = (response.message or "").lower()
+        return any(term in msg for term in ("model_not_found", "model not found", "invalid_model"))

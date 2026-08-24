@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import hashlib
+import hmac
 import inspect
+import json
 import logging
 import uuid
 from collections import deque
@@ -52,6 +55,10 @@ class Reminder:
         snoozed_until: datetime | None = None,
         completed: bool = False,
         created_at: datetime | None = None,
+        principal_id: str = "local-default",
+        session_id: str = "default",
+        workspace_id: str | None = None,
+        integrity_digest: str | None = None,
     ) -> None:
         self.id = reminder_id
         self.title = title
@@ -61,6 +68,10 @@ class Reminder:
         self.snoozed_until = snoozed_until
         self.completed = completed
         self.created_at = created_at or datetime.now(timezone.utc)
+        self.principal_id = principal_id
+        self.session_id = session_id
+        self.workspace_id = workspace_id
+        self.integrity_digest = integrity_digest
 
     def to_dict(self) -> dict:
         return {
@@ -72,6 +83,10 @@ class Reminder:
             "snoozed_until": self.snoozed_until.isoformat() if self.snoozed_until else None,
             "completed": self.completed,
             "created_at": self.created_at.isoformat(),
+            "principal_id": self.principal_id,
+            "session_id": self.session_id,
+            "workspace_id": self.workspace_id,
+            "integrity_digest": self.integrity_digest,
         }
 
     @classmethod
@@ -85,6 +100,10 @@ class Reminder:
             snoozed_until=datetime.fromisoformat(data["snoozed_until"]) if data.get("snoozed_until") else None,
             completed=data.get("completed", False),
             created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None,
+            principal_id=data.get("principal_id") or "local-default",
+            session_id=data.get("session_id") or "default",
+            workspace_id=data.get("workspace_id"),
+            integrity_digest=data.get("integrity_digest"),
         )
 
 
@@ -109,6 +128,7 @@ class ReminderScheduler:
         db_path: str | None = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL_S,
         keep_completed: int | None = DEFAULT_KEPT_COMPLETED_REMINDERS,
+        integrity_key: bytes | None = None,
     ) -> None:
         self._reminders: dict[str, Reminder] = {}
         self._callbacks: list[Any] = []
@@ -116,13 +136,32 @@ class ReminderScheduler:
         self._task: asyncio.Task | None = None
         self._poll_interval = poll_interval
         self._keep_completed = keep_completed
+        if integrity_key is not None and len(integrity_key) < 32:
+            raise ValueError("Reminder integrity key must contain at least 32 bytes.")
+        self._integrity_key = integrity_key
         self._errors: deque[str] = deque(maxlen=self.MAX_ERRORS)
+        self._firing: set[str] = set()
         self._db = open_table("reminders", db_path)
         self._rebuild()
         self._prune_if_over_cap()
 
     def _rebuild(self) -> None:
-        rebuild(self._reminders, self._db, Reminder.from_dict)
+        for payload in self._db.all():
+            try:
+                reminder = Reminder.from_dict(payload)
+                if self._integrity_key is not None:
+                    if reminder.integrity_digest is None:
+                        # One-time migration for pre-P13 local reminders.
+                        self._sign(reminder)
+                        save(self._db, reminder)
+                    elif not self._verify(payload):
+                        raise ValueError("reminder integrity validation failed")
+            except Exception as exc:  # noqa: BLE001 - skip one unsafe row
+                self._record_error(
+                    f"skipping invalid reminder {payload.get('id')}: {exc}"
+                )
+                continue
+            self._reminders[reminder.id] = reminder
 
     # ------------------------------------------------------------------
     # Durable reminder store
@@ -132,11 +171,13 @@ class ReminderScheduler:
         if reminder.id in self._reminders:
             raise ValueError(f"reminder already exists: {reminder.id}")
         self._reminders[reminder.id] = reminder
+        self._sign(reminder)
         save(self._db, reminder)
 
     def save_reminder(self, reminder: Reminder) -> None:
         """Persist a directly-mutated reminder (update/snooze/complete)."""
         self._reminders[reminder.id] = reminder
+        self._sign(reminder)
         save(self._db, reminder)
         self._prune_if_over_cap()
 
@@ -215,6 +256,21 @@ class ReminderScheduler:
         self._errors.append(message)
         log.error("ReminderScheduler: %s", message)
 
+    def _sign(self, reminder: Reminder) -> None:
+        if self._integrity_key is None:
+            return
+        reminder.integrity_digest = _reminder_signature(
+            reminder.to_dict(), self._integrity_key
+        )
+
+    def _verify(self, payload: dict[str, Any]) -> bool:
+        if self._integrity_key is None:
+            return True
+        digest = payload.get("integrity_digest")
+        return isinstance(digest, str) and hmac.compare_digest(
+            digest, _reminder_signature(payload, self._integrity_key)
+        )
+
     async def start(self) -> None:
         """Start the background poll loop (idempotent — no duplicate loops)."""
         if self._running:
@@ -247,12 +303,22 @@ class ReminderScheduler:
     async def check_due(self) -> list[Reminder]:
         due = self.get_due_reminders()
         for reminder in due:
-            await self._fire(reminder)
-            if reminder.repeat in ("", "none"):
-                reminder.completed = True
-                self.save_reminder(reminder)
-            else:
-                self._reschedule_if_repeating(reminder)
+            if reminder.id in self._firing:
+                continue
+            self._firing.add(reminder.id)
+            try:
+                await self._fire(reminder)
+                # Cancellation wins if it removed the durable record before
+                # callback completion; never resurrect a cancelled reminder.
+                if self._reminders.get(reminder.id) is not reminder:
+                    continue
+                if reminder.repeat in ("", "none"):
+                    reminder.completed = True
+                    self.save_reminder(reminder)
+                else:
+                    self._reschedule_if_repeating(reminder)
+            finally:
+                self._firing.discard(reminder.id)
         return due
 
     async def _fire(self, reminder: Reminder) -> None:
@@ -279,8 +345,15 @@ class ReminderTool(Tool):
         return "reminder"
     """Tool for managing reminders with scheduling and notifications."""
 
-    def __init__(self, db_path: str | None = None) -> None:
-        self._scheduler = ReminderScheduler(db_path=db_path)
+    def __init__(
+        self,
+        db_path: str | None = None,
+        *,
+        integrity_key: bytes | None = None,
+    ) -> None:
+        self._scheduler = ReminderScheduler(
+            db_path=db_path, integrity_key=integrity_key
+        )
         self._capabilities = ["reminder_create", "reminder_list", "reminder_cancel", "reminder_update", "reminder_snooze"]
 
     @property
@@ -371,6 +444,9 @@ class ReminderTool(Tool):
             description=description,
             due_at=due_at,
             repeat=repeat,
+            principal_id=str(arguments.get("_schedule_principal_id") or "local-default"),
+            session_id=str(arguments.get("_schedule_session_id") or "default"),
+            workspace_id=arguments.get("_schedule_workspace_id"),
         )
         self._scheduler.add_reminder(reminder)
         return ToolResult(ok=True, data={"reminder": reminder.to_dict(), "message": f"Reminder '{title}' created."})
@@ -379,21 +455,28 @@ class ReminderTool(Tool):
         completed = arguments.get("completed")
         if completed is not None:
             completed = completed.lower() == "true"
-        reminders = self._scheduler.list_reminders(completed=completed)
+        principal = str(arguments.get("_schedule_principal_id") or "local-default")
+        session = str(arguments.get("_schedule_session_id") or "default")
+        reminders = [
+            reminder
+            for reminder in self._scheduler.list_reminders(completed=completed)
+            if reminder.principal_id == principal and reminder.session_id == session
+        ]
         return ToolResult(ok=True, data={"reminders": [r.to_dict() for r in reminders], "count": len(reminders)})
 
     def _cancel_reminder(self, arguments: dict) -> ToolResult:
         reminder_id = arguments.get("reminder_id", "")
         if not reminder_id:
             return ToolResult(ok=False, data={"error": "reminder_id is required"})
-        removed = self._scheduler.remove_reminder(reminder_id)
+        reminder = self._owned_reminder(reminder_id, arguments)
+        removed = bool(reminder) and self._scheduler.remove_reminder(reminder_id)
         if removed:
             return ToolResult(ok=True, data={"message": f"Reminder {reminder_id} cancelled."})
         return ToolResult(ok=False, data={"error": f"Reminder {reminder_id} not found."})
 
     def _update_reminder(self, arguments: dict) -> ToolResult:
         reminder_id = arguments.get("reminder_id", "")
-        reminder = self._scheduler.get_reminder(reminder_id)
+        reminder = self._owned_reminder(reminder_id, arguments)
         if not reminder:
             return ToolResult(ok=False, data={"error": f"Reminder {reminder_id} not found."})
 
@@ -415,7 +498,7 @@ class ReminderTool(Tool):
     def _snooze_reminder(self, arguments: dict) -> ToolResult:
         reminder_id = arguments.get("reminder_id", "")
         snooze_minutes = arguments.get("snooze_minutes", 10)
-        reminder = self._scheduler.get_reminder(reminder_id)
+        reminder = self._owned_reminder(reminder_id, arguments)
         if not reminder:
             return ToolResult(ok=False, data={"error": f"Reminder {reminder_id} not found."})
 
@@ -425,7 +508,7 @@ class ReminderTool(Tool):
 
     def _complete_reminder(self, arguments: dict) -> ToolResult:
         reminder_id = arguments.get("reminder_id", "")
-        reminder = self._scheduler.get_reminder(reminder_id)
+        reminder = self._owned_reminder(reminder_id, arguments)
         if not reminder:
             return ToolResult(ok=False, data={"error": f"Reminder {reminder_id} not found."})
 
@@ -433,6 +516,28 @@ class ReminderTool(Tool):
         self._scheduler.save_reminder(reminder)
         return ToolResult(ok=True, data={"reminder": reminder.to_dict(), "message": f"Reminder {reminder_id} completed."})
 
+    def _owned_reminder(self, reminder_id: str, arguments: dict) -> Reminder | None:
+        reminder = self._scheduler.get_reminder(reminder_id)
+        if reminder is None:
+            return None
+        principal = str(arguments.get("_schedule_principal_id") or "local-default")
+        session = str(arguments.get("_schedule_session_id") or "default")
+        if reminder.principal_id != principal or reminder.session_id != session:
+            return None
+        return reminder
+
     async def voice_speak(self, text: str) -> str:
         """Voice-compatible response for reminder actions."""
         return f"Reminder: {text}"
+
+
+def _reminder_signature(payload: dict[str, Any], key: bytes) -> str:
+    canonical = dict(payload)
+    canonical.pop("integrity_digest", None)
+    encoded = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hmac.new(key, encoded, hashlib.sha256).hexdigest()

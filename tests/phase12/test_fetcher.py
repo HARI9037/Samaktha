@@ -44,7 +44,7 @@ def _handler(request: httpx.Request) -> httpx.Response:
 @pytest.fixture
 def fetcher():
     transport = httpx.MockTransport(_handler)
-    return ContentFetcher(transport=transport)
+    return ContentFetcher(transport=transport, skip_dns_validation=True)
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_pdf_parse_failure_is_graceful(fetcher):
 async def test_non_http_scheme_is_rejected(fetcher):
     result = await fetcher.fetch("file:///etc/passwd")
     assert not result.ok
-    assert "http" in (result.error or "")
+    assert "scheme" in (result.error or "").lower()
 
 
 @pytest.mark.asyncio
@@ -100,7 +100,10 @@ async def test_network_error_is_graceful():
     def raise_error(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
         raise httpx.ConnectError("boom")
 
-    fetcher = ContentFetcher(transport=httpx.MockTransport(raise_error))
+    fetcher = ContentFetcher(
+        transport=httpx.MockTransport(raise_error),
+        skip_dns_validation=True,
+    )
     result = await fetcher.fetch("https://down.example/x")
     assert not result.ok
     assert result.error

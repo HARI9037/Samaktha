@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from app.core.contracts.policy import ExecutionLocation
+
 
 class ModelInfo(BaseModel):
     """Metadata describing an AI model independently from its provider."""
@@ -17,6 +19,7 @@ class ModelInfo(BaseModel):
     speed_score: int
     cost_score: int
     privacy_score: int
+    execution_location: ExecutionLocation = ExecutionLocation.CLOUD
     maximum_output: int = 4096
     supports_vision: bool = False
     supports_reasoning: bool = False

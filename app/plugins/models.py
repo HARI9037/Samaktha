@@ -12,7 +12,9 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.plugins.semver import SemanticVersion
 
 
 class PluginState(StrEnum):
@@ -28,6 +30,13 @@ class PluginState(StrEnum):
     DISABLED = "disabled"
     FAILED = "failed"
 
+    # P9.3: Installation lifecycle states
+    INSTALLING = "installing"
+    INSTALLED = "installed"
+    UNINSTALLING = "uninstalling"
+    UNINSTALLED = "uninstalled"
+    ENABLED = "enabled"
+
 
 class PluginKind(StrEnum):
     """High-level classification of a plugin's primary contribution."""
@@ -41,12 +50,16 @@ class PluginKind(StrEnum):
 class PluginDependency(BaseModel):
     """A dependency on another plugin, referenced by identity id."""
 
+    model_config = ConfigDict(extra="forbid")
+
     plugin_id: str
     version: str = "*"
 
 
 class PluginCapability(BaseModel):
     """A capability domain a plugin declares it can provide."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     description: str = ""
@@ -55,8 +68,40 @@ class PluginCapability(BaseModel):
 class PluginPermission(BaseModel):
     """A permission scope a plugin declares its tools may require."""
 
+    model_config = ConfigDict(extra="forbid")
+
     scope: str
     description: str = ""
+
+
+# P9.2 — Plugin API version that this implementation supports
+PLUGIN_API_VERSION = 1
+
+# Maximum bounds for plugin manifest fields (P9.2)
+MAX_MANIFEST_BYTES = 64 * 1024  # 64 KB
+MAX_ACTIONS = 50
+MAX_DESCRIPTION_LENGTH = 2000
+MAX_AUTHOR_LENGTH = 256
+MAX_METADATA_KEYS = 100
+
+
+class PluginAction(BaseModel):
+    """A single action a plugin tool can perform (P9.2).
+
+    Each action maps to one Tool invocation. Plugins declare their actions
+    explicitly so the planner and CAP can reason about them individually.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    required_permissions: list[str] = Field(default_factory=list)
+    side_effect_class: str = "NON_IDEMPOTENT_MUTATION"  # READ_ONLY | IDEMPOTENT_MUTATION | NON_IDEMPOTENT_MUTATION
+    timeout_seconds: int = 30
+    idempotent: bool = False
 
 
 class PluginManifest(BaseModel):
@@ -65,7 +110,15 @@ class PluginManifest(BaseModel):
     ``entry`` is an importable module path. When that module is loaded it
     must expose a ``create_plugin`` factory (or a ``plugin`` instance, or a
     ``Plugin`` subclass) that yields the plugin's contributions.
+
+    P9.2 adds:
+    - plugin_api_version: declares compatibility with the Plugin API
+    - min_samaktha_version / max_samaktha_version: Samaktha version constraints
+    - actions: explicit action definitions for tool plugins
+    - plugin_api_version: the Plugin API version this plugin targets
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: str = "1.0"
     id: str
@@ -80,6 +133,14 @@ class PluginManifest(BaseModel):
     permissions: list[PluginPermission] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # P9.2: Plugin API and compatibility
+    plugin_api_version: int = PLUGIN_API_VERSION
+    min_samaktha_version: str | None = None
+    max_samaktha_version: str | None = None
+
+    # P9.2: Explicit action definitions (for tool plugins)
+    actions: list[PluginAction] = Field(default_factory=list)
+
     @property
     def key(self) -> str:
         """Canonical registry key: ``id@version``."""
@@ -92,6 +153,16 @@ class PluginManifest(BaseModel):
             name=self.name,
             version=self.version,
         )
+
+    def check_compatibility(self, samaktha_version: str) -> bool:
+        """Check if this plugin is compatible with the given Samaktha version."""
+        if self.min_samaktha_version:
+            if SemanticVersion.parse(samaktha_version) < SemanticVersion.parse(self.min_samaktha_version):
+                return False
+        if self.max_samaktha_version:
+            if SemanticVersion.parse(samaktha_version) > SemanticVersion.parse(self.max_samaktha_version):
+                return False
+        return True
 
 
 class PluginIdentity(BaseModel):
@@ -138,6 +209,18 @@ class PluginRecord(BaseModel):
     error: Optional[str] = None
     contributions: list[str] = Field(default_factory=list)
     plugin: Any = None
+
+    # P9.3: Installation lifecycle tracking
+    installed_at: Optional[datetime] = None
+    uninstalled_at: Optional[datetime] = None
+    enabled: bool = False
+    enabled_at: Optional[datetime] = None
+    disabled_at: Optional[datetime] = None
+
+    # P9.3: Health tracking
+    health: str = "healthy"  # healthy, degraded, unhealthy
+    health_checked_at: Optional[datetime] = None
+    health_details: Optional[str] = None
 
     @property
     def key(self) -> str:

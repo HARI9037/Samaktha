@@ -1,10 +1,13 @@
-"""Phase AI-OS — Windows System Tool.
+"""Windows System Tool.
 
-Capabilities: processes, clipboard (get/set), terminal, filesystem (system paths).
+Capabilities: processes, clipboard (get/set).
+Terminal execution is delegated to the secured ShellTool.
 All operations execute locally via Python stdlib or pyperclip. No LLM call.
 """
+
 from __future__ import annotations
 
+import asyncio
 import shlex
 import subprocess
 import sys
@@ -14,7 +17,7 @@ from app.tools.base import Tool, ToolResult
 
 
 class WindowsTool(Tool):
-    """Tool for Windows OS operations: processes, clipboard, terminal commands."""
+    """Tool for Windows OS operations: processes, clipboard."""
 
     @property
     def name(self) -> str:
@@ -25,93 +28,93 @@ class WindowsTool(Tool):
         if not action:
             return ToolResult(ok=False, error="Missing required argument 'action'")
 
+        # Security validation is done by ToolExecutor via ToolSecurityEnforcer
+        # This tool receives pre-validated, normalized arguments
+
         try:
             if action == "processes":
-                return self._list_processes()
+                return await self._list_processes()
             elif action == "clipboard_get":
-                return self._clipboard_get()
+                return await self._clipboard_get()
             elif action == "clipboard_set":
                 content = arguments.get("content", "")
-                return self._clipboard_set(content)
+                return await self._clipboard_set(content)
             elif action == "terminal":
-                command = arguments.get("command", "")
-                if not command:
-                    return ToolResult(ok=False, error="Missing required argument 'command'")
-                timeout = int(arguments.get("timeout", 15))
-                return self._run_command(command, timeout)
+                # Terminal is deprecated - delegate to shell tool
+                return ToolResult(
+                    ok=False,
+                    error="Windows 'terminal' action is deprecated. Use the 'shell' tool instead."
+                )
             else:
                 return ToolResult(ok=False, error=f"Unsupported Windows action: {action}")
         except Exception as e:
             return ToolResult(ok=False, error=str(e))
 
-    def _list_processes(self) -> ToolResult:
+    async def _list_processes(self) -> ToolResult:
         """List running processes using tasklist (Windows) or ps (Unix)."""
-        if sys.platform == "win32":
-            result = subprocess.run(
-                ["tasklist", "/FO", "CSV", "/NH"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            lines = result.stdout.strip().splitlines()[:50]
-            processes = []
-            for line in lines:
-                parts = [p.strip('"') for p in line.split('","')]
-                if len(parts) >= 2:
-                    processes.append({"name": parts[0], "pid": parts[1]})
-            return ToolResult(ok=True, data={"processes": processes, "count": len(processes)})
-        else:
-            result = subprocess.run(
-                ["ps", "aux", "--no-headers"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            processes = []
-            for line in result.stdout.strip().splitlines()[:50]:
-                parts = line.split(None, 10)
-                if len(parts) >= 11:
-                    processes.append({"user": parts[0], "pid": parts[1], "command": parts[10][:80]})
-            return ToolResult(ok=True, data={"processes": processes, "count": len(processes)})
+        max_entries = 50
+        try:
+            if sys.platform == "win32":
+                proc = await asyncio.create_subprocess_exec(
+                    "tasklist", "/FO", "CSV", "/NH",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+                lines = stdout.decode(errors="replace").strip().splitlines()[:max_entries]
+                processes = []
+                for line in lines:
+                    parts = [p.strip('"') for p in line.split('","')]
+                    if len(parts) >= 2:
+                        # Only expose safe fields: name and pid
+                        processes.append({"name": parts[0], "pid": parts[1]})
+                return ToolResult(ok=True, data={"processes": processes, "count": len(processes)})
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    "ps", "aux", "--no-headers",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+                processes = []
+                for line in stdout.decode(errors="replace").strip().splitlines()[:max_entries]:
+                    parts = line.split(None, 10)
+                    if len(parts) >= 11:
+                        # Only expose safe fields
+                        processes.append({"user": parts[0], "pid": parts[1], "command": parts[10][:80]})
+                return ToolResult(ok=True, data={"processes": processes, "count": len(processes)})
+        except asyncio.TimeoutError:
+            return ToolResult(ok=False, error="Process listing timed out")
+        except Exception as e:
+            return ToolResult(ok=False, error=f"Process listing failed: {e}")
 
-    def _clipboard_get(self) -> ToolResult:
+    async def _clipboard_get(self) -> ToolResult:
         """Retrieve clipboard text via pyperclip."""
         try:
             import pyperclip
             text = pyperclip.paste()
+            # Bound the clipboard content
+            max_bytes = 100_000
+            if len(text.encode("utf-8")) > max_bytes:
+                text = text[:max_bytes] + "... [truncated]"
             return ToolResult(ok=True, data={"content": text})
         except ImportError:
             return ToolResult(ok=False, error="pyperclip not installed; clipboard access unavailable")
+        except Exception as e:
+            return ToolResult(ok=False, error=f"Clipboard get failed: {e}")
 
-    def _clipboard_set(self, content: str) -> ToolResult:
+    async def _clipboard_set(self, content: str) -> ToolResult:
         """Set clipboard text via pyperclip."""
         try:
             import pyperclip
+            # Bound the clipboard content
+            max_bytes = 100_000
+            content_bytes = content.encode("utf-8")
+            if len(content_bytes) > max_bytes:
+                content = content_bytes[:max_bytes].decode("utf-8", errors="replace") + " [truncated]"
             pyperclip.copy(content)
             return ToolResult(ok=True, data={"written": True, "length": len(content)})
         except ImportError:
             return ToolResult(ok=False, error="pyperclip not installed; clipboard access unavailable")
-
-    def _run_command(self, command: str, timeout: int = 15) -> ToolResult:
-        """Execute a shell command and capture output."""
-        if sys.platform == "win32":
-            args = ["powershell", "-Command", command]
-        else:
-            args = ["bash", "-c", command]
-
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return ToolResult(
-            ok=result.returncode == 0,
-            data={
-                "stdout": result.stdout[:4096],
-                "stderr": result.stderr[:1024],
-                "return_code": result.returncode,
-                "command": command,
-            },
-            error=result.stderr[:512] if result.returncode != 0 else None,
-        )
+        except Exception as e:
+            return ToolResult(ok=False, error=f"Clipboard set failed: {e}")

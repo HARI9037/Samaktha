@@ -30,3 +30,12 @@ def _canonical_version() -> str:
 
 
 __version__ = _canonical_version()
+
+# P11.2 — Canonical application paths
+from app.paths import ApplicationPaths, get_application_paths
+
+__all__ = [
+    "__version__",
+    "ApplicationPaths",
+    "get_application_paths",
+]

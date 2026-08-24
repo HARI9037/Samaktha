@@ -340,21 +340,27 @@ async def test_pipeline_trace_and_correlation_ids(monkeypatch):
 # Correlation IDs: x-request-id header flows into response and trace
 # ---------------------------------------------------------------------------
 
-def test_x_request_id_header_correlates_response_and_trace(monkeypatch):
+def test_x_request_id_header_correlates_response_and_trace(monkeypatch, tmp_path):
     monkeypatch.setenv("SAMAKTHA_DEV_MODE", "1")
-    app = create_app(Settings())
+    settings = Settings(
+        checkpoint_location=str(tmp_path / "checkpoints"),
+        sqlite_url=str(tmp_path / "test.db"),
+        personality_state_path=str(tmp_path / "personality.json"),
+    )
+    app = create_app(settings)
     client = TestClient(app)
+    request_id = "corr-http-42"
     response = client.post(
         "/execute",
         json={"message": "say hello"},
-        headers={"x-request-id": "corr-http-42"},
+        headers={"x-request-id": request_id},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["request_id"] == "corr-http-42"
+    assert body["request_id"] == request_id
     diagnostics = body.get("diagnostics") or {}
     trace = diagnostics.get("trace") or {}
-    assert trace.get("request_id") == "corr-http-42"
+    assert trace.get("request_id") == request_id
     assert len(trace.get("events") or []) >= 3
 
 

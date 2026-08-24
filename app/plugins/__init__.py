@@ -32,6 +32,7 @@ from app.plugins.manager import (
     PluginManager,
     PluginUnloadError,
 )
+from app.plugins.tool_adapter import PluginToolAdapter
 from app.plugins.models import (
     PluginCapability,
     PluginDependency,
@@ -69,6 +70,7 @@ __all__ = [
     "PluginLifecycleEvent",
     "PluginLoadError",
     "PluginManager",
+    "PluginToolAdapter",
     "PluginManifest",
     "PluginMetadata",
     "PluginPermission",

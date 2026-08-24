@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "id": "p11-smoke",
+  "name": "P11 Smoke Test Plugin",
+  "version": "1.0.0",
+  "description": "Deterministic fixture plugin for P11 packaged plugin smoke test",
+  "kind": "tool",
+  "author": "P11 Test Suite",
+  "entry": "p11_smoke.plugin",
+  "dependencies": [],
+  "capabilities": [
+    {
+      "name": "smoke_test",
+      "description": "Deterministic echo/calculation capability for smoke testing"
+    }
+  ],
+  "permissions": [
+    {
+      "scope": "execute",
+      "description": "Permission to run smoke test actions"
+    }
+  ],
+  "metadata": {},
+  "plugin_api_version": 1,
+  "min_samaktha_version": "0.5.0",
+  "max_samaktha_version": "0.6.0",
+  "actions": [
+    {
+      "name": "echo",
+      "description": "Echo back the input string with a prefix",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Message to echo"
+          }
+        },
+        "required": ["message"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "string",
+            "description": "Echoed message with prefix"
+          }
+        }
+      },
+      "required_permissions": ["execute"],
+      "side_effect_class": "READ_ONLY",
+      "timeout_seconds": 10,
+      "idempotent": true
+    },
+    {
+      "name": "add",
+      "description": "Add two integers and return the result",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer",
+            "description": "First integer"
+          },
+          "b": {
+            "type": "integer",
+            "description": "Second integer"
+          }
+        },
+        "required": ["a", "b"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "integer",
+            "description": "Sum of a and b"
+          }
+        }
+      },
+      "required_permissions": ["execute"],
+      "side_effect_class": "READ_ONLY",
+      "timeout_seconds": 10,
+      "idempotent": true
+    }
+  ]
+}

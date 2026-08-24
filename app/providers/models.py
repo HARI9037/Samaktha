@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from app.core.contracts.policy import ExecutionLocation
+
 
 class ProviderInfo(BaseModel):
     """Metadata describing an intelligence provider."""
@@ -8,6 +10,7 @@ class ProviderInfo(BaseModel):
     capabilities: list[str]
     models: list[str]
     supported_models: list[str] = Field(default_factory=list)
+    execution_location: ExecutionLocation = ExecutionLocation.CLOUD
     metadata: dict = Field(default_factory=dict)
 
 

@@ -12,6 +12,8 @@ from app.core.gambit.goal_parser import GoalParser
 from app.core.gambit.planner import Planner
 from app.core.gambit.task_decomposer import TaskDecomposer
 from app.tools.capability_registry import CapabilityEntry, CapabilityRegistry
+from app.tools.models import CapabilityAvailability, ToolInfo
+from app.tools.registry import ToolRegistry
 
 from .conftest import run_async
 
@@ -67,8 +69,35 @@ def test_capability_domain_for_phase13_intents():
 # ---------------------------------------------------------------------------
 
 
-def test_phase13_capabilities_installed_in_default():
-    registry = CapabilityRegistry.default()
+def _phase13_registry():
+    tools = ToolRegistry()
+    for domain, tool_id, actions in (
+        ("shell", "shell", ["run"]),
+        ("clipboard", "clipboard", ["read", "write"]),
+        ("notification", "notification", ["send"]),
+        ("internet", "internet", ["search"]),
+        ("windows", "windows", ["processes"]),
+    ):
+        tools.register(
+            tool_id,
+            object(),
+            ToolInfo(
+                tool_id=tool_id,
+                description=domain,
+                capabilities=actions,
+                supported_actions=actions,
+                permissions=["execute"] if domain == "shell" else ["read", "write"],
+                product_domain=domain,
+                execution_mode=CapabilityAvailability.PRODUCTION_READY,
+                natural_language_intents=[domain],
+                advertised=True,
+            ),
+        )
+    return CapabilityRegistry.from_tool_registry(tools)
+
+
+def test_phase13_capabilities_derive_from_registered_tools():
+    registry = _phase13_registry()
     assert registry.tool_for("shell") == "shell"
     assert registry.tool_for("clipboard") == "clipboard"
     assert registry.tool_for("notification") == "notification"
@@ -95,7 +124,7 @@ def _tool_tasks(plan):
     ],
 )
 def test_planner_resolves_tool_ids_by_capability(user_request, expected_tool, expected_action):
-    result = run_async(Planner().plan_with_capability_check(user_request))
+    result = run_async(Planner(capability_registry=_phase13_registry()).plan_with_capability_check(user_request))
     assert result.status == PlannerStatus.OK
     tasks = _tool_tasks(result.plan)
     assert len(tasks) == 1
@@ -118,7 +147,7 @@ def _tool_tasks_from(tasks):
 
 
 def test_plan_without_capability_check_also_resolves_tools():
-    plan = run_async(Planner().plan("run command to show the current directory"))
+    plan = run_async(Planner(capability_registry=_phase13_registry()).plan("run command to show the current directory"))
     tools = _tool_tasks(plan)
     assert tools[0].metadata["tool"] == "shell"
 
@@ -199,7 +228,7 @@ def test_shell_tool_executes_through_manager():
     from app.tools.shell import ShellTool
 
     class FakeShell(ShellTool):
-        async def _run_command(self, command, timeout_s, cwd):
+        async def _run_command(self, cmd_list, timeout_s, cwd, env, use_shell=False):
             return "pwd output"
 
     registry = ToolRegistry()

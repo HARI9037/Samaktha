@@ -23,7 +23,7 @@ def test_previous_session_queries_classify_as_memory_recall():
         assert engine.classify(phrase) == ConversationIntent.MEMORY_RECALL
 
 
-def test_cross_session_retrieval_prefers_session_summary(tmp_path):
+def test_cross_session_retrieval_does_not_expose_session_summary(tmp_path):
     sessions = _sessions(tmp_path)
     first = sessions.create_session(session_id="session-a", title="Phase 19 Review")
     sessions.add_memory_entry(first.session_id, "topic", "Compared Samaktha with Hermes and OpenClaw", "fact")
@@ -32,8 +32,8 @@ def test_cross_session_retrieval_prefers_session_summary(tmp_path):
     retrieval = RetrievalEngine(controller, session_manager=sessions)
 
     bundle = retrieval.assemble_context("what did we discuss in the previous session", session_id="session-b")
-    assert any(item.source == "session_summary" for item in bundle.evidence)
-    assert any("Reviewed governance architecture" in item.content or "Phase 19 Review" in item.content for item in bundle.evidence)
+    assert not any(item.source == "session_summary" for item in bundle.evidence)
+    assert not any("Reviewed governance architecture" in item.content for item in bundle.evidence)
 
 
 def test_retrieval_provenance_is_available(tmp_path):
@@ -44,6 +44,4 @@ def test_retrieval_provenance_is_available(tmp_path):
     retrieval = RetrievalEngine(controller, session_manager=sessions)
 
     result = retrieval.retrieve("continue previous conversation", session_id="session-b")
-    evidence = result.evidence[0]
-    assert evidence.provenance
-    assert evidence.confidence >= 0
+    assert not result.evidence

@@ -35,8 +35,14 @@ import logging
 import re
 from typing import Any, Callable, Protocol
 
+from app.core.contracts.memory import (
+    DEFAULT_LOCAL_PRINCIPAL_ID,
+    MemoryAccessContext,
+    MemoryScope,
+)
 from app.memory.controller.cache import MemoryCache
 from app.memory.controller.ranker import MemoryRanker
+from app.memory.controller.security_manager import SecurityManager
 from app.memory.documents import DocumentRecord
 from app.memory.manager import MemoryManager
 
@@ -99,8 +105,14 @@ class _DefaultSemanticEngine:
         items: list[Any] | None = None,
         top_k: int = 10,
     ) -> list[tuple[str, float]]:
-        results = self._memory_manager.search_memory(query, top_k=top_k)
-        return [(r.item.id, r.score) for r in results]
+        if items is None:
+            return []
+        from app.memory.semantic_index import SemanticIndex
+
+        index = SemanticIndex()
+        for item in items:
+            index.index(str(item.id), str(item.content), getattr(item, "metadata", {}))
+        return [(item_id, score) for item_id, score, _matched in index.search(query, top_k=top_k)]
 
 
 class _DocumentContextItem:
@@ -113,6 +125,13 @@ class _DocumentContextItem:
         self.id = doc.document_id
         self.document_id = doc.document_id
         self.name = doc.name
+        self.owner_id = doc.owner_id
+        self.scope = doc.scope
+        self.session_id = doc.session_id
+        self.workspace_id = doc.workspace_id
+        self.profile_id = doc.profile_id
+        self.privacy_level = getattr(doc, "privacy_level", "low")
+        self.retention_policy = "normal"
         self.metadata = {
             "created_at": doc.created_at.isoformat() if hasattr(doc.created_at, "isoformat") else str(doc.created_at),
             "importance": 0.5,
@@ -131,6 +150,13 @@ class _PersonalKnowledgeItem:
         self._entity_id = getattr(entity, "id", str(id(entity)))
         self.content = str(entity)
         self.id = f"{entity_type}:{self._entity_id}"
+        self.owner_id = DEFAULT_LOCAL_PRINCIPAL_ID
+        self.scope = MemoryScope.USER
+        self.session_id = None
+        self.workspace_id = None
+        self.profile_id = None
+        self.privacy_level = "low"
+        self.retention_policy = "normal"
         self.metadata = {
             "entity_type": entity_type,
             "importance": 0.3,
@@ -157,6 +183,7 @@ class MemoryRetriever:
         top_k_semantic: int = 10,
         top_k_skills: int = 5,
         top_k_documents: int = 5,
+        security: SecurityManager | None = None,
     ) -> None:
         self._memory_manager = memory_manager
         self._cache = cache
@@ -166,6 +193,7 @@ class MemoryRetriever:
         self._top_k_semantic = top_k_semantic
         self._top_k_skills = top_k_skills
         self._top_k_documents = top_k_documents
+        self._security = security or SecurityManager()
 
     # ------------------------------------------------------------------
     # Main retrieval pipeline
@@ -183,6 +211,7 @@ class MemoryRetriever:
         include_personal_knowledge: bool = True,
         top_k: int = 15,
         session_id: str | None = None,
+        access_context: MemoryAccessContext | None = None,
     ) -> list[tuple[Any, float]]:
         """Run the full retrieval pipeline and return ranked results.
 
@@ -190,7 +219,10 @@ class MemoryRetriever:
         -------
         list of (item, score) tuples, sorted by combined score descending.
         """
-        # Check cache first
+        if access_context is None:
+            raise ValueError("memory retrieval requires MemoryAccessContext")
+        # Check cache first. Every access dimension that can change eligibility
+        # or security is part of the partition key.
         include_flags = "".join(
             "1" if flag else "0"
             for flag in (
@@ -202,7 +234,16 @@ class MemoryRetriever:
                 include_personal_knowledge,
             )
         )
-        cache_key = f"{query}:{top_k}:{session_id}:{include_flags}"
+        cache_key = ":".join((
+            access_context.principal_id,
+            access_context.session_id or "-",
+            access_context.workspace_id or "-",
+            access_context.profile_id or "-",
+            access_context.security_level.value,
+            query,
+            str(top_k),
+            include_flags,
+        ))
         cached = self._cache.get_retrieval(cache_key)
         if cached is not None:
             self._cache.record_hit()
@@ -214,12 +255,20 @@ class MemoryRetriever:
         # Stage 1: recent memories
         candidates: list[Any] = []
         if include_recent:
-            candidates.extend(self._retrieve_recent(session_id=session_id))
+            candidates.extend(self._eligible(
+                self._retrieve_recent(session_id=session_id), access_context
+            ))
 
         # Stage 2: semantic memories
         semantic_ids: dict[str, float] = {}
         if include_semantic:
-            sem_items, semantic_ids = self._retrieve_semantic(query)
+            # Eligibility is established before semantic scoring. The default
+            # semantic engine receives only this authorized candidate set.
+            eligible_items = self._eligible(
+                self._memory_manager.get_recent_context(n=100000, allow_private=True),
+                access_context,
+            )
+            sem_items, semantic_ids = self._retrieve_semantic(query, eligible_items)
 
             # Merge semantic items into candidates (avoid duplicates by id)
             seen_ids = {self._item_id(it) for it in candidates}
@@ -231,7 +280,10 @@ class MemoryRetriever:
 
         # Stage 3: skills
         if include_skills:
-            skills = self._retrieve_skills(query)
+            # Skill records have no user ownership contract and are treated as
+            # SYSTEM scope in P4, so ordinary prompt retrieval does not search
+            # or rank them.
+            skills = []
             seen_ids = {self._item_id(it) for it in candidates}
             for sk in skills:
                 sid = self._item_id(sk)
@@ -241,7 +293,7 @@ class MemoryRetriever:
 
         # Stage 4: preferences
         if include_preferences:
-            prefs = self._retrieve_preferences()
+            prefs = self._eligible(self._retrieve_preferences(), access_context)
             seen_ids = {self._item_id(it) for it in candidates}
             for p in prefs:
                 pid = self._item_id(p)
@@ -253,7 +305,7 @@ class MemoryRetriever:
         # as memory items via write_document, so recent + semantic already
         # covers them.  This stage adds cached DocumentRecords metadata.)
         if include_documents:
-            docs = self._retrieve_documents(query)
+            docs = self._retrieve_documents(query, access_context)
             seen_ids = {self._item_id(it) for it in candidates}
             for d in docs:
                 did = self._item_id(d)
@@ -263,7 +315,13 @@ class MemoryRetriever:
 
         # Stage 6: personal knowledge (reminders, notes, tasks, contacts, calendar)
         if include_personal_knowledge:
-            knowledge = self._retrieve_personal_knowledge(query)
+            knowledge = (
+                self._eligible(
+                    self._retrieve_personal_knowledge(query), access_context
+                )
+                if access_context.principal_id == DEFAULT_LOCAL_PRINCIPAL_ID
+                else []
+            )
             seen_ids = {self._item_id(it) for it in candidates}
             for k in knowledge:
                 kid = self._item_id(k)
@@ -304,7 +362,7 @@ class MemoryRetriever:
         return items
 
     def _retrieve_semantic(
-        self, query: str
+        self, query: str, eligible_items: list[Any]
     ) -> tuple[list[Any], dict[str, float]]:
         """Semantic search via the pluggable engine.
 
@@ -312,7 +370,9 @@ class MemoryRetriever:
         semantic hit is never dropped merely because it fell outside the
         recent-memory window.
         """
-        semantic_results = self._semantic.search(query, top_k=self._top_k_semantic)
+        semantic_results = self._semantic.search(
+            query, items=eligible_items, top_k=self._top_k_semantic
+        )
         semantic_ids: dict[str, float] = {}
         items: list[Any] = []
 
@@ -352,13 +412,29 @@ class MemoryRetriever:
             self._cache.store_recent_memory(self._item_id(p), p)
         return prefs
 
-    def _retrieve_documents(self, query: str) -> list[Any]:
+    def _retrieve_documents(
+        self,
+        query: str,
+        access_context: MemoryAccessContext,
+    ) -> list[Any]:
         """Retrieve document metadata and convert to MemoryItem-like objects
         for the ranking pipeline."""
         try:
-            docs = self._memory_manager.search_documents(query)
+            # Materialize unranked document metadata, establish access, then
+            # let the canonical ranker score only the authorized wrappers.
+            docs = self._memory_manager.search_documents("")
             if docs:
-                wrapped = [_DocumentContextItem(d) for d in docs[:self._top_k_documents]]
+                wrapped = self._eligible(
+                    [_DocumentContextItem(d) for d in docs], access_context
+                )
+                tokens = [token for token in re.findall(r"[a-z0-9]+", query.lower()) if len(token) > 1]
+                matching = [
+                    item for item in wrapped
+                    if not tokens or any(token in item.content.lower() for token in tokens)
+                ]
+                if not matching and self._is_document_history_query(query):
+                    matching = wrapped
+                wrapped = matching[:self._top_k_documents]
                 log.debug("MemoryRetriever: document stage — %d results for %r", len(wrapped), query)
                 for w in wrapped:
                     log.debug("MemoryRetriever: document item — %s", w.name)
@@ -415,15 +491,31 @@ class MemoryRetriever:
                 result.append((item, score))
         return result
 
-    def retrieve_recent_only(self, n: int = 10) -> list[Any]:
+    def retrieve_recent_only(
+        self,
+        n: int = 10,
+        access_context: MemoryAccessContext | None = None,
+    ) -> list[Any]:
         """Quick access to recent context without the full pipeline."""
-        return self._memory_manager.get_recent_context(n=n)
+        if access_context is None:
+            raise ValueError("memory retrieval requires MemoryAccessContext")
+        return self._eligible(
+            self._memory_manager.get_recent_context(n=100000, allow_private=True),
+            access_context,
+        )[:n]
 
     def retrieve_semantic_only(
-        self, query: str, top_k: int = 10
+        self, query: str, top_k: int = 10,
+        access_context: MemoryAccessContext | None = None,
     ) -> list[Any]:
         """Quick semantic search without the full pipeline."""
-        results = self._semantic.search(query, top_k=top_k)
+        if access_context is None:
+            raise ValueError("memory retrieval requires MemoryAccessContext")
+        eligible = self._eligible(
+            self._memory_manager.get_recent_context(n=100000, allow_private=True),
+            access_context,
+        )
+        results = self._semantic.search(query, items=eligible, top_k=top_k)
         items = []
         for item_id, _ in results:
             item = self._cache.get_recent_memory(item_id)
@@ -432,3 +524,21 @@ class MemoryRetriever:
             if item is not None:
                 items.append(item)
         return items
+    def _eligible(
+        self,
+        items: list[Any],
+        access_context: MemoryAccessContext,
+    ) -> list[Any]:
+        """Ownership then SecurityManager then retention, before ranking."""
+
+        result: list[Any] = []
+        for item in items:
+            if item is None or not self._security.is_in_scope(item, access_context):
+                continue
+            decision = self._security.can_read_item(item, access_context)
+            if not decision.allowed:
+                continue
+            if getattr(item, "retention_policy", "normal") == "private":
+                continue
+            result.append(item)
+        return result

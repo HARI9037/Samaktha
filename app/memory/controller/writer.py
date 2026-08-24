@@ -19,7 +19,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.core.contracts.memory import MemoryItem, MemoryType as CoreMemoryType
+from app.core.contracts.memory import (
+    MemoryAccessContext,
+    MemoryItem,
+    MemoryScope,
+    MemoryType as CoreMemoryType,
+)
 from app.core.contracts.security import SecurityLevel
 from app.memory.controller.cache import MemoryCache
 from app.memory.controller.metadata_manager import (
@@ -54,6 +59,26 @@ class MemoryWriter:
         self._cache = cache
         self._security = security
 
+    @staticmethod
+    def _ownership(
+        item: MemoryItem,
+        access_context: MemoryAccessContext,
+        scope: MemoryScope,
+    ) -> MemoryItem:
+        item.owner_id = access_context.principal_id
+        item.scope = scope
+        item.session_id = access_context.session_id if scope is MemoryScope.SESSION else None
+        item.workspace_id = access_context.workspace_id if scope is MemoryScope.WORKSPACE else None
+        item.profile_id = access_context.profile_id
+        item.metadata.update({
+            "owner_id": item.owner_id,
+            "scope": item.scope.value,
+            "session_id": item.session_id,
+            "workspace_id": item.workspace_id,
+            "profile_id": item.profile_id,
+        })
+        return item
+
     def write_conversation(
         self,
         content: str,
@@ -63,6 +88,7 @@ class MemoryWriter:
         importance_kind: str = "conversation",
         security_level: SecurityLevel = SecurityLevel.LOW,
         extra_metadata: dict[str, Any] | None = None,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
         """Store a conversation memory."""
         meta = build_metadata(
@@ -75,12 +101,13 @@ class MemoryWriter:
             security_level=security_level,
             extra=extra_metadata,
         )
-        item = MemoryItem(
+        access_context = access_context or MemoryAccessContext.local_default(session_id=session_id)
+        item = self._ownership(MemoryItem(
             content=content,
             category=CoreMemoryType.CONTEXT,
             metadata=meta,
             privacy_level=security_level,
-        )
+        ), access_context, MemoryScope.SESSION if access_context.session_id else MemoryScope.USER)
         meta["checksum"] = compute_checksum(item.content, meta)
         self._memory_manager.store_memory(item)
         self._cache.store_recent_memory(item.id, item)
@@ -96,6 +123,7 @@ class MemoryWriter:
         tags: list[str] | None = None,
         importance_kind: str = "tool_output",
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
         """Store a document memory."""
         meta = build_metadata(
@@ -107,12 +135,13 @@ class MemoryWriter:
             security_level=security_level,
             extra={"doc_name": doc_name, "source_path": source_path},
         )
-        item = MemoryItem(
+        access_context = access_context or MemoryAccessContext.local_default(session_id=session_id)
+        item = self._ownership(MemoryItem(
             content=content,
             category=CoreMemoryType.CONTEXT,
             metadata=meta,
             privacy_level=security_level,
-        )
+        ), access_context, MemoryScope.SESSION if access_context.session_id else MemoryScope.USER)
         meta["checksum"] = compute_checksum(item.content, meta)
         self._memory_manager.store_memory(item)
         self._cache.store_recent_memory(item.id, item)
@@ -126,6 +155,7 @@ class MemoryWriter:
         session_id: str | None = None,
         tags: list[str] | None = None,
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
         """Store a user preference memory."""
         meta = build_metadata(
@@ -136,12 +166,13 @@ class MemoryWriter:
             tags=(tags or []) + ["preference"],
             security_level=security_level,
         )
-        item = MemoryItem(
+        access_context = access_context or MemoryAccessContext.local_default(session_id=session_id)
+        item = self._ownership(MemoryItem(
             content=content,
             category=CoreMemoryType.CONTEXT,
             metadata=meta,
             privacy_level=security_level,
-        )
+        ), access_context, MemoryScope.USER)
         meta["checksum"] = compute_checksum(item.content, meta)
         self._memory_manager.store_memory(item)
         self._cache.store_recent_memory(item.id, item)
@@ -156,6 +187,7 @@ class MemoryWriter:
         tags: list[str] | None = None,
         success: bool = True,
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
         """Store a workflow execution memory."""
         imp = "successful_workflow" if success else "temporary_ocr"
@@ -168,12 +200,13 @@ class MemoryWriter:
             security_level=security_level,
             extra={"workflow_id": workflow_id, "success": success},
         )
-        item = MemoryItem(
+        access_context = access_context or MemoryAccessContext.local_default(session_id=session_id)
+        item = self._ownership(MemoryItem(
             content=content,
             category=CoreMemoryType.EXECUTION,
             metadata=meta,
             privacy_level=security_level,
-        )
+        ), access_context, MemoryScope.SESSION if access_context.session_id else MemoryScope.USER)
         meta["checksum"] = compute_checksum(item.content, meta)
         self._memory_manager.store_memory(item)
         self._cache.store_recent_memory(item.id, item)
@@ -187,6 +220,7 @@ class MemoryWriter:
         session_id: str | None = None,
         tags: list[str] | None = None,
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
         """Store a tool execution memory."""
         meta = build_metadata(
@@ -198,12 +232,13 @@ class MemoryWriter:
             security_level=security_level,
             extra={"tool_name": tool_name},
         )
-        item = MemoryItem(
+        access_context = access_context or MemoryAccessContext.local_default(session_id=session_id)
+        item = self._ownership(MemoryItem(
             content=content,
             category=CoreMemoryType.EXECUTION,
             metadata=meta,
             privacy_level=security_level,
-        )
+        ), access_context, MemoryScope.SESSION if access_context.session_id else MemoryScope.USER)
         meta["checksum"] = compute_checksum(item.content, meta)
         self._memory_manager.store_memory(item)
         self._cache.store_recent_memory(item.id, item)
@@ -217,6 +252,7 @@ class MemoryWriter:
         tags: list[str] | None = None,
         importance_kind: str = "successful_workflow",
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
         """Store a knowledge memory (fact, definition, learned pattern)."""
         meta = build_metadata(
@@ -226,12 +262,13 @@ class MemoryWriter:
             tags=(tags or []) + ["knowledge"],
             security_level=security_level,
         )
-        item = MemoryItem(
+        access_context = access_context or MemoryAccessContext.local_default()
+        item = self._ownership(MemoryItem(
             content=content,
             category=CoreMemoryType.CONTEXT,
             metadata=meta,
             privacy_level=security_level,
-        )
+        ), access_context, MemoryScope.WORKSPACE if access_context.workspace_id else MemoryScope.USER)
         meta["checksum"] = compute_checksum(item.content, meta)
         self._memory_manager.store_memory(item)
         self._cache.store_recent_memory(item.id, item)
@@ -243,6 +280,7 @@ class MemoryWriter:
         content: str,
         tags: list[str] | None = None,
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
         """Store a system memory (configuration, state snapshot)."""
         meta = build_metadata(
@@ -252,12 +290,13 @@ class MemoryWriter:
             tags=(tags or []) + ["system"],
             security_level=security_level,
         )
-        item = MemoryItem(
+        access_context = access_context or MemoryAccessContext.local_default()
+        item = self._ownership(MemoryItem(
             content=content,
             category=CoreMemoryType.CONTEXT,
             metadata=meta,
             privacy_level=security_level,
-        )
+        ), access_context, MemoryScope.SYSTEM)
         meta["checksum"] = compute_checksum(item.content, meta)
         self._memory_manager.store_memory(item)
         self._cache.store_recent_memory(item.id, item)

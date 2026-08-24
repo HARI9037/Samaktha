@@ -12,6 +12,28 @@ from app.core.gambit.task_decomposer import TaskDecomposer
 from app.memory.formation.engine import MemoryFormationEngine
 from app.personality.response_formatter import ResponseFormatter
 from app.tools.capability_registry import CapabilityRegistry
+from app.tools.models import CapabilityAvailability, ToolInfo
+from app.tools.registry import ToolRegistry
+
+
+def _internet_capabilities():
+    tools = ToolRegistry()
+    tools.register(
+        "internet",
+        object(),
+        ToolInfo(
+            tool_id="internet",
+            description="test internet",
+            capabilities=["search"],
+            supported_actions=["search"],
+            permissions=["network"],
+            product_domain="internet",
+            execution_mode=CapabilityAvailability.PRODUCTION_READY,
+            natural_language_intents=["search_internet"],
+            advertised=True,
+        ),
+    )
+    return CapabilityRegistry.from_tool_registry(tools)
 
 
 # ---------------------------------------------------------------------------
@@ -64,15 +86,13 @@ def test_capability_domain_for_internet():
 
 
 def test_internet_capability_is_installed():
-    registry = CapabilityRegistry.default()
+    registry = _internet_capabilities()
     assert registry.is_installed("internet")
     assert registry.tool_for("internet") == "internet"
 
 
 def test_internet_tool_declares_search_capabilities():
-    from app.tools import ToolInfo
-
-    registry = CapabilityRegistry.default()
+    registry = _internet_capabilities()
     assert registry.is_installed("internet")
 
 
@@ -101,7 +121,7 @@ def test_planner_with_capability_check_succeeds():
     import asyncio
 
     plan_result = asyncio.new_event_loop().run_until_complete(
-        Planner().plan_with_capability_check("what is the latest python version")
+        Planner(capability_registry=_internet_capabilities()).plan_with_capability_check("what is the latest python version")
     )
     from app.core.contracts.planning import PlannerStatus
 

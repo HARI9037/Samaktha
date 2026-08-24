@@ -4,6 +4,8 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.core.contracts.policy import ExecutionLocation
+
 
 class ProviderCapability(BaseModel):
     """Router-local model describing the performance characteristics of a provider."""
@@ -11,6 +13,7 @@ class ProviderCapability(BaseModel):
     provider_id: str
     model_id: str
     capabilities: List[str] = Field(default_factory=list)
+    execution_location: ExecutionLocation = ExecutionLocation.CLOUD
 
     # Scores are 1–10; higher is better in each dimension.
     reasoning_score: int = 5

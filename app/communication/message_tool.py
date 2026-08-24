@@ -97,17 +97,18 @@ class MessageTool(Tool):
             "recipient": args.get("recipient", ""),
             "body": args.get("body", ""),
             "timestamp": "now",
+            "status": "simulated",
         }
         self._sent_history.append(entry)
         return ToolResult(
             ok=True,
-            data={"action": "send", "recipient": args.get("recipient", ""), "status": "sent"},
+            data={"action": "send", "recipient": args.get("recipient", ""), "status": "simulated", "externally_delivered": False},
         )
 
     def _reply(self, args: dict) -> ToolResult:
         return ToolResult(
             ok=True,
-            data={"action": "reply", "message_id": args.get("message_id", ""), "body": args.get("body", "")},
+            data={"action": "reply", "message_id": args.get("message_id", ""), "body": args.get("body", ""), "status": "simulated", "externally_delivered": False},
         )
 
     def _history(self, args: dict) -> ToolResult:
@@ -119,7 +120,7 @@ class MessageTool(Tool):
     def _draft(self, args: dict) -> ToolResult:
         return ToolResult(
             ok=True,
-            data={"action": "draft", "recipient": args.get("recipient", ""), "body": args.get("body", "")},
+            data={"action": "draft", "recipient": args.get("recipient", ""), "body": args.get("body", ""), "status": "drafted", "externally_delivered": False},
         )
 
     def _search(self, args: dict) -> ToolResult:

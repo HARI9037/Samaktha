@@ -47,6 +47,7 @@ def synthesize_tool_response(output: Any) -> str:
         or _synthesize_move(output)
         or _synthesize_copy(output)
         or _synthesize_mkdir(output)
+        or _synthesize_capability_result(output)
         or ""
     )
 
@@ -112,6 +113,35 @@ def _synthesize_mkdir(output: dict) -> str:
     if not created:
         return ""
     return f"✅ Directory created:\n{created}"
+
+
+def _synthesize_capability_result(output: dict) -> str:
+    """Render truthful non-filesystem tool outcomes without an LLM."""
+    status = output.get("status")
+    action = output.get("action")
+    if status == "simulated":
+        return (
+            f"{str(action or 'Communication').capitalize()} was simulated locally. "
+            "No external delivery occurred."
+        )
+    if status == "drafted":
+        return "Draft created locally. No external delivery occurred."
+    if "sent" in output:
+        if output.get("sent") is True:
+            return "Notification delivered by the local notification backend."
+        return "The local notification backend did not deliver the notification."
+    if output.get("written") is True:
+        return "Clipboard content was written locally."
+    message = output.get("message")
+    if isinstance(message, str) and message:
+        return message
+    if action == "search" and isinstance(output.get("count"), int):
+        return f"Search completed locally with {output['count']} result(s)."
+    if action in {"list", "history", "agenda"} and isinstance(output.get("count"), int):
+        return f"Local {action} completed with {output['count']} item(s)."
+    if "output" in output and isinstance(output.get("output"), str):
+        return output["output"] or "The command completed successfully with no output."
+    return ""
 
 
 # ---------------------------------------------------------------------------

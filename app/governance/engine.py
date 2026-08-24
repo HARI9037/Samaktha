@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from app.core.contracts.policy import ApprovalDecision
+from app.core.contracts.policy import ApprovalDecision, ExecutionPermit
 from app.governance.approval import ApprovalPolicyEngine
 from app.governance.audit import GovernanceAuditLog
 from app.governance.metrics import GovernanceMetricsCollector, GovernanceMetricsSnapshot
@@ -112,6 +112,7 @@ class GovernanceEngine:
         policy_id: Optional[str] = None,
         subject: Optional[str] = None,
         grant_from_declared: bool = False,
+        permit: ExecutionPermit | None = None,
     ) -> GovernanceDecision:
         """Evaluate governance for a single subject and audit the decision.
 
@@ -152,6 +153,22 @@ class GovernanceEngine:
         )
 
         policy_hits = risk_reasons + approval_reasons
+        if permit is not None:
+            permit_valid = (
+                permit.verify_integrity()
+                and not permit.is_expired()
+                and permit.decision == ApprovalDecision.ALLOW
+                and (subject is None or permit.subject_id == subject)
+            )
+            if not permit_valid:
+                decision = ApprovalDecision.DENY
+                policy_hits = [*policy_hits, "invalid CAP ExecutionPermit"]
+            elif decision == ApprovalDecision.ASK_USER:
+                decision = ApprovalDecision.ALLOW
+                policy_hits = [
+                    *policy_hits,
+                    "human approval satisfied by exact CAP ExecutionPermit",
+                ]
         outcome = GovernanceDecision(
             target_type=target_type,
             target=target,
@@ -163,6 +180,9 @@ class GovernanceEngine:
             policy_id=policy.key if policy is not None else None,
             policy_hits=policy_hits,
             reasons=policy_hits,
+            permit_id=permit.permit_id if permit else None,
+            operation_digest=permit.operation_digest if permit else None,
+            authorization_source=permit.approval_source if permit else None,
         )
 
         self.audit.record(
@@ -176,6 +196,9 @@ class GovernanceEngine:
                 "denied_permissions": [p.value for p in denied],
                 "policy_id": policy.key if policy is not None else None,
                 "reasons": policy_hits,
+                "permit_id": permit.permit_id if permit else None,
+                "operation_digest": permit.operation_digest if permit else None,
+                "authorization_source": permit.approval_source if permit else None,
             },
         )
         self._metrics.record_evaluation(
@@ -195,6 +218,7 @@ class GovernanceEngine:
         requested_permissions: Iterable[ToolPermission] = (),
         policy_id: Optional[str] = None,
         subject: Optional[str] = None,
+        permit: ExecutionPermit | None = None,
     ) -> GovernanceDecision:
         """Evaluate tool governance; raises ``PolicyViolationError`` when denied."""
         decision = self.evaluate(
@@ -204,6 +228,7 @@ class GovernanceEngine:
             requested_permissions=requested_permissions,
             policy_id=policy_id,
             subject=subject,
+            permit=permit,
         )
         if not decision.allowed:
             self._metrics.record_block()
@@ -226,6 +251,7 @@ class GovernanceEngine:
         declared_permissions: Iterable[ToolPermission] = (),
         policy_id: Optional[str] = None,
         subject: Optional[str] = None,
+        permit: ExecutionPermit | None = None,
     ) -> GovernanceDecision:
         """Evaluate capability governance; the providing tool's declared
         permissions must cover the capability's required permissions."""
@@ -236,6 +262,7 @@ class GovernanceEngine:
             requested_permissions=(),
             policy_id=policy_id,
             subject=subject,
+            permit=permit,
             grant_from_declared=True,
         )
         if decision.required_permissions and not _covers(
@@ -279,6 +306,7 @@ class GovernanceEngine:
         requested_permissions: Iterable[ToolPermission] = (),
         policy_id: Optional[str] = None,
         subject: Optional[str] = None,
+        permit: ExecutionPermit | None = None,
     ) -> GovernanceDecision:
         """Evaluate provider governance; raises ``PolicyViolationError`` when denied."""
         decision = self.evaluate(
@@ -288,6 +316,7 @@ class GovernanceEngine:
             requested_permissions=requested_permissions,
             policy_id=policy_id,
             subject=subject,
+            permit=permit,
         )
         if not decision.allowed:
             self._metrics.record_block()
@@ -327,6 +356,9 @@ class GovernanceEngine:
             status=status,
             permissions=tuple(p.value for p in decision.granted_permissions),
             error=error,
+            permit_id=decision.permit_id,
+            operation_digest=decision.operation_digest,
+            authorization_source=decision.authorization_source,
         )
         sealed = self.records.append(record)
         self.audit.record(
@@ -339,6 +371,9 @@ class GovernanceEngine:
                 "decision": decision.decision.value,
                 "risk": decision.risk.value,
                 "error": error,
+                "permit_id": decision.permit_id,
+                "operation_digest": decision.operation_digest,
+                "authorization_source": decision.authorization_source,
             },
         )
         return sealed

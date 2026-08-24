@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.core.contracts.policy import (
     ActionRisk,
+    ExecutionConstraints,
     PermissionScope,
     PlannedAction,
     PolicyDecision,
@@ -62,6 +63,11 @@ class PolicyEngine:
             required_permissions=required_permissions,
             approval_required=approval_required,
             use_local_model=use_local_model,
+            constraints=ExecutionConstraints(
+                requires_local_model=use_local_model,
+                network_allowed=True,
+                privacy_category=privacy.category,
+            ),
             reasons=reasons,
         )
 

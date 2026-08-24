@@ -1,8 +1,19 @@
+from enum import StrEnum
 from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
 from app.tools.framework.models import ToolPolicy
+
+
+class CapabilityAvailability(StrEnum):
+    """Truthful product availability derived from production tool wiring."""
+
+    PRODUCTION_READY = "production_ready"
+    LOCAL_ONLY = "local_only"
+    SIMULATED = "simulated"
+    UNAVAILABLE = "unavailable"
+    INTERNAL_ONLY = "internal_only"
 
 
 class ToolInfo(BaseModel):
@@ -20,6 +31,12 @@ class ToolInfo(BaseModel):
     supported_actions: List[str] = Field(default_factory=list)
     available: bool = True
     policy: Optional[ToolPolicy] = None
+    product_domain: str | None = None
+    execution_mode: CapabilityAvailability = CapabilityAvailability.INTERNAL_ONLY
+    side_effect_actions: List[str] = Field(default_factory=list)
+    evidence_requirements: dict[str, str] = Field(default_factory=dict)
+    natural_language_intents: List[str] = Field(default_factory=list)
+    advertised: bool = False
 
 
 class DocumentResult(BaseModel):

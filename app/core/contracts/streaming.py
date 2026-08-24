@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.core.contracts.policy import ExecutionConstraints
+
 
 class StreamEventType(str, Enum):
     STARTED = "started"
@@ -36,6 +38,9 @@ class StreamRequest(BaseModel):
     prompt: Any = ""  # Fallback for prompt-only providers; messages supersede it.
     messages: list[dict[str, Any]] | None = None
     capabilities: list[str] = Field(default_factory=list)
+    execution_constraints: ExecutionConstraints = Field(
+        default_factory=ExecutionConstraints
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

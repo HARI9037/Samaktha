@@ -35,6 +35,7 @@ class ToolPolicy(BaseModel):
     rollback_supported: bool = False
     max_parallel_instances: int = 1
     description: str = ""
+    idempotent_mutation: bool = False
 
     def requires_permission(self, permission: ToolPermission) -> bool:
         return permission in self.permissions

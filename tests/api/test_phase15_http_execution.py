@@ -117,7 +117,8 @@ def test_execute_uses_default_session_when_omitted():
 
     client.post("/execute", json={"message": "hello"})
 
-    assert fake.last_context.session_id is None
+    assert fake.last_context.session_id == "default"
+    assert fake.last_context.user_id == "local-default"
     response = client.post("/execute", json={"message": "hello"})
     assert response.json()["session_id"] == "default"
 

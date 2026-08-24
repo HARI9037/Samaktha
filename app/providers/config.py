@@ -36,6 +36,7 @@ class ProviderSettings(BaseSettings):
     groq_enabled: bool = True
     groq_api_key: Optional[str] = None
     groq_model: str = "llama-3.3-70b-versatile"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
     openrouter_enabled: bool = True
     openrouter_api_key: Optional[str] = None
     openrouter_model: str = "openai/gpt-oss-120b"

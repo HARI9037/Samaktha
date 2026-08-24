@@ -17,9 +17,10 @@ Phase 20.2.1 — Added schema_version, turn_number, next_turn_number for
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
+from app.core.contracts.memory import DEFAULT_LOCAL_PRINCIPAL_ID
 
 # Increment whenever the persisted schema changes in a backward-incompatible way.
-CURRENT_SCHEMA_VERSION: int = 1
+CURRENT_SCHEMA_VERSION: int = 2
 
 
 class SessionMetadata(BaseModel):
@@ -29,6 +30,9 @@ class SessionMetadata(BaseModel):
     """
 
     session_id: str
+    principal_id: str = DEFAULT_LOCAL_PRINCIPAL_ID
+    workspace_id: str | None = None
+    profile_id: str | None = None
     created_at: str
     updated_at: str
     title: str = ""
@@ -99,6 +103,7 @@ class SessionMemory(BaseModel):
     """
 
     session_id: str
+    schema_version: int = CURRENT_SCHEMA_VERSION
     entries: list[SessionMemoryEntry] = Field(default_factory=list)
     history: list[SessionHistoryEntry] = Field(default_factory=list)
     # Phase 20.2.1 — next turn number; persisted so it survives cache eviction.

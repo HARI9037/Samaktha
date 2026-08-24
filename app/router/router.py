@@ -6,6 +6,7 @@ from typing import Optional, TYPE_CHECKING
 log = logging.getLogger(__name__)
 
 from app.core.contracts import RouterRequest, RoutingDecision
+from app.core.contracts.policy import ExecutionLocation
 from app.models import ModelManager
 from app.router.base import Router
 from app.router.capabilities import CapabilityRegistry, ProviderCapability
@@ -60,6 +61,17 @@ class ModelRouter(Router):
         capability = self._capability_from_request(request)
         candidates = self._registry.candidates(capability)
 
+        requires_local = (
+            request.requires_local_model
+            or request.execution_constraints.requires_local_model
+        )
+        if requires_local:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.execution_location == ExecutionLocation.LOCAL
+            ]
+
         # ModelRegistry is authoritative for model capabilities. A model with
         # coding metadata can satisfy a code request even when legacy router
         # registrations only declare their base text capability.
@@ -71,6 +83,10 @@ class ModelRouter(Router):
                     (model := self._model_manager.resolve_model(candidate.model_id))
                     is not None
                     and model.coding_score > 0
+                    and (
+                        not requires_local
+                        or candidate.execution_location == ExecutionLocation.LOCAL
+                    )
                 )
             ]
 
@@ -92,6 +108,7 @@ class ModelRouter(Router):
                     ),
                     constraints=[f"model_constraints:{capability}"],
                     metadata={"capability": capability},
+                    execution_constraints=request.execution_constraints,
                 )
 
         # Health + Cooldown — dead providers and providers cooling down from a
@@ -113,6 +130,7 @@ class ModelRouter(Router):
                     ),
                     constraints=[f"health_constraints:{capability}"],
                     metadata={"capability": capability},
+                    execution_constraints=request.execution_constraints,
                 )
                 if context and context.trace:
                     context.trace.add_event(
@@ -130,6 +148,7 @@ class ModelRouter(Router):
                 reasoning_summary=f"No registered provider supports capability: {capability}",
                 constraints=[f"missing_capability:{capability}"],
                 metadata={"capability": capability},
+                execution_constraints=request.execution_constraints,
             )
             if context and context.trace:
                 context.trace.add_event(
@@ -159,6 +178,7 @@ class ModelRouter(Router):
                     ),
                     constraints=[],
                     metadata={"capability": capability, **preferred.metadata},
+                    execution_constraints=request.execution_constraints,
                 )
 
         # v0.2: score candidates when capability data is available
@@ -207,6 +227,7 @@ class ModelRouter(Router):
                             )),
                             **matched.metadata,
                         },
+                        execution_constraints=request.execution_constraints,
                     )
                     log.info(
                         "Selected Provider : %s\n"
@@ -233,6 +254,7 @@ class ModelRouter(Router):
                     reasoning_summary="No eligible model satisfies routing constraints",
                     constraints=["routing_constraints"],
                     metadata={"capability": capability},
+                    execution_constraints=request.execution_constraints,
                 )
                 if context and context.trace:
                     context.trace.add_event(
@@ -257,6 +279,7 @@ class ModelRouter(Router):
                 "capability": capability,
                 **selected.metadata,
             },
+            execution_constraints=request.execution_constraints,
         )
         if context and context.trace:
             context.trace.add_event(
@@ -272,6 +295,11 @@ class ModelRouter(Router):
         model = self._model_manager.resolve_model(model_id)
         if model is None:
             return True
+        if (
+            request.execution_constraints.requires_local_model
+            and model.execution_location != ExecutionLocation.LOCAL
+        ):
+            return False
         if model.context_window < request.estimated_context_tokens:
             return False
         if request.requires_code and model.coding_score <= 0:
@@ -314,6 +342,7 @@ class ModelRouter(Router):
                     input_cost_per_1k=model.input_cost_per_1k,
                     output_cost_per_1k=model.output_cost_per_1k,
                     version=model.version,
+                    execution_location=model.execution_location,
                     metadata={"capability_source": model.capability_source},
                 ))
             elif registered is not None:

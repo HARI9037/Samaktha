@@ -45,6 +45,12 @@ class PluginRegistry:
             return None
         return max(matches, key=lambda r: (_version_tuple(r), r.key))
 
+    def get_versions(self, plugin_id: str) -> list[str]:
+        """Get all registered versions for a plugin id."""
+        return sorted(
+            r.manifest.version for r in self._records.values() if r.manifest.id == plugin_id
+        )
+
     def has(self, plugin_key: str) -> bool:
         return plugin_key in self._records
 

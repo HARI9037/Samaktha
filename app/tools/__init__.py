@@ -11,6 +11,14 @@ from app.tools.image import ImageTool
 from app.tools.resolver_layer import ResolverTool
 from app.tools.registry import ToolRegistry
 from app.tools.manager import ToolManager
+from app.tools.security import (
+    FileSystemSecurityPolicy,
+    ToolSecurityContext,
+    ToolSecurityDecision,
+    ToolSecurityDecisionType,
+    ToolSecurityEnforcer,
+    ToolSecurityReason,
+)
 from app.tools.windows import WindowsTool
 from app.fileparsers.factory import DocumentParserFactory, DocumentParserChain
 from app.fileparsers.base import DocumentParser, ParseResult
@@ -24,6 +32,7 @@ __all__ = [
     "DocumentResult",
     "DocumentTool",
     "FileSystemTool",
+    "FileSystemSecurityPolicy",
     "ImageTool",
     "MemoryTool",
     "PDFTool",
@@ -34,6 +43,11 @@ __all__ = [
     "ToolManager",
     "ToolRegistry",
     "ToolResult",
+    "ToolSecurityContext",
+    "ToolSecurityDecision",
+    "ToolSecurityDecisionType",
+    "ToolSecurityEnforcer",
+    "ToolSecurityReason",
     "WindowsTool",
     "is_document_file",
 ]

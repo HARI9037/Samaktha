@@ -17,7 +17,9 @@ class ExecutionTruthState(StrEnum):
     EXECUTING = "executing"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    DENIED = "denied"
     CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
 
 
 class ExecutionReport(BaseModel):

@@ -252,8 +252,13 @@ def _report_confirms_memory_deletion(execution_report: dict | None) -> bool:
 class ResponseFormatter:
     """Deterministic final presentation layer for one interaction response."""
 
-    def __init__(self, profile: IdentityProfile | None = None) -> None:
+    def __init__(
+        self,
+        profile: IdentityProfile | None = None,
+        capability_registry: object | None = None,
+    ) -> None:
         self._profile = profile
+        self._capability_registry = capability_registry
         self._synthesizer = ConversationMemorySynthesizer()
 
     def format(
@@ -380,8 +385,24 @@ class ResponseFormatter:
         base = _GREETING_BY_KIND.get(kind, GREETING_HEY_TEXT)
         return STYLE_CONTROLLER.vary_greeting(base, turn)
 
-    @staticmethod
-    def _capabilities(evaluation: PersonalityEvaluation | None) -> str:
+    def _capabilities(self, evaluation: PersonalityEvaluation | None) -> str:
+        if self._capability_registry is not None:
+            entries = self._capability_registry.advertised_entries()
+            if entries:
+                bullets: list[str] = []
+                for entry in entries:
+                    actions = ", ".join(entry.supported_actions)
+                    if entry.availability.value == "simulated":
+                        qualifier = "simulated locally; no external delivery"
+                    elif entry.availability.value == "local_only":
+                        qualifier = "local only"
+                    else:
+                        qualifier = "production ready"
+                    bullets.append(
+                        f"- {entry.domain}: {qualifier}"
+                        + (f" ({actions})" if actions else "")
+                    )
+                return "Here's what I can help with:\n" + "\n".join(bullets)
         if evaluation is not None and evaluation.profile is not None:
             capabilities = list(evaluation.profile.capabilities)
             if capabilities:

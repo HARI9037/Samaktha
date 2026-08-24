@@ -32,6 +32,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.memory.controller.facade import MemoryController
+from app.core.contracts.memory import MemoryAccessContext
 from app.memory.formation.classifier import Classification, MemoryClassifier
 
 log = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ class MemoryFormationEngine:
         workflow_result: Any | None = None,
         approval_result: Any | None = None,
         runtime_summary: str | None = None,
+        access_context: MemoryAccessContext | None = None,
     ) -> list[MemoryFormationResult]:
         """Analyze one completed interaction and persist what is worth remembering.
 
@@ -138,6 +140,14 @@ class MemoryFormationEngine:
         user_message = (user_message or "").strip()
         assistant_response = (assistant_response or "").strip()
         metadata = metadata or {}
+        access_context = access_context or MemoryAccessContext.local_default(
+            session_id=session_id
+        )
+        if metadata.get("session_deleted"):
+            log.info(
+                "MemoryFormationEngine: skipping persistence after session deletion"
+            )
+            return results
 
         # Phase 12.10 — internet-sourced interactions are TRANSIENT. Unless the
         # user explicitly asked to remember the content (``explicit_memory``),
@@ -155,7 +165,8 @@ class MemoryFormationEngine:
         if persist_conversation:
             results.append(
                 self._write_conversation(
-                    user_message, assistant_response, session_id, conversation_id, metadata
+                    user_message, assistant_response, session_id, conversation_id,
+                    metadata, access_context
                 )
             )
 
@@ -165,7 +176,17 @@ class MemoryFormationEngine:
                 from app.memory.formation.session_builder import SessionBuilder
 
                 # Load session first so we can read the current turn counter.
-                session = self._session_manager.load_session(session_id)
+                if not self._session_manager.session_exists(session_id):
+                    self._session_manager.create_session(
+                        session_id=session_id,
+                        principal_id=access_context.principal_id,
+                        workspace_id=access_context.workspace_id,
+                        profile_id=access_context.profile_id,
+                    )
+                session = self._session_manager.load_session(
+                    session_id,
+                    principal_id=access_context.principal_id,
+                )
                 base_turn = session.memory.next_turn_number
 
                 logical_id = None
@@ -221,7 +242,10 @@ class MemoryFormationEngine:
 
         # 3. Write the typed memory (dedup-aware).
         if classification is not None:
-            result = self._write_typed(classification, session_id, assistant_response, metadata)
+            result = self._write_typed(
+                classification, session_id, assistant_response, metadata,
+                access_context
+            )
             if result is not None:
                 results.append(result)
                 if result.stored:
@@ -242,6 +266,7 @@ class MemoryFormationEngine:
         session_id: str | None,
         conversation_id: str | None,
         metadata: dict,
+        access_context: MemoryAccessContext,
     ) -> MemoryFormationResult:
         content = f"User: {user_message}\nAssistant: {assistant_response}"
         tags = ["auto-saved", "conversation"]
@@ -252,6 +277,7 @@ class MemoryFormationEngine:
                 conversation_id=conversation_id,
                 tags=tags,
                 importance_kind="conversation",
+                access_context=access_context,
             )
             return MemoryFormationResult(
                 memory_type="conversation",
@@ -284,6 +310,7 @@ class MemoryFormationEngine:
         session_id: str | None,
         assistant_response: str,
         metadata: dict,
+        access_context: MemoryAccessContext,
     ) -> MemoryFormationResult | None:
         memory_type = classification.memory_type
         tags = classification.tags
@@ -295,7 +322,9 @@ class MemoryFormationEngine:
         # Preference writes already resolve conflicts via PreferenceResolver.
         # Every other typed memory is deduped against existing items first.
         if memory_type != "preference":
-            duplicate, score = self._find_duplicate(classification.content, dedup_type)
+            duplicate, score = self._find_duplicate(
+                classification.content, dedup_type, access_context=access_context
+            )
             if duplicate is not None:
                 self._reinforce_canonical(duplicate)
                 log.debug(
@@ -313,7 +342,9 @@ class MemoryFormationEngine:
                 )
 
         try:
-            item = self._store_typed(classification, session_id, metadata)
+            item = self._store_typed(
+                classification, session_id, metadata, access_context
+            )
             if item is None:
                 return None
 
@@ -352,12 +383,14 @@ class MemoryFormationEngine:
         classification: Classification,
         session_id: str | None,
         metadata: dict,
+        access_context: MemoryAccessContext,
     ):
         """Dispatch to the matching MemoryController.write_* method."""
         memory_type = classification.memory_type
         if memory_type == "preference":
             return self._controller.write_preference(
-                classification.content, session_id=session_id, tags=classification.tags
+                classification.content, session_id=session_id,
+                tags=classification.tags, access_context=access_context
             )
         if memory_type == "project":
             # No dedicated project writer exists; project facts are long-term
@@ -368,6 +401,7 @@ class MemoryFormationEngine:
                 source="project",
                 tags=classification.tags,
                 importance_kind=classification.importance_kind,
+                access_context=access_context,
             )
         if memory_type == "workflow":
             return self._controller.write_workflow(
@@ -376,6 +410,7 @@ class MemoryFormationEngine:
                 session_id=session_id,
                 tags=classification.tags,
                 success=True,
+                access_context=access_context,
             )
         if memory_type == "tool":
             return self._controller.write_tool(
@@ -383,6 +418,7 @@ class MemoryFormationEngine:
                 tool_name=classification.entity or "tool",
                 session_id=session_id,
                 tags=classification.tags,
+                access_context=access_context,
             )
         if memory_type == "knowledge":
             return self._controller.write_knowledge(
@@ -390,10 +426,12 @@ class MemoryFormationEngine:
                 source="conversation",
                 tags=classification.tags,
                 importance_kind=classification.importance_kind,
+                access_context=access_context,
             )
         if memory_type == "system":
             return self._controller.write_system(
-                classification.content, tags=classification.tags
+                classification.content, tags=classification.tags,
+                access_context=access_context
             )
         log.debug("MemoryFormationEngine: unknown memory type %r", memory_type)
         return None
@@ -413,15 +451,18 @@ class MemoryFormationEngine:
         content: str,
         memory_type: str,
         threshold: float = 0.75,
+        access_context: MemoryAccessContext | None = None,
     ) -> tuple[object | None, float]:
         """Return (existing_item, score) when content duplicates a stored item."""
         if not self._memory_manager:
             return None, 0.0
 
+        access_context = access_context or MemoryAccessContext.local_default()
         existing = [
             item
             for item in self._memory_manager.get_recent_context(n=500)
             if (item.metadata or {}).get("memory_type") == memory_type
+            and self._controller.security.is_in_scope(item, access_context)
         ]
         if not existing:
             return None, 0.0

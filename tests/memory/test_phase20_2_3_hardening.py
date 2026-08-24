@@ -17,7 +17,7 @@ def test_schema_migration_hardening():
     # 1. Null schema_version
     data_null = {"schema_version": None, "session_id": "test-1"}
     migrated = migrate_session_data(data_null, kind="metadata")
-    assert migrated["schema_version"] == 1
+    assert migrated["schema_version"] == 2
     assert "tools_used" in migrated
 
     # 2. Future schema_version should be untouched
@@ -27,10 +27,10 @@ def test_schema_migration_hardening():
     assert "tools_used" not in migrated  # Should not apply defaults
     assert migrated["future_field"] is True
 
-    # 3. Backward migration (v0 -> v1) still works
+    # 3. Backward migration (v0 -> current) still works
     data_old = {"session_id": "test-3"} # no schema_version
     migrated = migrate_session_data(data_old, kind="metadata")
-    assert migrated["schema_version"] == 1
+    assert migrated["schema_version"] == 2
     assert "tools_used" in migrated
 
 

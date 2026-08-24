@@ -22,11 +22,26 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from app.api.schemas import ExecuteRequest, ExecuteResponse
+from app.api.schemas import (
+    ApprovalDecisionRequest,
+    ExecuteRequest,
+    ExecuteResponse,
+    ExecutionStateResponse,
+    SessionCreateRequest,
+    SessionCreateResponse,
+)
 from app.core.contracts import RuntimeContext
+from app.core.contracts.memory import DEFAULT_LOCAL_PRINCIPAL_ID
 from app.core.orchestrator import SamakthaOrchestrator
 from app.providers.config import ProviderStartupError
 from app.runtime.report import ExecutionReport
+from app.core.contracts.state import ExecutionStatus
+from app.core.execution_coordinator import (
+    ExecutionAccessError,
+    ExecutionConflictError,
+    ExecutionCoordinator,
+    ExecutionNotFoundError,
+)
 
 router = APIRouter(tags=["execute"])
 
@@ -43,6 +58,15 @@ def get_orchestrator(request: Request) -> SamakthaOrchestrator:
     return request.app.state.orchestrator
 
 
+def get_execution_coordinator(request: Request) -> ExecutionCoordinator:
+    coordinator = getattr(request.app.state, "execution_coordinator", None)
+    orchestrator = get_orchestrator(request)
+    if coordinator is None or coordinator._orchestrator is not orchestrator:
+        coordinator = ExecutionCoordinator(orchestrator)
+        request.app.state.execution_coordinator = coordinator
+    return coordinator
+
+
 def _settings(request: Request):
     return getattr(request.app.state, "settings", None)
 
@@ -53,6 +77,36 @@ def _structured(detail: dict) -> HTTPException:
         "message": detail.get("message", "Internal server error"),
         "request_id": detail.get("request_id"),
     })
+
+
+def _resolve_api_session(orchestrator, supplied_session_id: str | None) -> str:
+    """Resolve the local principal's session without accepting arbitrary IDs."""
+
+    manager = getattr(orchestrator, "_session_manager", None)
+    if manager is None:
+        return supplied_session_id or "default"
+    if supplied_session_id:
+        try:
+            manager.resolve_session(
+                supplied_session_id,
+                principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+                create_if_missing=False,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="session not found") from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="session access denied") from exc
+        return supplied_session_id
+    if not manager.session_exists("default"):
+        manager.create_session(
+            session_id="default",
+            principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+        )
+    else:
+        manager.load_session(
+            "default", principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        )
+    return "default"
 
 
 async def _await_with_limits(
@@ -125,10 +179,12 @@ def _build_response(
     result,
     request_id: str,
     session_id: str,
+    execution_id: str | None = None,
 ) -> ExecuteResponse:
     response_text = _extract_response(result)
     response = ExecuteResponse(
         status=result.status.value,
+        execution_id=execution_id or request_id,
         request_id=request_id,
         session_id=session_id,
         task_id=result.task_id,
@@ -141,6 +197,178 @@ def _build_response(
     return response
 
 
+def _state_response(state) -> ExecutionStateResponse:
+    return ExecutionStateResponse(
+        execution_id=state.execution_id,
+        status=state.status.value,
+        principal_id=state.principal_id or DEFAULT_LOCAL_PRINCIPAL_ID,
+        session_id=state.session_id or "default",
+        pending_approval=state.status == ExecutionStatus.AWAITING_APPROVAL,
+        result_available=state.result_available,
+        created_at=state.created_at.isoformat(),
+        updated_at=state.updated_at.isoformat() if state.updated_at else None,
+        completed_at=state.completed_at.isoformat() if state.completed_at else None,
+        error=state.error,
+    )
+
+
+def _coordinator_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ExecutionNotFoundError):
+        return HTTPException(status_code=404, detail="execution not found")
+    if isinstance(exc, ExecutionAccessError):
+        return HTTPException(status_code=403, detail="execution access denied")
+    if isinstance(exc, ExecutionConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, KeyError):
+        return HTTPException(status_code=404, detail="session not found")
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail="session access denied")
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/executions", response_model=ExecutionStateResponse)
+async def start_execution(
+    payload: ExecuteRequest,
+    wait: bool = False,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+) -> ExecutionStateResponse:
+    try:
+        state = await coordinator.start_execution(
+            payload.message,
+            principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+            session_id=payload.session_id,
+            conversation=payload.conversation,
+            source="api",
+            wait=wait,
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+    return _state_response(state)
+
+
+@router.get("/executions/{execution_id}", response_model=ExecutionStateResponse)
+async def inspect_execution(
+    execution_id: str,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+) -> ExecutionStateResponse:
+    try:
+        return _state_response(coordinator.inspect_execution(
+            execution_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        ))
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+
+
+@router.get("/executions/{execution_id}/approval")
+async def inspect_approval(
+    execution_id: str,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+):
+    try:
+        approval = coordinator.pending_approval(
+            execution_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+    if approval is None:
+        raise HTTPException(status_code=404, detail="pending approval not found")
+    sensitive = {"permit", "execution_permit", "integrity_digest", "secret"}
+    approval["metadata"] = {
+        key: value for key, value in approval.get("metadata", {}).items()
+        if key not in sensitive
+    }
+    return approval
+
+
+@router.post("/executions/{execution_id}/approval", response_model=ExecutionStateResponse)
+async def submit_execution_approval(
+    execution_id: str,
+    payload: ApprovalDecisionRequest,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+) -> ExecutionStateResponse:
+    try:
+        state = await coordinator.submit_approval(
+            execution_id,
+            payload.approval_id,
+            payload.decision,
+            principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+            reasons=payload.reasons,
+            source="api",
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+    return _state_response(state)
+
+
+@router.post("/executions/{execution_id}/cancel", response_model=ExecutionStateResponse)
+async def cancel_execution(
+    execution_id: str,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+) -> ExecutionStateResponse:
+    try:
+        state = await coordinator.cancel_execution(
+            execution_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+    return _state_response(state)
+
+
+@router.get("/executions/{execution_id}/events")
+async def execution_events(
+    execution_id: str,
+    after: int = 0,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+):
+    try:
+        events = coordinator.events(
+            execution_id,
+            principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+            after=after,
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+    return {"execution_id": execution_id, "events": [e.model_dump(mode="json") for e in events]}
+
+
+@router.get("/executions/{execution_id}/result")
+async def execution_result(
+    execution_id: str,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+):
+    try:
+        state = coordinator.inspect_execution(
+            execution_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        )
+        result = coordinator.result(
+            execution_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+    if not state.terminal or result is None:
+        raise HTTPException(status_code=409, detail="execution result is not available")
+    return {
+        "execution_id": execution_id,
+        "status": state.status.value,
+        "result": result.model_dump(mode="json"),
+        "report": (result.metadata or {}).get("execution_report"),
+    }
+
+
+@router.post("/sessions", response_model=SessionCreateResponse)
+async def create_session(
+    payload: SessionCreateRequest,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+) -> SessionCreateResponse:
+    try:
+        session_id = coordinator.create_session(
+            DEFAULT_LOCAL_PRINCIPAL_ID, payload.session_id
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+    return SessionCreateResponse(session_id=session_id)
+
+
 @router.post(
     "/execute",
     response_model=ExecuteResponse,
@@ -150,10 +378,20 @@ async def execute_request(
     payload: ExecuteRequest,
     request: Request,
     orchestrator: SamakthaOrchestrator = Depends(get_orchestrator),
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
 ) -> ExecuteResponse:
+    if not isinstance(coordinator, ExecutionCoordinator):
+        # Compatibility for direct Python callers that bypass FastAPI's
+        # dependency injection. HTTP always receives the app coordinator.
+        coordinator = ExecutionCoordinator(orchestrator)
     settings = _settings(request)
     request_id = getattr(getattr(request, "state", None), "request_id", None) or str(uuid4())
-    session_id = payload.session_id or "default"
+    try:
+        session_id = coordinator.resolve_session(
+            DEFAULT_LOCAL_PRINCIPAL_ID, payload.session_id
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
     metrics = _metrics(request)
     start = time.perf_counter()
 
@@ -162,16 +400,33 @@ async def execute_request(
     else:
         timeout_s = settings.api_execute_timeout_seconds
 
-    context = RuntimeContext(request_id=request_id, session_id=payload.session_id)
-    context.metadata["enable_tracing"] = True
     try:
+        await coordinator.start_execution(
+            payload.message,
+            principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+            session_id=session_id,
+            conversation=payload.conversation,
+            source="api.compat",
+            wait=False,
+            execution_id=request_id,
+        )
         task = asyncio.create_task(
-            _run_orchestrator(
-                orchestrator, payload.message, context, payload.conversation
+            coordinator.wait_execution(
+                request_id,
+                principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+                raise_exception=True,
             )
         )
-        result = await _await_with_limits(request, task, timeout_s)
+        await _await_with_limits(request, task, timeout_s)
+        result = coordinator.result(
+            request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        )
     except asyncio.TimeoutError:
+        await coordinator.timeout_execution(
+            request_id,
+            principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+            error=f"Execution exceeded the {timeout_s:.0f}s timeout",
+        )
         if metrics is not None:
             metrics.record_timeout()
         log.warning(
@@ -184,6 +439,9 @@ async def execute_request(
              "request_id": request_id}
         ) from None
     except _ClientDisconnected:
+        await coordinator.cancel_execution(
+            request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        )
         if metrics is not None:
             metrics.record_cancelled()
         log.info("[%s] client disconnected during execution (session=%s)", request_id, session_id)
@@ -205,6 +463,16 @@ async def execute_request(
              "message": "Internal server error", "request_id": request_id}
         ) from exc
 
+    if result is None:
+        state = coordinator.inspect_execution(
+            request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+        )
+        raise _structured({
+            "status": 500,
+            "code": "missing_result",
+            "message": state.error or "Execution finished without a result",
+            "request_id": request_id,
+        })
     if metrics is not None:
         metrics.record_completed(time.perf_counter() - start)
     log.info(
@@ -212,7 +480,9 @@ async def execute_request(
         request_id, session_id, result.status.value,
         (time.perf_counter() - start) * 1000,
     )
-    return _build_response(request, result, request_id, session_id)
+    return _build_response(
+        request, result, request_id, session_id, execution_id=request_id
+    )
 
 
 def _run_pipeline(orchestrator, message, context, conversation):
@@ -232,59 +502,92 @@ async def execute_stream(
     payload: ExecuteRequest,
     request: Request,
     orchestrator: SamakthaOrchestrator = Depends(get_orchestrator),
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
 ) -> StreamingResponse:
     settings = _settings(request)
     timeout_s = settings.api_execute_timeout_seconds if settings else 300.0
     request_id = getattr(getattr(request, "state", None), "request_id", None) or str(uuid4())
-    session_id = payload.session_id or "default"
+    try:
+        session_id = coordinator.resolve_session(
+            DEFAULT_LOCAL_PRINCIPAL_ID, payload.session_id
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
     metrics = _metrics(request)
     start = time.perf_counter()
 
-    context = RuntimeContext(request_id=request_id, session_id=payload.session_id)
-    context.metadata["enable_tracing"] = True
-
     async def event_source():
-        yield _sse("pipeline.started", {"request_id": request_id, "session_id": session_id})
-        task = asyncio.create_task(
-            _run_pipeline(orchestrator, payload.message, context, payload.conversation)
-        )
-        try:
-            state = await asyncio.wait_for(task, timeout=timeout_s)
-        except asyncio.TimeoutError:
-            if metrics is not None:
-                metrics.record_timeout()
-            yield _sse("pipeline.failed", {
-                "error": {"code": "timeout",
-                          "message": f"Execution exceeded the {timeout_s:.0f}s timeout"},
-            })
-            return
-        except Exception:  # noqa: BLE001 - structured error, no raw leakage
-            if metrics is not None:
-                metrics.record_failed()
-            log.exception("[%s] streaming pipeline failed (session=%s)", request_id, session_id)
-            yield _sse("pipeline.failed", {
-                "error": {"code": "internal", "message": "Internal server error"},
-            })
-            return
-        finally:
-            if task is not None and not task.done():
-                task.cancel()
-
-        result = state.runtime_result
-        if result is None:
-            yield _sse("pipeline.failed", {
-                "error": {"code": "internal", "message": "Pipeline finished without a result"},
-            })
-            return
-
-        if metrics is not None:
-            metrics.record_completed(time.perf_counter() - start)
-        yield _sse("pipeline.completed", {
-            "status": result.status.value,
-            "task_id": result.task_id,
-            "response": _extract_response(result),
-            "error": result.error,
+        yield _sse("pipeline.started", {
+            "request_id": request_id,
+            "execution_id": request_id,
+            "session_id": session_id,
         })
+        await coordinator.start_execution(
+            payload.message,
+            principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+            session_id=session_id,
+            conversation=payload.conversation,
+            source="api.stream.compat",
+            streaming=True,
+            wait=False,
+            execution_id=request_id,
+        )
+        cursor = 0
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while True:
+            if await request.is_disconnected():
+                await coordinator.cancel_execution(
+                    request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+                )
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                await coordinator.timeout_execution(
+                    request_id,
+                    principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+                    error=f"Execution exceeded the {timeout_s:.0f}s timeout",
+                )
+            events = coordinator.events(
+                request_id,
+                principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+                after=cursor,
+            )
+            for event in events:
+                cursor += 1
+                yield _sse(
+                    event.data.event_type.value,
+                    event.model_dump(mode="json"),
+                )
+            state = coordinator.inspect_execution(
+                request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+            )
+            if state.terminal or state.status == ExecutionStatus.AWAITING_APPROVAL:
+                if metrics is not None and state.status == ExecutionStatus.COMPLETED:
+                    metrics.record_completed(time.perf_counter() - start)
+                result = coordinator.result(
+                    request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
+                )
+                if state.status == ExecutionStatus.COMPLETED and result is not None:
+                    yield _sse("pipeline.completed", {
+                        "execution_id": request_id,
+                        "status": result.status.value,
+                        "task_id": result.task_id,
+                        "response": _extract_response(result),
+                        "error": result.error,
+                    })
+                elif state.status in {
+                    ExecutionStatus.FAILED,
+                    ExecutionStatus.CANCELLED,
+                    ExecutionStatus.TIMED_OUT,
+                }:
+                    yield _sse("pipeline.failed", {
+                        "execution_id": request_id,
+                        "error": {
+                            "code": state.status.value,
+                            "message": state.error or state.status.value,
+                        },
+                    })
+                return
+            await asyncio.sleep(0.01)
 
     return StreamingResponse(
         event_source(),

@@ -34,6 +34,8 @@ class ContextRequest(BaseModel):
     memory_keys: list[str] = Field(default_factory=list)
     workflow_phase: str | None = None
     summary: str | None = None
+    system_prompt: str | None = None
+    visible_memory_ids: list[str] = Field(default_factory=list)
     max_recent_messages: int = 10
     recall_recent_messages: int = 40
     compressed_memory_width: int = 500
@@ -41,7 +43,7 @@ class ContextRequest(BaseModel):
 
 
 class PreparedContext(BaseModel):
-    """Context prepared for a planner, router, runtime, or model boundary."""
+    """Authoritative ordered model context shared across production layers."""
 
     system_context: str
     compressed_memory: str
@@ -49,3 +51,7 @@ class PreparedContext(BaseModel):
     retrieved_memories: list[MemoryRecord] = Field(default_factory=list)
     workflow_context: dict[str, str] = Field(default_factory=dict)
     model_messages: list[ConversationMessage]
+    visible_memory_ids: list[str] = Field(default_factory=list)
+    conversation_message_count: int = 0
+    truncated_message_count: int = 0
+    context_version: str = "p3"

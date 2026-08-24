@@ -40,7 +40,9 @@ class NotificationTool(Tool):
     }
 
     policy = ToolPolicy(
-        permissions=(ToolPermission.WRITE,),
+        # A local transient notification is not a filesystem/configuration
+        # write. CAP still issues an operation-bound permit for every send.
+        permissions=(),
         approval_required=False,
         default_timeout_s=5.0,
         max_retries=0,

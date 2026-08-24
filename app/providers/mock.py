@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, AsyncIterator
+import asyncio
+import os
 import time
 
 from app.core.contracts.provider import ProviderCapability
@@ -16,6 +18,16 @@ class MockProvider(BaseProvider):
         return "mock"
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if os.environ.get("SAMAKTHA_INTERNAL_VALIDATION") == "1":
+            try:
+                delay = min(
+                    60.0,
+                    max(0.0, float(os.environ.get("SAMAKTHA_INTERNAL_MOCK_DELAY_SECONDS", "0"))),
+                )
+            except ValueError:
+                delay = 0.0
+            if delay:
+                await asyncio.sleep(delay)
         return {"response": "Mock provider response"}
 
     def supports(self, capability: ProviderCapability) -> bool:

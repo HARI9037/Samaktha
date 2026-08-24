@@ -115,7 +115,7 @@ async def test_provider_executor_requires_provider_manager_execution_interface()
         def resolve_provider(self, provider_id):
             raise AssertionError("direct provider resolution must not be used")
 
-        async def execute_provider(self, provider_id, payload, model_id=None, required_capabilities=None):
+        async def execute_provider(self, provider_id, payload, model_id=None, required_capabilities=None, execution_constraints=None):
             return {
                 "success": True,
                 "content": "manager result",
@@ -379,7 +379,7 @@ async def test_approval_lifecycle_user_approves_execution_resumes():
         state=state,
         runtime_context=resume_context,
         task_id=paused_task_id,
-        updates={"permit": {"decision": "allow", "reasons": ["User approved via test"]}},
+        updates={"approval_decision": "allow", "approval_reasons": ["User approved via test"]},
     )
 
     assert resumed_state.runtime_result is not None
@@ -417,7 +417,7 @@ async def test_approval_lifecycle_user_denies_execution_blocked():
         state=state,
         runtime_context=resume_context,
         task_id=paused_task_id,
-        updates={"permit": {"decision": "deny", "reasons": ["User denied via test"]}},
+        updates={"approval_decision": "deny", "approval_reasons": ["User denied via test"]},
     )
 
     assert resumed_state.runtime_result is not None

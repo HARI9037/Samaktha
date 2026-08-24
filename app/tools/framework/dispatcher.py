@@ -141,6 +141,10 @@ class ToolDispatcher:
 
         timeout = self._timeout_for(policy, context)
         retries = int(getattr(policy, "max_retries", 0))
+        action = str(arguments.get("action", ""))
+        side_effect_actions = set(getattr(info, "side_effect_actions", ()) or ())
+        if action in side_effect_actions and not policy.idempotent_mutation:
+            retries = 0
         started = time.monotonic()
         result, status, retry_count, error = await self._run_with_policy(
             tool, tool_id, capability, arguments, timeout, retries, cancel_event
@@ -216,10 +220,9 @@ class ToolDispatcher:
             except ToolError as exc:
                 return ToolResult(ok=False, error=str(exc)), "failed", attempt, str(exc)
             except asyncio.CancelledError:
-                return (
-                    ToolResult(ok=False, error="Execution cancelled"),
-                    "cancelled", attempt, "Execution cancelled",
-                )
+                # Task cancellation is the coordinator/runtime propagation
+                # mechanism and must not be swallowed as an ordinary result.
+                raise
             except Exception as exc:  # noqa: BLE001 - tools must not raise
                 logger.exception("Unexpected error in tool '%s'", tool_id)
                 message = f"Tool '{tool_id}' failed: {exc}"

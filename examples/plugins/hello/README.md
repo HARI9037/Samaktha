@@ -5,7 +5,7 @@ the complete plugin surface: a manifest, an entry module exposing
 `create_plugin()`, a contributed `Tool`, lifecycle hooks (`start`/`stop`),
 and a pytest suite built on the SDK testing utilities.
 
-See [docs/PLUGINS.md](../../docs/PLUGINS.md) for the full plugin author guide.
+See [docs/PLUGINS.md](../../../docs/PLUGINS.md) for the full plugin author guide.
 
 ## Layout
 

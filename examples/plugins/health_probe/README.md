@@ -5,7 +5,7 @@ A Samaktha example **provider plugin**: a deterministic
 and records every request it would deliver. It shows how a plugin
 contributes providers into the `CommunicationRegistry`.
 
-See [docs/PLUGINS.md](../../docs/PLUGINS.md) for the full plugin author guide.
+See [docs/PLUGINS.md](../../../docs/PLUGINS.md) for the full plugin author guide.
 
 ## Layout
 

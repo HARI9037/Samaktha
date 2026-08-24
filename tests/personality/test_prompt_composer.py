@@ -363,6 +363,7 @@ def test_composer_receives_only_structured_data():
         "evaluation",
         "cap_context",
         "conversation_metadata",
+        "include_current_task",
     }
     assert params["cap_context"].kind is inspect.Parameter.KEYWORD_ONLY
     assert params["conversation_metadata"].kind is inspect.Parameter.KEYWORD_ONLY

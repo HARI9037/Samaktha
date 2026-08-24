@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, AsyncIterator, Protocol
+
+from app.core.contracts.streaming import StreamChunk, StreamRequest
+
+from app.core.contracts.policy import ExecutionConstraints
 
 
 class ProviderLike(Protocol):
@@ -26,7 +30,14 @@ class ProviderManagerLike(Protocol):
         payload: dict[str, Any],
         model_id: str | None = None,
         required_capabilities: list[str] | None = None,
+        execution_constraints: ExecutionConstraints | None = None,
     ) -> dict[str, Any]:
+        ...
+
+    def stream_provider(
+        self,
+        request: StreamRequest,
+    ) -> AsyncIterator[StreamChunk]:
         ...
 
 

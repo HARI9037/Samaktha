@@ -40,7 +40,7 @@ def _fail(message: str) -> int:
 
 
 def _run_tests(path: str, plugins_dir: str | None) -> int:
-    plugin_dir = Path(path)
+    plugin_dir = Path(path).resolve()
     if not plugin_dir.is_dir():
         return _fail(f"Not a directory: {plugin_dir}")
     tests_dir = plugin_dir / "tests"
@@ -54,8 +54,22 @@ def _run_tests(path: str, plugins_dir: str | None) -> int:
     if existing:
         pythonpath_bits.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_bits)
-    command = [sys.executable, "-m", "pytest", str(tests_dir), "-q"]
-    return subprocess.call(command, env=env)
+    # Run with the SDK's interpreter and keep pytest discovery inside the
+    # plugin root.  In particular, do not inherit an unrelated user-site
+    # pytest or let rootdir discovery climb through a shared temp hierarchy.
+    env["PYTHONNOUSERSITE"] = "1"
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        str(tests_dir.resolve()),
+        "--rootdir",
+        str(plugin_dir),
+        "-p",
+        "no:cacheprovider",
+        "-q",
+    ]
+    return subprocess.call(command, env=env, cwd=plugin_dir)
 
 
 def build_parser() -> argparse.ArgumentParser:

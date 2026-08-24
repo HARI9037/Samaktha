@@ -1,6 +1,6 @@
 # =============================================================================
 # .gitignore — Samaktha
-# Auto-generated from comprehensive repository audit (2026-07-28).
+# Repository policy for generated, machine-local, and security-sensitive state.
 # Categories: Python artifacts | Caches | Virtual envs | Config | Databases |
 #             Logs | Runtime data | Temp/debug | IDE | OS | Build | Scratch
 # =============================================================================
@@ -23,6 +23,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+.cache/
 .coverage
 .coverage.*
 coverage.xml
@@ -41,6 +42,10 @@ ENV/
 # Machine-specific secrets and overrides. Template is in pyproject.toml.
 .env
 .env.*
+
+# Application bootstrap and integrity state. This directory can contain the
+# permit-signing key and signed checkpoint-integrity metadata.
+/config/
 
 
 # --- Runtime Databases -------------------------------------------------------
@@ -73,6 +78,9 @@ data/*cache*
 data/opencode_debug.log
 data/diag_runtime.py
 data/temp_debug_test*.py
+data/checkpoints/
+data/session_memory/
+data/workspace/
 
 
 # --- Temporary & Debug Artifacts ---------------------------------------------
@@ -81,6 +89,16 @@ data/temp_debug_test*.py
 scratch_*.py
 temp_debug*.py
 test_groq.py
+/check_schema.py
+/test_lock.py
+/test_lock_packaged.py
+/test_mutex_hold.py
+
+# Phase-validation outputs. The maintained checks live under tests/.
+/.p12-closure-*/
+/.p12-packaged-*/
+/artifacts/
+/test_plugin_root/
 
 
 # --- IDE & Developer Tool Metadata ------------------------------------------
@@ -103,6 +121,7 @@ desktop.ini
 # Output of packaging tools (hatchling, pip wheel, setuptools).
 build/
 dist/
+installer_output/
 *.egg-info/
 
 
@@ -111,17 +130,8 @@ dist/
 dummy/
 workspace/
 scratch/
-
-# --- Runtime Session Data ----------------------------------------------------
-# Auto-generated per-session transcripts and indexes. Contains user/runtime data.
-data/session_memory/
-
-# Runtime data
-data/*.db
-data/*.log
-data/temp_*.py
-data/diag_*.py
-
+/logs/
+/samaktha_plugins/
 
 # --- Local-only Docs -----------------------------------------------------------
 # Generated for local / AI-tool consumption. Intentionally NOT published to the

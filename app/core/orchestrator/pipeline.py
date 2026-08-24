@@ -10,6 +10,8 @@ from app.core.contracts import (
     RuntimeTask,
 )
 from app.runtime.report import ExecutionReport
+from app.personality.models import PersonalityEvaluation, PromptComposition
+from app.personality.reflection_models import ReflectionReport
 
 
 from app.workflow.state import WorkflowState
@@ -19,9 +21,9 @@ class PipelineState(BaseModel):
 
     request: str
     context: PreparedContext | None = None
-    personality_evaluation: Any = None
-    prompt_composition: Any = None
-    reflection_report: Any = None
+    personality_evaluation: PersonalityEvaluation | None = None
+    prompt_composition: PromptComposition | None = None
+    reflection_report: ReflectionReport | None = None
     execution_plan: ExecutionPlan | None = None
     runtime_task: RuntimeTask | None = None
     routing_decision: RoutingDecision | None = None

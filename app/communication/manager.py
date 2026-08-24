@@ -43,10 +43,12 @@ class CommunicationManager:
         registry: CommunicationRegistry | None = None,
         history: CommunicationHistory | None = None,
         retry_policy: RetryPolicy | None = None,
+        integration_registry: Any | None = None,
     ) -> None:
         self._registry = registry or CommunicationRegistry()
         self._history = history or CommunicationHistory()
         self._retry_policy = retry_policy or RetryPolicy()
+        self._integration_registry = integration_registry
 
     def get_registry(self) -> CommunicationRegistry:
         return self._registry

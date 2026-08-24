@@ -1,6 +1,7 @@
 from typing import Any, Dict
 
 from app.tools.base import Tool, ToolResult
+from app.core.contracts.memory import MemoryAccessContext
 
 
 class MemoryTool(Tool):
@@ -31,49 +32,62 @@ class MemoryTool(Tool):
     async def run(self, arguments: Dict[str, Any]) -> ToolResult:
         query = arguments.get("query") or arguments.get("search_query") or ""
         action = arguments.get("action", "search")
+        access = MemoryAccessContext.model_validate(
+            arguments.get("_memory_access_context")
+            or MemoryAccessContext.local_default().model_dump()
+        )
 
         try:
             if action == "search":
-                return await self._search(query)
+                return await self._search(query, access)
             if action == "delete":
-                return await self._delete(arguments)
+                return await self._delete(arguments, access)
             if action == "delete_type":
-                return await self._delete_type(arguments)
+                return await self._delete_type(arguments, access)
             if action == "delete_all":
-                return await self._delete_all()
+                return await self._delete_all(access)
             if action == "delete_session":
-                return await self._delete_session(arguments)
+                return await self._delete_session(arguments, access)
             return ToolResult(ok=False, error=f"Unsupported memory action: {action}")
         except Exception as e:
             return ToolResult(ok=False, error=f"Memory {action} failed: {str(e)}")
 
-    async def _search(self, query: str) -> ToolResult:
+    async def _search(
+        self, query: str, access: MemoryAccessContext
+    ) -> ToolResult:
         if not query:
             return ToolResult(ok=False, error="Missing required argument 'query'")
-        if self._memory is not None and hasattr(self._memory, "search"):
-            res = await self._memory.search(query)
-            if not isinstance(res, list):
-                return ToolResult(
-                    ok=False,
-                    error="Memory search backend returned an invalid result",
-                )
-            return ToolResult(
-                ok=True,
-                data={
-                    "query": query,
-                    "memories": [str(item) for item in res],
-                    "count": len(res),
-                },
+        if self._controller is not None:
+            res = self._controller.retrieve(
+                query, access_context=access
             )
-        return ToolResult(ok=False, error="Memory search backend unavailable")
+            serialized = [item.content for item, _score in res]
+        elif self._memory is not None and hasattr(self._memory, "search"):
+            # Legacy/test adapter only. Production composition always injects
+            # MemoryController and uses the access-controlled branch above.
+            res = await self._memory.search(query)
+            serialized = [str(item) for item in res] if isinstance(res, list) else []
+        else:
+            return ToolResult(ok=False, error="Memory search backend unavailable")
+        if not isinstance(res, list):
+            return ToolResult(
+                ok=False,
+                error="Memory search backend returned an invalid result",
+            )
+        return ToolResult(
+            ok=True,
+            data={"query": query, "memories": serialized, "count": len(res)},
+        )
 
-    async def _delete(self, arguments: Dict[str, Any]) -> ToolResult:
+    async def _delete(
+        self, arguments: Dict[str, Any], access: MemoryAccessContext
+    ) -> ToolResult:
         item_id = arguments.get("item_id") or ""
         memory_type = arguments.get("memory_type", "")
         query = (arguments.get("query") or arguments.get("search_query") or "").strip()
 
         if item_id:
-            deleted = self._delete_by_id(item_id)
+            deleted = self._delete_by_id(item_id, access)
             if not deleted:
                 return ToolResult(ok=False, error=f"Memory not found: {item_id}")
             return ToolResult(ok=True, data={"action": "delete", "deleted": deleted, "count": 1})
@@ -81,10 +95,10 @@ class MemoryTool(Tool):
         if not query:
             return ToolResult(ok=False, error="Missing required argument 'item_id' or 'query'")
 
-        matches = self._find_matching_items(query, memory_type)
+        matches = self._find_matching_items(query, memory_type, access)
         deleted = 0
         for item in matches:
-            if self._delete_by_id(getattr(item, "id", "")):
+            if self._delete_by_id(getattr(item, "id", ""), access):
                 deleted += 1
         if deleted == 0:
             return ToolResult(ok=False, error=f"No matching memories found to delete for: {query}")
@@ -93,12 +107,23 @@ class MemoryTool(Tool):
             data={"action": "delete", "query": query, "deleted": deleted, "count": deleted},
         )
 
-    async def _delete_type(self, arguments: Dict[str, Any]) -> ToolResult:
+    async def _delete_type(
+        self, arguments: Dict[str, Any], access: MemoryAccessContext
+    ) -> ToolResult:
         memory_type = (arguments.get("memory_type") or "").strip()
         if not memory_type:
             return ToolResult(ok=False, error="Missing required argument 'memory_type'")
-        if self._controller is not None and hasattr(self._controller, "delete_by_type"):
-            count = self._controller.delete_by_type(memory_type)
+        if self._controller is not None:
+            count = sum(
+                1
+                for item in self._controller.retrieve_recent(
+                    n=100000, access_context=access
+                )
+                if (item.metadata or {}).get("memory_type") == memory_type
+                and self._controller.delete_memory(
+                    item.id, access_context=access
+                )
+            )
             if count == 0:
                 return ToolResult(ok=False, error=f"No memories of type '{memory_type}' to delete")
             return ToolResult(ok=True, data={"action": "delete_type", "memory_type": memory_type, "deleted": count, "count": count})
@@ -109,17 +134,30 @@ class MemoryTool(Tool):
             return ToolResult(ok=True, data={"action": "delete_type", "memory_type": memory_type, "deleted": count, "count": count})
         return ToolResult(ok=False, error="No memory deletion backend available")
 
-    async def _delete_all(self) -> ToolResult:
+    async def _delete_all(self, access: MemoryAccessContext) -> ToolResult:
         counts: dict[str, Any] = {"mem": 0, "doc": 0, "skill": 0}
-        if self._controller is not None and hasattr(self._controller, "delete_all"):
-            counts = self._controller.delete_all()
+        if self._controller is not None:
+            deleted = sum(
+                1
+                for item in self._controller.retrieve_recent(
+                    n=100000, access_context=access
+                )
+                if self._controller.delete_memory(item.id, access_context=access)
+            )
+            counts = {"mem": deleted, "doc": 0, "skill": 0}
         elif self._memory is not None and hasattr(self._memory, "delete_all_memories"):
             counts = self._memory.delete_all_memories()
         sessions_deleted = 0
         if self._session_manager is not None and hasattr(self._session_manager, "delete_everything"):
             try:
-                self._session_manager.delete_everything()
-                sessions_deleted = 1
+                sessions_deleted = sum(
+                    1 for meta in self._session_manager.list_sessions(
+                        principal_id=access.principal_id
+                    )
+                    and self._session_manager.delete_session(
+                        meta.session_id, principal_id=access.principal_id
+                    )
+                )
             except Exception:
                 sessions_deleted = 0
         memory_deleted = sum(counts.values()) if isinstance(counts, dict) else 0
@@ -130,13 +168,17 @@ class MemoryTool(Tool):
             data={"action": "delete_all", "memories": counts, "sessions": sessions_deleted},
         )
 
-    async def _delete_session(self, arguments: Dict[str, Any]) -> ToolResult:
+    async def _delete_session(
+        self, arguments: Dict[str, Any], access: MemoryAccessContext
+    ) -> ToolResult:
         session_id = (arguments.get("session_id") or "").strip()
         if not session_id:
             return ToolResult(ok=False, error="Missing required argument 'session_id'")
         if self._session_manager is None or not hasattr(self._session_manager, "delete_session"):
             return ToolResult(ok=False, error="Session deletion backend unavailable")
-        removed = self._session_manager.delete_session(session_id)
+        removed = self._session_manager.delete_session(
+            session_id, principal_id=access.principal_id
+        )
         if not removed:
             return ToolResult(ok=False, error=f"Session not found: {session_id}")
         return ToolResult(ok=True, data={"action": "delete_session", "session_id": session_id, "deleted": True})
@@ -145,11 +187,15 @@ class MemoryTool(Tool):
     # Helpers (deterministic, local)
     # ------------------------------------------------------------------
 
-    def _delete_by_id(self, item_id: str) -> bool:
+    def _delete_by_id(
+        self, item_id: str, access: MemoryAccessContext
+    ) -> bool:
         if not item_id:
             return False
         if self._controller is not None and hasattr(self._controller, "delete_memory"):
-            return bool(self._controller.delete_memory(item_id))
+            return bool(self._controller.delete_memory(
+                item_id, access_context=access
+            ))
         if self._memory is not None and hasattr(self._memory, "delete_memory"):
             if not self._memory_has(item_id):
                 return False
@@ -167,16 +213,17 @@ class MemoryTool(Tool):
             return False
         return any(getattr(item, "id", None) == item_id for item in items)
 
-    def _find_matching_items(self, query: str, memory_type: str = "") -> list[Any]:
+    def _find_matching_items(
+        self, query: str, memory_type: str = "",
+        access: MemoryAccessContext | None = None,
+    ) -> list[Any]:
         needle = query.lower()
         items: list[Any] = []
-        store = getattr(self._memory, "_context_store", None)
-        if store is not None and hasattr(store, "get_recent_context"):
-            items = store.get_recent_context(n=1000, allow_private=True)
-        elif self._memory is not None and hasattr(self._memory, "get_recent_context"):
-            items = self._memory.get_recent_context(n=1000)
-        elif self._controller is not None and hasattr(self._controller, "retrieve_recent"):
-            items = self._controller.retrieve_recent(n=1000)
+        if self._controller is not None:
+            items = self._controller.retrieve_recent(
+                n=1000,
+                access_context=access or MemoryAccessContext.local_default(),
+            )
 
         matches = []
         for item in items:

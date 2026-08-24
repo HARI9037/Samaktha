@@ -18,6 +18,7 @@ import os
 import pytest
 
 from app.core.cap import ContextEngine
+from app.core.cap.approval_engine import ApprovalEngine
 from app.core.contracts import RuntimeContext
 from app.core.contracts.policy import ApprovalDecision, ApprovalResult
 from app.core.gambit import GoalParser, Planner, TaskDecomposer
@@ -40,11 +41,11 @@ from app.runtime import (
     RuntimeRegistry,
     ToolExecutor,
 )
-from app.tools import MemoryTool, ToolInfo, ToolManager, ToolRegistry
+from app.tools import CapabilityRegistry, MemoryTool, ToolInfo, ToolManager, ToolRegistry
 from app.workflow import WorkflowEngine
 
 
-class AutoApproveEngine:
+class AutoApproveEngine(ApprovalEngine):
     """Test approval engine that allows every CAP request."""
 
     async def decide(self, request, subject_id):
@@ -107,9 +108,15 @@ def build_orchestrator(manager, controller, *, session_manager=None):
             tool_id="memory",
             description="Search and delete memories",
             capabilities=["search", "delete", "delete_type", "delete_all", "delete_session"],
+            permissions=["read", "write"],
+            product_domain="memory",
+            execution_mode="local_only",
+            side_effect_actions=["delete", "delete_type", "delete_all", "delete_session"],
+            evidence_requirements={"delete": "positive deletion count"},
         ),
     )
     tool_manager = ToolManager(tool_registry)
+    capability_registry = CapabilityRegistry.from_tool_registry(tool_registry)
 
     runtime_registry = RuntimeRegistry()
     runtime_registry.register("provider", ProviderExecutor(provider_manager))
@@ -130,7 +137,10 @@ def build_orchestrator(manager, controller, *, session_manager=None):
 
     return SamakthaOrchestrator(
         context_engine=ContextEngine(),
-        planner=Planner(memory_manager=manager),
+        planner=Planner(
+            memory_manager=manager,
+            capability_registry=capability_registry,
+        ),
         router=router,
         runtime=runtime,
         workflow_engine=WorkflowEngine(),
@@ -299,7 +309,9 @@ async def test_greeting_suppresses_preference_enumeration(tmp_path):
         and task.execution_action_type == "text_generation"
     ]
     assert gen_tasks
-    assert "system_prompt" in gen_tasks[0].metadata
+    prepared = gen_tasks[0].metadata["prepared_context"]
+    assert prepared is state.context
+    assert prepared.model_messages[0].content == composition.system_prompt
 
 
 @pytest.mark.asyncio
@@ -330,7 +342,9 @@ async def test_relevant_memory_is_visible_in_composed_prompt(tmp_path):
         and task.execution_action_type == "text_generation"
     ]
     assert gen_tasks
-    assert gen_tasks[0].metadata["system_prompt"] == composition.system_prompt
+    prepared = gen_tasks[0].metadata["prepared_context"]
+    assert prepared is state.context
+    assert prepared.model_messages[0].content == composition.system_prompt
     for task in state.execution_plan.tasks:
         assert "memory_context" not in task.metadata
 

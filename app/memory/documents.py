@@ -17,6 +17,10 @@ from pydantic import BaseModel, Field
 
 from app.core.contracts.multimodal import MediaType
 from app.memory.time_utils import normalize_datetime
+from app.core.contracts.memory import (
+    DEFAULT_LOCAL_PRINCIPAL_ID,
+    MemoryScope,
+)
 
 
 class DocumentRecord(BaseModel):
@@ -32,6 +36,11 @@ class DocumentRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
+    owner_id: str = DEFAULT_LOCAL_PRINCIPAL_ID
+    scope: MemoryScope = MemoryScope.USER
+    session_id: str | None = None
+    workspace_id: str | None = None
+    profile_id: str | None = None
 
 
 class DocumentMemoryStore:

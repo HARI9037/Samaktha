@@ -69,7 +69,7 @@ def test_session_retrieval_with_naive_storage_timestamps(tmp_path):
     assert bundle.evidence is not None
 
 
-def test_cache_expiration_and_cross_session_retrieval_remain_stable(tmp_path):
+def test_cache_expiration_and_cross_session_retrieval_remain_isolated(tmp_path):
     sessions = SessionManager(base_dir=tmp_path, clock=lambda: "2026-08-03T10:00:00+00:00")
     first = sessions.create_session(session_id="session-a")
     sessions.add_memory_entry(first.session_id, "topic", "shared detail", "fact")
@@ -81,7 +81,7 @@ def test_cache_expiration_and_cross_session_retrieval_remain_stable(tmp_path):
     controller = MemoryController(manager)
     retrieval = RetrievalEngine(controller, session_manager=sessions)
     bundle = retrieval.assemble_context("shared detail", session_id=second.session_id)
-    assert bundle.evidence
+    assert not bundle.evidence
 
     store_entry = store.retrieve_entry("missing")
     assert store_entry is None

@@ -9,7 +9,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-from app.core.contracts import ExecutionPlan, RouterRequest, RoutingDecision, RuntimeContext, RuntimeResult, ApprovedRuntimeTask
+from app.core.contracts import ExecutionPlan, PreparedContext, RouterRequest, RoutingDecision, RuntimeContext, RuntimeResult, ApprovedRuntimeTask
 from app.core.contracts.planning import PlanTask, TaskKind, TaskStatus
 from app.core.contracts.workflow import ExecutionGraph, TaskDependency
 from app.core.contracts.policy import ExecutionPermit
@@ -68,6 +68,7 @@ class WorkflowEngine:
         runtime: Runtime,
         router: Router,
         context: RuntimeContext | None = None,
+        prepared_context: PreparedContext | None = None,
     ) -> WorkflowResult:
         log.debug("WorkflowEngine.execute is called. resume_state=%s", context.metadata.get('resume_state') if context else None)
         runtime_context = context or RuntimeContext(
@@ -120,14 +121,16 @@ class WorkflowEngine:
         # Build tasks applying any resume overrides
         pending_pause = self._pause_manager.get_pending_pause(execution_plan.plan_id)
         resume_overrides = pending_pause.resume_overrides if pending_pause else {}
-        workflow_tasks = {t.task_id: t for t in self._workflow_tasks(execution_plan, resume_overrides)}
+        workflow_tasks = {
+            t.task_id: t
+            for t in self._workflow_tasks(
+                execution_plan, resume_overrides, prepared_context
+            )
+        }
         if pending_pause:
             self._pause_manager.resolve_pause(execution_plan.plan_id)
         
         outputs: list[Any] = []
-        # Accumulate tool outputs for context injection into subsequent LLM tasks
-        _tool_outputs: list[dict] = []
-        
         while not scheduler.is_finished():
             batch = scheduler.get_next_batch()
             log.debug("scheduler get_next_batch returns: %s", [t.task_id for t in batch])
@@ -215,6 +218,9 @@ class WorkflowEngine:
             runtime_tasks_and_routings = [(rt, routing) for rt, routing in valid_tasks_for_runtime]
 
             if runtime_tasks_and_routings:
+                pipeline_ref = runtime_context.metadata.get("_pipeline_state_ref")
+                if pipeline_ref is not None:
+                    pipeline_ref.workflow_state = state.model_copy(deep=True)
                 pool_results = await runtime.run_batch(runtime_context, runtime_tasks_and_routings)
                 batch_results.extend(pool_results)
             
@@ -239,16 +245,16 @@ class WorkflowEngine:
                             task_id=result.task_id,
                             payload={"duration_ms": result.duration_ms}
                         )
-                    # Collect tool outputs (non-LLM runtime results) for context building
+                    # Canonical P3 context augmentation: only a completed
+                    # Runtime tool result may become provider evidence.
                     wt = workflow_tasks.get(result.task_id)
-                    if wt and wt.runtime_task.action_type not in ("text_generation", "provider"):
-                        if isinstance(result.output, dict) and result.output:
-                            _tool_outputs.append(result.output)
-                    # Inject accumulated context into the prompt of pending text_generation tasks
-                    if _tool_outputs:
-                        messages = self._context_builder.build_messages(
-                            user_request=execution_plan.goal.raw_request,
-                            tool_outputs=_tool_outputs,
+                    if (
+                        prepared_context is not None
+                        and wt
+                        and wt.runtime_task.action_type == "tool"
+                    ):
+                        self._context_builder.append_runtime_evidence(
+                            prepared_context, [result]
                         )
                         for pending_wt in workflow_tasks.values():
                             rt = pending_wt.runtime_task
@@ -257,14 +263,7 @@ class WorkflowEngine:
                                 and rt.task_id not in scheduler.completed_task_ids
                                 and rt.task_id not in scheduler.failed_task_ids
                             ):
-                                system_prompt = rt.inputs.get("system_prompt")
-                                if system_prompt:
-                                    messages = [
-                                        {"role": "system", "content": system_prompt},
-                                        *messages,
-                                    ]
-                                rt.inputs["messages"] = messages
-                                rt.inputs["prompt"] = messages[-1]["content"]
+                                rt.inputs["prepared_context"] = prepared_context
                 elif result.status == TaskStatus.PAUSED:
                     state.status = ExecutionStatus.PAUSED
                     
@@ -302,6 +301,12 @@ class WorkflowEngine:
                         )
                 
             log.info("WorkflowEngine: batch result — task_id=%s status=%s error=%s output_keys=%s", result.task_id, result.status, result.error, list(result.output.keys()) if isinstance(result.output, dict) else type(result.output).__name__)
+
+            pipeline_ref = runtime_context.metadata.get("_pipeline_state_ref")
+            checkpoint = runtime_context.metadata.get("reliability_checkpoint")
+            if pipeline_ref is not None and callable(checkpoint):
+                pipeline_ref.workflow_state = state.model_copy(deep=True)
+                checkpoint(pipeline_state=pipeline_ref, recovery_safe=True)
                     
             if context and context.trace:
                 context.trace.add_event(
@@ -450,15 +455,43 @@ class WorkflowEngine:
             for result in result_dicts
             if isinstance(result, dict) and result.get("metadata", {}).get("worker_id")
         ]
+        authorization_by_task: dict[str, dict[str, Any]] = {}
+        for result in result_dicts:
+            if not isinstance(result, dict):
+                continue
+            metadata = result.get("metadata", {})
+            if not metadata.get("permit_id"):
+                continue
+            authorization_by_task[str(result.get("task_id"))] = {
+                "task_id": result.get("task_id"),
+                "permit_id": metadata.get("permit_id"),
+                "operation_digest": metadata.get("operation_digest"),
+                "decision": metadata.get("authorization_decision"),
+                "source": metadata.get("authorization_source"),
+                "policy_reference": metadata.get("policy_reference"),
+                "governance_record_id": metadata.get("record_id"),
+                "execution_status": result.get("status"),
+            }
+        authorizations = list(authorization_by_task.values())
         if state.status == ExecutionStatus.PAUSED:
             execution_state = ExecutionTruthState.WAITING_APPROVAL
             approval_status = "waiting_approval"
         elif state.status == ExecutionStatus.COMPLETED:
             execution_state = ExecutionTruthState.SUCCEEDED
-            approval_status = "approved"
+            approval_status = (
+                "approved"
+                if authorizations
+                and all(item["decision"] == "allow" for item in authorizations)
+                else "unknown"
+            )
         elif state.status == ExecutionStatus.FAILED:
             execution_state = ExecutionTruthState.FAILED
-            approval_status = "blocked" if any("approval" in err.lower() for err in state.errors) else "approved"
+            approval_status = (
+                "blocked"
+                if any(item["decision"] != "allow" for item in authorizations)
+                or any("approval" in err.lower() for err in state.errors)
+                else "approved"
+            )
         elif state.status == ExecutionStatus.RUNNING:
             execution_state = ExecutionTruthState.EXECUTING
             approval_status = "approved"
@@ -491,24 +524,24 @@ class WorkflowEngine:
             metadata={
                 "workflow_id": state.workflow_id,
                 "total_steps": state.total_steps,
+                "authorizations": authorizations,
             },
         )
 
     @staticmethod
-    def _workflow_tasks(execution_plan: ExecutionPlan, resume_overrides: dict[str, dict[str, Any]] | None = None) -> list[WorkflowTask]:
+    def _workflow_tasks(
+        execution_plan: ExecutionPlan,
+        resume_overrides: dict[str, dict[str, Any]] | None = None,
+        prepared_context: PreparedContext | None = None,
+    ) -> list[WorkflowTask]:
         resume_overrides = resume_overrides or {}
         task_by_id = {task.task_id: task for task in execution_plan.tasks}
         workflow_tasks: list[WorkflowTask] = []
         for task in execution_plan.tasks:
             overrides = resume_overrides.get(task.task_id, {})
             
-            # Reconstruct permit if it was overridden
+            # CAP is the sole permit issuer. Resume data may never patch it.
             permit_data = task.metadata.get("permit")
-            if "permit" in overrides:
-                if permit_data:
-                    permit_data = {**permit_data, **overrides["permit"]}
-                else:
-                    permit_data = overrides["permit"]
             
             # Combine args
             task_args = {**task.metadata.get("args", {})}
@@ -543,6 +576,13 @@ class WorkflowEngine:
                             "plan_task_kind": task.kind.value,
                             **task_args,
                         } | (
+                            {"prepared_context": prepared_context}
+                            if prepared_context is not None
+                            and task.execution_action_type in {
+                                "text_generation", "code_generation", "provider"
+                            }
+                            else {}
+                        ) | (
                             {"system_prompt": task.metadata["system_prompt"]}
                             if task.metadata.get("system_prompt")
                             else {}

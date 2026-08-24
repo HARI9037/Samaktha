@@ -34,7 +34,7 @@ def test_execution_trace_creation():
 @pytest.mark.asyncio
 async def test_provider_executor_tracing(traced_context):
     class MockProviderManager:
-        async def execute_provider(self, provider_id, payload, model_id, required_capabilities):
+        async def execute_provider(self, provider_id, payload, model_id, required_capabilities, execution_constraints=None):
             return {"success": True, "message": "ok", "metadata": {}}
             
     executor = ProviderExecutor(provider_manager=MockProviderManager())
@@ -58,7 +58,7 @@ async def test_provider_executor_tracing(traced_context):
 @pytest.mark.asyncio
 async def test_provider_executor_no_tracing_overhead(empty_context):
     class MockProviderManager:
-        async def execute_provider(self, provider_id, payload, model_id, required_capabilities):
+        async def execute_provider(self, provider_id, payload, model_id, required_capabilities, execution_constraints=None):
             return {"success": True, "message": "ok", "metadata": {}}
             
     executor = ProviderExecutor(provider_manager=MockProviderManager())

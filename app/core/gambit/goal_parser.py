@@ -109,6 +109,9 @@ class GoalParser:
         normalized = " ".join(request.split())
         complexity = self.estimate_complexity(normalized)
         intent, target_path, query = self.detect_intent(normalized)
+        intent_action, intent_arguments, missing_arguments = (
+            self.extract_intent_arguments(intent, normalized)
+        )
         log.info("GoalParser: detect_intent returned intent=%s target_path=%s", intent, target_path)
         requires_long_context = self._contains_any(normalized, LONG_CONTEXT_SIGNALS) or intent == GoalIntent.READ_RESOURCE
         requires_code = self._contains_any(normalized, CODE_SIGNALS) or intent == GoalIntent.GENERATE_CODE
@@ -136,6 +139,9 @@ class GoalParser:
                 requires_code=requires_code,
             ),
             constraints=self._extract_constraints(normalized),
+            intent_action=intent_action,
+            intent_arguments=intent_arguments,
+            missing_arguments=missing_arguments,
         )
 
     @staticmethod
@@ -170,6 +176,9 @@ class GoalParser:
         if GoalParser._is_internet_intent(lowered):
             return GoalIntent.SEARCH_INTERNET, None, request
 
+        if any(kw in lowered for kw in ("search memory", "previous memory", "search previous memory", "remember", "yesterday", "recollection", "past conversation", "find in memory")):
+            return GoalIntent.SEARCH_MEMORY, None, request
+
         # 1d. System-level intents (Phase 13) — high-precision triggers
         # evaluated before any filesystem routing so "copy X to the clipboard"
         # never resolves to COPY_RESOURCE, "run command …" never resolves to
@@ -183,6 +192,43 @@ class GoalParser:
             return GoalIntent.CLIPBOARD, None, request
         if any(kw in lowered for kw in ("run command", "run the command", "run shell", "shell command", "execute command", "powershell", "cmd")):
             return GoalIntent.RUN_COMMAND, None, request
+
+        # 1e. Personal and communication actions.  These patterns require an
+        # action verb near the product noun so technical discussion such as
+        # "email architecture" or "calendar algorithm" remains a question.
+        if re.search(r"\b(?:remind me|create|add|list|show|cancel|update|complete)\b.*\breminder(?:s)?\b", lowered) or lowered.startswith("remind me"):
+            return GoalIntent.MANAGE_REMINDER, None, request
+        if "memory" not in lowered and (
+            re.search(r"\b(?:create|add|write)\b.*\b(?:a\s+)?note\b(?:\s+(?:titled|called|with)\b|$)", lowered)
+            or re.search(r"\b(?:list|show|search|find|read|update|delete)\b.*\bnotes?\b(?!\.)", lowered)
+        ):
+            return GoalIntent.MANAGE_NOTE, None, request
+        if re.search(r"\b(?:create|add|list|show|complete|finish|update|delete|find|search)\b.*\btask(?:s)?\b", lowered):
+            return GoalIntent.MANAGE_TASK, None, request
+        if re.search(r"\b(?:create|add|update|delete|list|show)\b.*\bcontact(?:s)?\b", lowered):
+            return GoalIntent.MANAGE_CONTACT, None, request
+        if re.search(r"\b(?:find|search|look up)\b.*\bcontact(?:s)?\b|\bcontact\s+(?:for\s+)?\S+", lowered):
+            return GoalIntent.SEARCH_CONTACT, None, request
+        if re.search(r"\b(?:create|add|schedule|list|show|delete|cancel|update)\b.*\b(?:calendar|event|appointment)\b", lowered):
+            return GoalIntent.MANAGE_CALENDAR, None, request
+        if re.search(r"\bforward\b.*\bemail\b", lowered):
+            return GoalIntent.FORWARD_EMAIL, None, request
+        if re.search(r"\breply\b.*\bemail\b", lowered):
+            return GoalIntent.REPLY_EMAIL, None, request
+        if re.search(r"\b(?:read|show|list|search|find)\b.*\bemail(?:s)?\b", lowered):
+            return GoalIntent.READ_EMAIL, None, request
+        if re.search(r"\b(?:send|compose|draft|write)\b\s+(?:an?\s+)?email\b", lowered):
+            return GoalIntent.SEND_EMAIL, None, request
+        if re.search(r"\breply\b.*\bmessage\b", lowered):
+            return GoalIntent.SEND_MESSAGE, None, request
+        if re.search(r"\b(?:read|show|list)\b.*\bmessages\b", lowered):
+            return GoalIntent.READ_MESSAGES, None, request
+        if re.search(r"\b(?:search|find)\b.*\bmessages\b", lowered):
+            return GoalIntent.SEARCH_MESSAGES, None, request
+        if re.search(r"\b(?:send|draft|write)\b\s+(?:a\s+)?message\b", lowered):
+            return GoalIntent.SEND_MESSAGE, None, request
+        if re.search(r"\b(?:use|open|browse)\b.*\bbrowser\b|\bin (?:the )?browser\b", lowered):
+            return GoalIntent.USE_BROWSER, None, request
 
         # 2. Search Resource Intent
         search_keywords = ("search", "find", "locate")
@@ -279,9 +325,10 @@ class GoalParser:
             
         # 4. Directory Listing Intent
         list_keywords = (
-            "list", "ls", "dir", "browse", "what is inside", "what's inside", "contents of", "show files", "desktop contents"
+            "what is inside", "what's inside", "contents of", "show files", "desktop contents"
         )
-        if any(kw in lowered for kw in list_keywords) or (extracted_path and any(k in lowered for k in ("folder", "directory", "desktop"))):
+        has_list_verb = bool(re.search(r"\b(?:list|ls|dir|browse)\b", lowered))
+        if has_list_verb or any(kw in lowered for kw in list_keywords) or (extracted_path and any(k in lowered for k in ("folder", "directory", "desktop"))):
             target = extracted_path
             if not target:
                 if "desktop" in lowered:
@@ -304,11 +351,7 @@ class GoalParser:
         if "rename" in lowered:
             return GoalIntent.RENAME_RESOURCE, extracted_path, None
 
-        # 6. Email, Calendar, and Media Intents (which map to capabilities)
-        if "email" in lowered:
-            return GoalIntent.SEND_EMAIL, None, request
-        if "calendar" in lowered:
-            return GoalIntent.MANAGE_CALENDAR, None, request
+        # 6. Media intent. Execution remains explicitly unavailable in P2.
         if "spotify" in lowered or "play media" in lowered or "play music" in lowered:
             return GoalIntent.PLAY_MEDIA, None, request
 
@@ -321,6 +364,208 @@ class GoalParser:
             return GoalIntent.GENERATE_CODE, None, request
 
         return GoalIntent.ANSWER_QUESTION, None, None
+
+    @staticmethod
+    def extract_intent_arguments(
+        intent: GoalIntent, request: str
+    ) -> tuple[str | None, dict, list[str]]:
+        """Extract only deterministic, user-supplied tool arguments.
+
+        Missing values are returned explicitly.  No recipient, title, path,
+        time, destination, or identifier is fabricated by GAMBIT.
+        """
+        lowered = request.lower()
+        args: dict = {}
+        missing: list[str] = []
+
+        def _match(pattern: str, group: str = "value") -> str | None:
+            found = re.search(pattern, request, re.IGNORECASE | re.DOTALL)
+            return found.group(group).strip(" \t\r\n'\"") if found else None
+
+        if intent in {
+            GoalIntent.READ_RESOURCE,
+            GoalIntent.WRITE_RESOURCE,
+            GoalIntent.DELETE_RESOURCE,
+            GoalIntent.MOVE_RESOURCE,
+            GoalIntent.COPY_RESOURCE,
+            GoalIntent.RENAME_RESOURCE,
+        }:
+            quoted = re.findall(r"['\"]([^'\"]+)['\"]", request)
+            action = {
+                GoalIntent.READ_RESOURCE: "read",
+                GoalIntent.WRITE_RESOURCE: "write",
+                GoalIntent.DELETE_RESOURCE: "delete",
+                GoalIntent.MOVE_RESOURCE: "move",
+                GoalIntent.COPY_RESOURCE: "copy",
+                GoalIntent.RENAME_RESOURCE: "rename",
+            }[intent]
+            source = quoted[0] if quoted else _match(
+                r"(?:read|open|delete|remove|move|copy|rename|write(?:\s+to)?|create\s+file)\s+(?P<value>\S+)"
+            )
+            if source:
+                args["path"] = source
+            else:
+                missing.append("path")
+            if intent == GoalIntent.WRITE_RESOURCE:
+                content = _match(r"\b(?:content|text)\s*(?:of|is|:)?\s*(?P<value>.+)$")
+                if content:
+                    args["content"] = content
+                else:
+                    missing.append("content")
+            if intent in {GoalIntent.MOVE_RESOURCE, GoalIntent.COPY_RESOURCE, GoalIntent.RENAME_RESOURCE}:
+                destination = quoted[1] if len(quoted) > 1 else _match(r"\bto\s+(?P<value>\S+)$")
+                if destination:
+                    args["destination"] = destination
+                else:
+                    missing.append("destination")
+            return action, args, missing
+
+        if intent == GoalIntent.RUN_COMMAND:
+            command = re.sub(
+                r"^\s*(?:please\s+)?(?:run|execute)\s+(?:the\s+)?(?:shell\s+)?command\s*[:\-]?\s*",
+                "",
+                request,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+            if command:
+                args["command"] = command
+            else:
+                missing.append("command")
+            return "run", args, missing
+
+        if intent == GoalIntent.CLIPBOARD:
+            write = any(word in lowered for word in ("copy", "write", "put", "set", "save"))
+            if not write:
+                return "read", {"action": "read"}, []
+            content = _match(r"(?:copy|write|put|set|save)\s+(?P<value>.+?)\s+(?:to|on|into)\s+(?:the\s+)?clipboard\b")
+            if content:
+                args["content"] = content
+            else:
+                missing.append("content")
+            args["action"] = "write"
+            return "write", args, missing
+
+        if intent == GoalIntent.SEND_NOTIFICATION:
+            message = re.sub(
+                r"^\s*(?:please\s+)?(?:notify me|send (?:me )?(?:a )?notification|show (?:me )?(?:a )?notification)\s*(?:that|to|:|-)?\s*",
+                "",
+                request,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+            if not message or message.lower() == "notification":
+                missing.append("message")
+            else:
+                args.update(title="Notification", message=message)
+            return "send", args, missing
+
+        if intent == GoalIntent.MANAGE_NOTE:
+            if re.search(r"\b(?:list|show)\b", lowered):
+                return "list", {"action": "list"}, []
+            if re.search(r"\b(?:search|find)\b", lowered):
+                query = _match(r"(?:search|find).*?notes?\s+(?:for\s+)?(?P<value>.+)$")
+                return "search", {"action": "search", "query": query or ""}, ([] if query else ["query"])
+            title = _match(r"\bnote\s+(?:titled|called)\s+(?P<value>.+?)(?:\s+with\s+(?:content|text)\b|$)")
+            content = _match(r"\bwith\s+(?:content|text)\s+(?P<value>.+)$")
+            args = {"action": "create"}
+            if title: args["title"] = title
+            else: missing.append("title")
+            if content: args["content"] = content
+            return "create", args, missing
+
+        if intent == GoalIntent.MANAGE_TASK:
+            if re.search(r"\b(?:list|show)\b", lowered):
+                return "list", {"action": "list"}, []
+            if re.search(r"\b(?:complete|finish)\b", lowered):
+                task_id = _match(r"(?:complete|finish).*?task\s+(?P<value>[A-Za-z0-9_-]+)")
+                args = {"action": "complete"}
+                if task_id: args["task_id"] = task_id
+                else: missing.append("task_id")
+                return "complete", args, missing
+            title = _match(r"\btask\s+(?:titled|called)\s+(?P<value>.+?)(?:\s+(?:due|with)\b|$)")
+            args = {"action": "create"}
+            if title: args["title"] = title
+            else: missing.append("title")
+            return "create", args, missing
+
+        if intent == GoalIntent.MANAGE_REMINDER:
+            if re.search(r"\b(?:list|show)\b", lowered):
+                return "list", {"action": "list"}, []
+            title = _match(r"\bremind me\s+(?:to\s+)?(?P<value>.+?)(?:\s+at\s+\d{4}-\d{2}-\d{2}T|$)")
+            due_at = _match(r"\bat\s+(?P<value>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)")
+            args = {"action": "create"}
+            if title: args["title"] = title
+            else: missing.append("title")
+            if due_at: args["due_at"] = due_at
+            else: missing.append("due_at")
+            return "create", args, missing
+
+        if intent in {GoalIntent.SEARCH_CONTACT, GoalIntent.MANAGE_CONTACT}:
+            if intent == GoalIntent.SEARCH_CONTACT:
+                query = _match(r"(?:find|search|look up).*?contact(?:s)?(?:\s+for)?\s+(?P<value>.+)$") or _match(r"\bcontact\s+(?:for\s+)?(?P<value>.+)$")
+                return "search", {"action": "search", "query": query or ""}, ([] if query else ["query"])
+            if re.search(r"\b(?:list|show)\b", lowered):
+                return "list", {"action": "list"}, []
+            name = _match(r"\bcontact\s+(?:named|called)?\s*(?P<value>.+?)(?:\s+(?:email|phone)\b|$)")
+            email = _match(r"\bemail\s+(?P<value>\S+@\S+)")
+            phone = _match(r"\bphone\s+(?P<value>[+()0-9 .-]+)$")
+            args = {"action": "create"}
+            if name: args["name"] = name
+            else: missing.append("name")
+            if email: args["emails"] = [email]
+            if phone: args["phones"] = [phone]
+            if not email and not phone: missing.append("email_or_phone")
+            return "create", args, missing
+
+        if intent == GoalIntent.MANAGE_CALENDAR:
+            if re.search(r"\b(?:list|show)\b", lowered):
+                return "list", {"action": "list"}, []
+            title = _match(r"\b(?:event|appointment)\s+(?:titled|called)\s+(?P<value>.+?)(?:\s+at\s+\d{4}-\d{2}-\d{2}T|$)")
+            start_at = _match(r"\bat\s+(?P<value>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)")
+            args = {"action": "create"}
+            if title: args["title"] = title
+            else: missing.append("title")
+            if start_at: args["start_at"] = start_at
+            else: missing.append("start_at")
+            return "create", args, missing
+
+        if intent in {GoalIntent.SEND_EMAIL, GoalIntent.READ_EMAIL, GoalIntent.REPLY_EMAIL, GoalIntent.FORWARD_EMAIL}:
+            if intent == GoalIntent.READ_EMAIL:
+                if "search" in lowered or "find" in lowered:
+                    query = _match(r"(?:search|find).*?emails?\s+(?:for\s+)?(?P<value>.+)$")
+                    return "search", {"action": "search", "query": query or ""}, ([] if query else ["query"])
+                return "list_folders", {"action": "list_folders"}, []
+            action = "reply" if intent == GoalIntent.REPLY_EMAIL else "forward" if intent == GoalIntent.FORWARD_EMAIL else "draft" if re.search(r"\b(?:draft|compose)\b", lowered) else "send"
+            recipient = _match(r"\bto\s+(?P<value>[^\s,;]+@[^\s,;]+)")
+            subject = _match(r"\bsubject\s+(?P<value>.+?)(?:\s+body\b|$)")
+            body = _match(r"\bbody\s+(?P<value>.+)$")
+            message_id = _match(r"\bemail\s+(?P<value>[A-Za-z0-9_-]+)") if action in {"reply", "forward"} else None
+            args = {"action": action}
+            if recipient: args["recipient"] = recipient
+            if subject: args["subject"] = subject
+            if body: args["body"] = body
+            if message_id: args["message_id"] = message_id
+            required = ["recipient", "subject", "body"] if action in {"send", "draft"} else ["message_id", "body"] if action == "reply" else ["message_id", "recipient"]
+            missing.extend(field for field in required if not args.get(field))
+            return action, args, missing
+
+        if intent in {GoalIntent.SEND_MESSAGE, GoalIntent.READ_MESSAGES, GoalIntent.SEARCH_MESSAGES}:
+            if intent == GoalIntent.READ_MESSAGES:
+                return "history", {"action": "history"}, []
+            if intent == GoalIntent.SEARCH_MESSAGES:
+                query = _match(r"(?:search|find).*?messages?\s+(?:for\s+)?(?P<value>.+)$")
+                return "search", {"action": "search", "query": query or ""}, ([] if query else ["query"])
+            action = "draft" if "draft" in lowered else "reply" if "reply" in lowered else "send"
+            recipient = _match(r"\bto\s+(?P<value>.+?)(?:\s+saying\b|\s+body\b|$)")
+            body = _match(r"\b(?:saying|body)\s+(?P<value>.+)$")
+            args = {"action": action}
+            if recipient: args["recipient"] = recipient
+            if body: args["body"] = body
+            missing.extend(field for field in ("recipient", "body") if not args.get(field))
+            return action, args, missing
+
+        return None, {}, []
 
     # ---------------------------------------------------------------------------
     # Memory deletion detection (deterministic, no filesystem routing)
@@ -523,10 +768,21 @@ class GoalParser:
         GoalIntent.RUN_COMMAND:      "shell",
         GoalIntent.CLIPBOARD:        "clipboard",
         GoalIntent.SEND_NOTIFICATION: "notification",
+        GoalIntent.MANAGE_REMINDER: "reminder",
+        GoalIntent.MANAGE_NOTE: "note",
+        GoalIntent.MANAGE_TASK: "task",
+        GoalIntent.MANAGE_CONTACT: "contact",
         GoalIntent.USE_BROWSER:      "browser",
         GoalIntent.SEND_EMAIL:       "email",
+        GoalIntent.READ_EMAIL:       "email",
+        GoalIntent.REPLY_EMAIL:      "email",
+        GoalIntent.FORWARD_EMAIL:    "email",
+        GoalIntent.SEND_MESSAGE:     "message",
+        GoalIntent.READ_MESSAGES:    "message",
+        GoalIntent.SEARCH_MESSAGES:  "message",
+        GoalIntent.SEARCH_CONTACT:   "contact",
         GoalIntent.MANAGE_CALENDAR:  "calendar",
-        GoalIntent.PLAY_MEDIA:       "spotify",
+        GoalIntent.PLAY_MEDIA:       "media",
         GoalIntent.GENERATE_CODE:    None,   # handled by Provider — no tool required
         GoalIntent.ANSWER_QUESTION:  None,   # handled by Provider — no tool required
     }

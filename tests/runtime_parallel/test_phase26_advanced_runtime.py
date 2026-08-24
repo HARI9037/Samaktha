@@ -5,9 +5,8 @@ from time import perf_counter
 
 import pytest
 
-from app.core.contracts import ApprovedRuntimeTask, RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask
+from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask
 from app.core.contracts.planning import TaskStatus
-from app.core.contracts.policy import ExecutionPermit
 from app.runtime.engine import RuntimeExecutionPool
 from app.runtime.metrics import RuntimeMetricsCollector
 from app.runtime_parallel import (
@@ -22,6 +21,7 @@ from app.runtime_parallel import (
     WorkerManager,
 )
 from app.runtime_parallel.worker import WorkerResult
+from tests.conftest import approved_task
 
 
 class FakeRuntimeExecutor:
@@ -349,12 +349,12 @@ async def test_pool_enforces_max_parallelism():
     )
     tasks = []
     for i in range(4):
-        task = ApprovedRuntimeTask(
+        task = approved_task(
             task_id=f"t{i}",
             title=f"t{i}",
             description=f"t{i}",
             action_type="text_generation",
-            permit=ExecutionPermit(action_id=f"t{i}", decision="allow"),
+            subject_id="p26",
         )
         tasks.append((task, make_routing()))
     results = await pool.execute_batch(RuntimeContext(request_id="p26"), tasks)

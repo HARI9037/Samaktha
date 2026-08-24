@@ -5,6 +5,8 @@ Each ConversationMessage produces exactly one RenderedMessage widget.
 Extension hooks are marked for future capabilities.
 """
 
+import logging
+
 from textual.app import ComposeResult
 from textual.containers import Vertical, Horizontal
 from textual.widget import Widget
@@ -12,6 +14,8 @@ from textual.widgets import Label, Button, Markdown as TextualMarkdown
 
 from app.tui.models import ConversationMessage
 from app.tui.attachments import Attachment, AttachmentStatus
+
+log = logging.getLogger(__name__)
 
 
 class RenderedMessage(Widget):
@@ -200,10 +204,11 @@ class RenderedToolMessage(RenderedMessage):
                         yield Label("────────────────────────────", classes="msg-separator")
                         yield Label(f"Totals: {data['count']} items ({folder_count} folders, {file_count} files)", classes="msg-system")
                     return
-            except Exception as e:
-                with open("C:/Users/user/Desktop/Samaktha/renderer_error.log", "a") as f:
-                    f.write(f"Renderer error: {e}\n")
-                pass
+            except Exception:
+                # Rendering failures must not write exception content to an
+                # unmanaged, hard-coded path.  Tool data and paths may be
+                # sensitive; fall back to the generic safe renderer below.
+                log.debug("Directory tool-output rendering failed")
         
         # For other tool outputs, render as formatted text (not JSON)
         if isinstance(content, dict):
@@ -253,25 +258,7 @@ class RenderedApprovalMessage(RenderedMessage):
             self.remove()
 
     def compose(self) -> ComposeResult:
-        action_text = "CAP Approval Required"
-        if self.message.pause_data:
-            metadata = self.message.pause_data.get("metadata", {})
-            action = metadata.get("action", metadata.get("action_type", "Unknown"))
-            args = metadata.get("args", {})
-            
-            target = args.get("path") or args.get("target_path") or args.get("query") or ""
-            
-            # Contextual formatting
-            if action == "list":
-                action_text = f"CAP requests permission to: Browse folder {target}"
-            elif action in ("read", "extract_text", "analyze"):
-                action_text = f"CAP requests permission to: Read file {target}"
-            elif action == "delete":
-                action_text = f"CAP requests permission to: Delete file {target}"
-            elif action in ("rename", "move"):
-                action_text = f"CAP requests permission to: Rename file {target}"
-            else:
-                action_text = f"CAP requests permission to: {action} {target}".strip()
+        action_text = "\n".join(_approval_summary_lines(self.message.pause_data))
         
         # Sanitize for Rich markup
         if isinstance(action_text, str):
@@ -293,6 +280,43 @@ class RenderedApprovalMessage(RenderedMessage):
             with Horizontal(classes="msg-approval-buttons"):
                 yield Button("[Y] Allow", id=f"btn_allow_{self.message.task_id}", variant="success")
                 yield Button("[N] Deny", id=f"btn_deny_{self.message.task_id}", variant="error")
+
+
+def _approval_summary_lines(pause_data: dict | None) -> list[str]:
+    """Return bounded, user-readable details for the exact proposed action."""
+    metadata = (pause_data or {}).get("metadata", {})
+    action = str(metadata.get("action") or metadata.get("action_type") or "Unknown")
+    tool = metadata.get("tool")
+    args = metadata.get("args") if isinstance(metadata.get("args"), dict) else {}
+    target = metadata.get("target") or next(
+        (
+            args.get(key)
+            for key in (
+                "path", "target_path", "destination", "recipient", "to",
+                "url", "host", "query", "command", "executable", "name",
+            )
+            if args.get(key)
+        ),
+        None,
+    )
+    lines = ["CAP Approval Required", f"Action: {action}"]
+    if tool:
+        lines.append(f"Tool: {tool}")
+    if target:
+        lines.append(f"Target: {target}")
+    if args:
+        details = ", ".join(
+            f"{key}={value}" for key, value in sorted(args.items())
+        )
+        lines.append(f"Important arguments: {details}")
+    risk = metadata.get("risk")
+    if risk:
+        lines.append(f"Risk: {risk}")
+    permissions = metadata.get("permissions")
+    if isinstance(permissions, list) and permissions:
+        lines.append(f"Permissions: {', '.join(str(item) for item in permissions)}")
+    lines.append("Allow executes only this exact bound operation; Deny executes nothing.")
+    return [line[:1000] for line in lines]
 
 
 # ---------------------------------------------------------------------------
@@ -431,4 +455,3 @@ class AttachmentRenderer:
     def render_unknown(attachment: Attachment) -> RenderedMessage:
         msg = ConversationMessage(role="attachment", attachment=attachment, markdown=False)
         return RenderedAttachmentMessage(msg)
-

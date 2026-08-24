@@ -34,6 +34,10 @@ def enforce_execution_truth(text: str, report: ExecutionReport | dict[str, Any] 
         return _failure(parsed)
     if parsed.execution_state == ExecutionTruthState.CANCELLED:
         return "The task was cancelled."
+    if parsed.execution_state == ExecutionTruthState.DENIED:
+        return "The action was denied and was not executed."
+    if parsed.execution_state == ExecutionTruthState.TIMED_OUT:
+        return "The execution timed out. Completion was not confirmed."
     if parsed.execution_state in {ExecutionTruthState.NOT_STARTED, ExecutionTruthState.PLANNED, ExecutionTruthState.APPROVED}:
         return "I have prepared the execution plan. No runtime completion evidence exists yet."
     if parsed.execution_state == ExecutionTruthState.SUCCEEDED and _has_runtime_success(parsed):
@@ -89,6 +93,12 @@ def _tool_result_has_effect(result: dict) -> bool:
     output = result.get("output")
     if not isinstance(output, dict):
         return True
+    metadata = result.get("metadata") or {}
+    tool_id = str(metadata.get("tool") or "")
+    action = str(metadata.get("action") or output.get("action") or "")
+    specific = _capability_evidence(tool_id, action, output)
+    if specific is not None:
+        return specific
     deleted = output.get("deleted")
     if isinstance(deleted, bool):
         return deleted
@@ -103,6 +113,52 @@ def _tool_result_has_effect(result: dict) -> bool:
     if isinstance(count, (int, float)):
         return count > 0
     return True
+
+
+def _capability_evidence(
+    tool_id: str, action: str, output: dict[str, Any]
+) -> bool | None:
+    """Evaluate known tool/action evidence without treating prose as proof."""
+    if output.get("partial") is True or output.get("status") in {"partial", "failed"}:
+        return False
+    if tool_id == "notification" and action == "send":
+        return output.get("sent") is True
+    if tool_id in {"email", "message"}:
+        if action in {"compose", "draft"}:
+            return output.get("status") == "drafted"
+        if action in {"send", "reply", "forward"}:
+            # P2 communication implementations are local simulations; they
+            # can prove simulation, never external delivery.
+            return output.get("externally_delivered") is True
+    if tool_id == "clipboard" and action == "write":
+        return output.get("written") is True
+    if tool_id == "shell" and action == "run":
+        return "output" in output
+    if tool_id in {"resolver", "filesystem"}:
+        if action == "write":
+            written = output.get("written_bytes", output.get("written"))
+            return written is True or isinstance(written, (int, float)) and written > 0
+        if action in {"move", "copy", "rename"}:
+            return bool(output.get("source") and output.get("destination"))
+        if action == "delete":
+            deleted = output.get("deleted")
+            return deleted is True or isinstance(deleted, str) and bool(deleted) or isinstance(deleted, (int, float)) and deleted > 0
+    record_keys = {
+        "reminder": "reminder",
+        "notes": "note",
+        "tasks": "task",
+        "contacts": "contact",
+        "calendar": "event",
+    }
+    record_key = record_keys.get(tool_id)
+    if record_key and action in {"create", "update", "snooze", "complete", "import"}:
+        return isinstance(output.get(record_key), dict) and bool(output[record_key])
+    if record_key and action in {"delete", "cancel"}:
+        return bool(output.get("message"))
+    if tool_id == "memory" and action.startswith("delete"):
+        deleted = output.get("deleted", output.get("count"))
+        return deleted is True or isinstance(deleted, (int, float)) and deleted > 0
+    return None
 
 
 def _approval_required(report: ExecutionReport) -> str:

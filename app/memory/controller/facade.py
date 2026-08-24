@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.core.contracts.memory import MemoryItem
+from app.core.contracts.memory import MemoryAccessContext, MemoryItem
 from app.core.contracts.security import SecurityLevel
 from app.memory.controller.cache import MemoryCache
 from app.memory.controller.consolidator import MemoryConsolidator
@@ -85,7 +85,8 @@ class MemoryController:
             memory_manager, self._cache, self._security
         )
         self._retriever = retriever or MemoryRetriever(
-            memory_manager, self._cache, self._ranker, semantic_engine
+            memory_manager, self._cache, self._ranker, semantic_engine,
+            security=self._security,
         )
         self._preference_resolver = preference_resolver or PreferenceResolver(
             memory_manager, self._cache
@@ -135,6 +136,19 @@ class MemoryController:
     # Typed write methods
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _access_context(
+        access_context: MemoryAccessContext | None,
+        session_id: str | None = None,
+        security_level: SecurityLevel = SecurityLevel.LOW,
+    ) -> MemoryAccessContext:
+        if access_context is not None:
+            return access_context
+        return MemoryAccessContext.local_default(
+            session_id=session_id,
+            security_level=security_level,
+        )
+
     def write_conversation(
         self,
         content: str,
@@ -143,7 +157,9 @@ class MemoryController:
         tags: list[str] | None = None,
         importance_kind: str = "conversation",
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
+        access_context = self._access_context(access_context, session_id, security_level)
         decision = self._security.check_write_access("conversation", security_level)
         if not decision.allowed:
             log.warning("MemoryController: write_conversation DENIED by security: %s", decision.reason)
@@ -155,6 +171,7 @@ class MemoryController:
             tags=tags,
             importance_kind=importance_kind,
             security_level=security_level,
+            access_context=access_context,
         )
         self._cache.clear_retrievals()
         return item
@@ -176,7 +193,9 @@ class MemoryController:
         tags: list[str] | None = None,
         importance_kind: str = "tool_output",
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
+        access_context = self._access_context(access_context, session_id, security_level)
         self._check_write_access("document", security_level)
         item = self._writer.write_document(
             content=content,
@@ -186,6 +205,7 @@ class MemoryController:
             tags=tags,
             importance_kind=importance_kind,
             security_level=security_level,
+            access_context=access_context,
         )
         self._cache.clear_retrievals()
         return item
@@ -196,7 +216,9 @@ class MemoryController:
         session_id: str | None = None,
         tags: list[str] | None = None,
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
+        access_context = self._access_context(access_context, session_id, security_level)
         self._check_write_access("preference", security_level)
 
         # Resolve against existing preferences
@@ -204,6 +226,8 @@ class MemoryController:
             content=content,
             session_id=session_id,
             tags=tags,
+            access_context=access_context,
+            security_level=security_level,
         )
 
         if is_new:
@@ -227,7 +251,9 @@ class MemoryController:
         tags: list[str] | None = None,
         success: bool = True,
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
+        access_context = self._access_context(access_context, session_id, security_level)
         self._check_write_access("workflow", security_level)
         item = self._writer.write_workflow(
             content=content,
@@ -236,6 +262,7 @@ class MemoryController:
             tags=tags,
             success=success,
             security_level=security_level,
+            access_context=access_context,
         )
         self._cache.clear_retrievals()
         return item
@@ -247,7 +274,9 @@ class MemoryController:
         session_id: str | None = None,
         tags: list[str] | None = None,
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
+        access_context = self._access_context(access_context, session_id, security_level)
         self._check_write_access("tool", security_level)
         item = self._writer.write_tool(
             content=content,
@@ -255,6 +284,7 @@ class MemoryController:
             session_id=session_id,
             tags=tags,
             security_level=security_level,
+            access_context=access_context,
         )
         self._cache.clear_retrievals()
         return item
@@ -266,7 +296,9 @@ class MemoryController:
         tags: list[str] | None = None,
         importance_kind: str = "successful_workflow",
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
+        access_context = self._access_context(access_context, None, security_level)
         self._check_write_access("knowledge", security_level)
         item = self._writer.write_knowledge(
             content=content,
@@ -274,6 +306,7 @@ class MemoryController:
             tags=tags,
             importance_kind=importance_kind,
             security_level=security_level,
+            access_context=access_context,
         )
         self._cache.clear_retrievals()
         return item
@@ -283,12 +316,15 @@ class MemoryController:
         content: str,
         tags: list[str] | None = None,
         security_level: SecurityLevel = SecurityLevel.LOW,
+        access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
+        access_context = self._access_context(access_context, None, security_level)
         self._check_write_access("system", security_level)
         item = self._writer.write_system(
             content=content,
             tags=tags,
             security_level=security_level,
+            access_context=access_context,
         )
         self._cache.clear_retrievals()
         return item
@@ -307,8 +343,10 @@ class MemoryController:
         include_skills: bool = True,
         include_preferences: bool = True,
         include_documents: bool = True,
+        access_context: MemoryAccessContext | None = None,
     ) -> list[tuple[Any, float]]:
         """Full retrieval pipeline — returns ranked (item, score) pairs."""
+        access_context = self._access_context(access_context, session_id)
         return self._retriever.retrieve(
             query=query,
             top_k=top_k,
@@ -318,15 +356,32 @@ class MemoryController:
             include_skills=include_skills,
             include_preferences=include_preferences,
             include_documents=include_documents,
+            access_context=access_context,
         )
 
-    def retrieve_recent(self, n: int = 10) -> list[Any]:
+    def retrieve_recent(
+        self,
+        n: int = 10,
+        access_context: MemoryAccessContext | None = None,
+    ) -> list[Any]:
         """Quick access to recent context only."""
-        return self._retriever.retrieve_recent_only(n=n)
+        return self._retriever.retrieve_recent_only(
+            n=n,
+            access_context=self._access_context(access_context),
+        )
 
-    def retrieve_semantic(self, query: str, top_k: int = 10) -> list[Any]:
+    def retrieve_semantic(
+        self,
+        query: str,
+        top_k: int = 10,
+        access_context: MemoryAccessContext | None = None,
+    ) -> list[Any]:
         """Quick semantic search only."""
-        return self._retriever.retrieve_semantic_only(query=query, top_k=top_k)
+        return self._retriever.retrieve_semantic_only(
+            query=query,
+            top_k=top_k,
+            access_context=self._access_context(access_context),
+        )
 
     def search_documents(self, query: str = "") -> list[DocumentRecord]:
         """Search DocumentMemoryStore by name, tag, or summary.
@@ -372,7 +427,15 @@ class MemoryController:
     def archive_memory(self, item_id: str) -> bool:
         return self._lifecycle.archive_memory(item_id)
 
-    def delete_memory(self, item_id: str) -> bool:
+    def delete_memory(
+        self,
+        item_id: str,
+        access_context: MemoryAccessContext | None = None,
+    ) -> bool:
+        access_context = self._access_context(access_context)
+        item = self._memory_manager.get_context_item(item_id)
+        if item is None or not self._security.is_in_scope(item, access_context):
+            return False
         return self._lifecycle.delete_memory(item_id)
 
     def delete_by_type(self, memory_type: str) -> int:

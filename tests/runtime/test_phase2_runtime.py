@@ -24,6 +24,7 @@ async def test_runtime_adds_timing_and_diagnostics_metadata():
         approved_task(
             task_id="task", title="Task", description="Task",
             action_type="text_generation",
+            subject_id="phase2",
         ),
         RoutingDecision(provider_id="mock", model_id="mock-model", reasoning_summary="test"),
     )

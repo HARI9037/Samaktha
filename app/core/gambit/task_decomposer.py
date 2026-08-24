@@ -75,9 +75,10 @@ class TaskDecomposer:
             paths = (goal.target_path or "").split("|") if goal.target_path else [""]
             
             for p in paths:
-                args = {"path": p.strip()}
+                args = dict(goal.intent_arguments) or {"path": p.strip()}
+                args["path"] = p.strip() or args.get("path", "")
                 if intent == GoalIntent.WRITE_RESOURCE and goal.query:
-                    args["content"] = goal.query
+                    args.setdefault("content", goal.query)
                 
                 resolver_task = self._tool_task(
                     title=f"Resolve and {action} resource: {p.strip() or 'unknown'}",
@@ -188,7 +189,7 @@ class TaskDecomposer:
                 capability="shell_exec",
                 domain="shell",
                 action="run",
-                args={"command": goal.query or goal.raw_request},
+                args=dict(goal.intent_arguments),
                 goal=goal,
                 dependencies=[prev_id],
             )
@@ -201,10 +202,13 @@ class TaskDecomposer:
                 tool=None,
                 capability=self._detect_clipboard_capability(goal.raw_request),
                 domain="clipboard",
-                action=self._detect_clipboard_action(goal.raw_request),
-                args={"query": goal.query or goal.raw_request},
+                action=goal.intent_action or self._detect_clipboard_action(goal.raw_request),
+                args=dict(goal.intent_arguments),
                 goal=goal,
                 dependencies=[prev_id],
+                policy_action=(
+                    "write" if (goal.intent_action or self._detect_clipboard_action(goal.raw_request)) == "write" else "read"
+                ),
             )
             tasks.append(clipboard_task)
             prev_id = clipboard_task.task_id
@@ -216,9 +220,10 @@ class TaskDecomposer:
                 capability="notify",
                 domain="notification",
                 action="send",
-                args={"title": "Notification", "message": goal.query or goal.raw_request},
+                args=dict(goal.intent_arguments),
                 goal=goal,
                 dependencies=[prev_id],
+                policy_action="write",
             )
             tasks.append(notification_task)
             prev_id = notification_task.task_id
@@ -234,6 +239,57 @@ class TaskDecomposer:
             )
             tasks.append(windows_task)
             prev_id = windows_task.task_id
+
+        elif intent in {
+            GoalIntent.MANAGE_REMINDER,
+            GoalIntent.MANAGE_NOTE,
+            GoalIntent.MANAGE_TASK,
+            GoalIntent.MANAGE_CONTACT,
+            GoalIntent.SEARCH_CONTACT,
+            GoalIntent.MANAGE_CALENDAR,
+            GoalIntent.SEND_EMAIL,
+            GoalIntent.READ_EMAIL,
+            GoalIntent.REPLY_EMAIL,
+            GoalIntent.FORWARD_EMAIL,
+            GoalIntent.SEND_MESSAGE,
+            GoalIntent.READ_MESSAGES,
+            GoalIntent.SEARCH_MESSAGES,
+        }:
+            route_map = {
+                GoalIntent.MANAGE_REMINDER: ("reminder", "Manage reminder"),
+                GoalIntent.MANAGE_NOTE: ("note", "Manage note"),
+                GoalIntent.MANAGE_TASK: ("task", "Manage task"),
+                GoalIntent.MANAGE_CONTACT: ("contact", "Manage contact"),
+                GoalIntent.SEARCH_CONTACT: ("contact", "Search contacts"),
+                GoalIntent.MANAGE_CALENDAR: ("calendar", "Manage local calendar"),
+                GoalIntent.SEND_EMAIL: ("email", "Prepare simulated email action"),
+                GoalIntent.READ_EMAIL: ("email", "Read local email simulation state"),
+                GoalIntent.REPLY_EMAIL: ("email", "Prepare simulated email reply"),
+                GoalIntent.FORWARD_EMAIL: ("email", "Prepare simulated email forward"),
+                GoalIntent.SEND_MESSAGE: ("message", "Prepare simulated message action"),
+                GoalIntent.READ_MESSAGES: ("message", "Read local message simulation state"),
+                GoalIntent.SEARCH_MESSAGES: ("message", "Search local message simulation state"),
+            }
+            domain, title = route_map[intent]
+            action = goal.intent_action or ""
+            routed = self._tool_task(
+                title=title,
+                tool=None,
+                domain=domain,
+                capability=domain,
+                action=action,
+                args=dict(goal.intent_arguments),
+                goal=goal,
+                dependencies=[prev_id],
+                policy_action=(
+                    "write"
+                    if domain in {"email", "message"}
+                    and action in {"send", "reply", "forward", "draft", "compose"}
+                    else None
+                ),
+            )
+            tasks.append(routed)
+            prev_id = routed.task_id
 
         else:
             # ANSWER_QUESTION, GENERATE_CODE, and any unmatched intent
@@ -326,6 +382,7 @@ class TaskDecomposer:
         dependencies: list[str] | None = None,
         capability: str | None = None,
         domain: str | None = None,
+        policy_action: str | None = None,
     ) -> PlanTask:
         """Create a tool execution task that routes through ToolExecutor.
 
@@ -342,6 +399,8 @@ class TaskDecomposer:
             metadata["capability"] = capability
         if domain:
             metadata["domain"] = domain
+        if policy_action:
+            metadata["policy_action"] = policy_action
         task = PlanTask(
             task_id=f"task-{uuid4()}",
             title=title,
@@ -460,7 +519,3 @@ class TaskDecomposer:
             requires_code=goal.requires_code,
             requires_reasoning=goal.complexity == GoalComplexity.HIGH,
         )
-
-
-
-

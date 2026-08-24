@@ -264,7 +264,7 @@ class TestVoiceSessionCap:
         await session.submit_approval("yes")
         await _wait_until(lambda: runtime.resume.await_count == 1)
         updates = runtime.resume.await_args.args[2]
-        assert updates["permit"]["decision"] == "allow"
+        assert updates["approval_decision"] == "allow"
         snapshot = session.metrics.snapshot()
         assert snapshot.approvals_requested == 1
         assert snapshot.approvals_allowed == 1
@@ -277,7 +277,7 @@ class TestVoiceSessionCap:
         await session.submit_approval("no")
         await _wait_until(lambda: runtime.resume.await_count == 1)
         updates = runtime.resume.await_args.args[2]
-        assert updates["permit"]["decision"] == "deny"
+        assert updates["approval_decision"] == "deny"
         assert session.metrics.snapshot().approvals_denied == 1
 
     @pytest.mark.asyncio
@@ -297,7 +297,7 @@ class TestVoiceSessionCap:
         await _wait_until(lambda: session.has_pending_approval())
         await session._handle_approval_text("yes please")
         await _wait_until(lambda: runtime.resume.await_count == 1)
-        assert runtime.resume.await_args.args[2]["permit"]["decision"] == "allow"
+        assert runtime.resume.await_args.args[2]["approval_decision"] == "allow"
 
 
 def _session_with_running_runtime():

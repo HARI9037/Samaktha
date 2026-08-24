@@ -146,14 +146,14 @@ class TestSettingsIntegration:
             settings.debug = original_debug
 
 
-class TestRuntimeNotModified:
-    """The runtime (production.py, executor.py) must NOT be modified."""
+class TestRuntimeOutputContract:
+    """Canonical Runtime results remain visible to the TUI adapter."""
 
     def test_production_still_yields_tool_items(self):
-        """Bridge still puts tool items in the queue (provider still receives them)."""
+        """The adapter maps canonical tool results without a provider bypass."""
         import inspect
-        from app.agent.production import _StreamingRuntimeBridge
-        src = inspect.getsource(_StreamingRuntimeBridge.run)
+        from app.agent.production import _enqueue_runtime_result
+        src = inspect.getsource(_enqueue_runtime_result)
         assert '"tool"' in src
 
     def test_executor_still_sets_output(self):

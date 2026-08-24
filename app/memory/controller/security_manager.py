@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 from app.core.contracts.security import SecurityDecision, SecurityLevel
+from app.core.contracts.memory import MemoryAccessContext, MemoryScope
 
 
 class SecurityManager:
@@ -109,6 +110,54 @@ class SecurityManager:
             )
 
         return SecurityDecision(allowed=True, security_level=user_security_level)
+
+    @staticmethod
+    def is_in_scope(item: Any, access_context: MemoryAccessContext) -> bool:
+        """Apply ownership/scope eligibility before security or ranking."""
+
+        try:
+            scope = MemoryScope(getattr(item, "scope", None))
+        except (TypeError, ValueError):
+            return False
+        owner_id = str(getattr(item, "owner_id", "") or "")
+        if scope is MemoryScope.SYSTEM:
+            return False
+        if owner_id != access_context.principal_id:
+            return False
+        if scope is MemoryScope.SESSION:
+            return bool(
+                access_context.session_id
+                and getattr(item, "session_id", None) == access_context.session_id
+            )
+        if scope is MemoryScope.WORKSPACE:
+            return bool(
+                access_context.workspace_id
+                and getattr(item, "workspace_id", None) == access_context.workspace_id
+            )
+        return scope is MemoryScope.USER
+
+    def can_read_item(
+        self,
+        item: Any,
+        access_context: MemoryAccessContext,
+    ) -> SecurityDecision:
+        """Authorize an already scope-eligible item under caller clearance."""
+
+        if not self.is_in_scope(item, access_context):
+            return SecurityDecision(allowed=False, reason="memory is outside access scope")
+        metadata = getattr(item, "metadata", {}) or {}
+        memory_type = str(metadata.get("memory_type") or "context")
+        level = getattr(item, "privacy_level", SecurityLevel.LOW)
+        if not isinstance(level, SecurityLevel):
+            try:
+                level = SecurityLevel(level)
+            except ValueError:
+                level = SecurityLevel.CRITICAL
+        return self.check_read_access(
+            memory_type,
+            level,
+            access_context.security_level,
+        )
 
     # ------------------------------------------------------------------
     # Encryption hooks (future)

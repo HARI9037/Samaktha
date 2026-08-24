@@ -177,14 +177,17 @@ class CalendarStore:
         return instances
 
 
+from app.integrations.contracts import IntegrationProvider, IntegrationRequest, IntegrationStatus
+
 class CalendarTool(Tool):
     @property
     def name(self) -> str:
         return "calendar"
     """Local-first calendar tool with events, conflicts, and recurrence."""
 
-    def __init__(self, db_path: str | None = None) -> None:
+    def __init__(self, db_path: str | None = None, integration_provider: IntegrationProvider | None = None) -> None:
         self._store = CalendarStore(db_path=db_path)
+        self._provider = integration_provider
         self._capabilities = ["event_create", "event_read", "event_update", "event_delete", "event_agenda", "event_conflicts", "event_list", "event_recurring"]
 
     @property
@@ -244,25 +247,25 @@ class CalendarTool(Tool):
         action = arguments.get("action", "list")
 
         if action == "create":
-            return self._create_event(arguments)
+            return await self._create_event(arguments)
         elif action == "read":
-            return self._read_event(arguments)
+            return await self._read_event(arguments)
         elif action == "update":
-            return self._update_event(arguments)
+            return await self._update_event(arguments)
         elif action == "delete":
-            return self._delete_event(arguments)
+            return await self._delete_event(arguments)
         elif action == "agenda":
-            return self._agenda(arguments)
+            return await self._agenda(arguments)
         elif action == "conflicts":
-            return self._conflicts(arguments)
+            return await self._conflicts(arguments)
         elif action == "list":
-            return self._list_events(arguments)
+            return await self._list_events(arguments)
         elif action == "recurring":
-            return self._recurring(arguments)
+            return await self._recurring(arguments)
         else:
             return ToolResult(ok=False, data={"error": f"Unknown action: {action}"})
 
-    def _create_event(self, arguments: dict) -> ToolResult:
+    async def _create_event(self, arguments: dict) -> ToolResult:
         event_id = str(uuid.uuid4())[:8]
         title = arguments.get("title", "Untitled Event")
         start_at_str = arguments.get("start_at")
@@ -298,24 +301,38 @@ class CalendarTool(Tool):
         conflicts = self._store.find_conflicts(event)
         self._store.create(event)
 
+        sync_status = "local_only"
+        if event.attendees:
+            if self._provider:
+                req = IntegrationRequest(
+                    provider_id="calendar",
+                    action="invite_attendees",
+                    payload={"event": event.to_dict()}
+                )
+                res = await self._provider.execute(req)
+                sync_status = "invited" if res.status == IntegrationStatus.DELIVERED else "invite_failed"
+            else:
+                sync_status = "simulated_invite"
+
         return ToolResult(
             ok=True,
             data={
                 "event": event.to_dict(),
                 "conflicts": [c.to_dict() for c in conflicts],
                 "has_conflicts": len(conflicts) > 0,
+                "sync_status": sync_status,
                 "message": f"Event '{title}' created.",
             },
         )
 
-    def _read_event(self, arguments: dict) -> ToolResult:
+    async def _read_event(self, arguments: dict) -> ToolResult:
         event_id = arguments.get("event_id", "")
         event = self._store.get(event_id)
         if not event:
             return ToolResult(ok=False, data={"error": f"Event {event_id} not found."})
         return ToolResult(ok=True, data={"event": event.to_dict()})
 
-    def _update_event(self, arguments: dict) -> ToolResult:
+    async def _update_event(self, arguments: dict) -> ToolResult:
         event_id = arguments.get("event_id", "")
         event = self._store.get(event_id)
         if not event:
@@ -324,16 +341,30 @@ class CalendarTool(Tool):
         update_fields = {k: v for k, v in arguments.items() if k not in ("action", "event_id")}
         self._store.update(event_id, **update_fields)
         updated = self._store.get(event_id)
-        return ToolResult(ok=True, data={"event": updated.to_dict() if updated else {}, "message": f"Event {event_id} updated."})
 
-    def _delete_event(self, arguments: dict) -> ToolResult:
+        sync_status = "local_only"
+        if updated and updated.attendees:
+            if self._provider:
+                req = IntegrationRequest(
+                    provider_id="calendar",
+                    action="update_attendees",
+                    payload={"event": updated.to_dict()}
+                )
+                res = await self._provider.execute(req)
+                sync_status = "updated" if res.status == IntegrationStatus.DELIVERED else "update_failed"
+            else:
+                sync_status = "simulated_update"
+
+        return ToolResult(ok=True, data={"event": updated.to_dict() if updated else {}, "sync_status": sync_status, "message": f"Event {event_id} updated."})
+
+    async def _delete_event(self, arguments: dict) -> ToolResult:
         event_id = arguments.get("event_id", "")
         deleted = self._store.delete(event_id)
         if deleted:
             return ToolResult(ok=True, data={"message": f"Event {event_id} deleted."})
         return ToolResult(ok=False, data={"error": f"Event {event_id} not found."})
 
-    def _agenda(self, arguments: dict) -> ToolResult:
+    async def _agenda(self, arguments: dict) -> ToolResult:
         date_str = arguments.get("date")
         if date_str:
             try:
@@ -346,7 +377,7 @@ class CalendarTool(Tool):
         events = self._store.list_agenda(date)
         return ToolResult(ok=True, data={"events": [e.to_dict() for e in events], "date": date.isoformat(), "count": len(events)})
 
-    def _conflicts(self, arguments: dict) -> ToolResult:
+    async def _conflicts(self, arguments: dict) -> ToolResult:
         event_id = arguments.get("event_id", "")
         event = self._store.get(event_id)
         if not event:
@@ -355,11 +386,11 @@ class CalendarTool(Tool):
         conflicts = self._store.find_conflicts(event)
         return ToolResult(ok=True, data={"conflicts": [c.to_dict() for c in conflicts], "count": len(conflicts)})
 
-    def _list_events(self, arguments: dict) -> ToolResult:
+    async def _list_events(self, arguments: dict) -> ToolResult:
         events = self._store.list_all()
         return ToolResult(ok=True, data={"events": [e.to_dict() for e in events], "count": len(events)})
 
-    def _recurring(self, arguments: dict) -> ToolResult:
+    async def _recurring(self, arguments: dict) -> ToolResult:
         event_id = arguments.get("event_id", "")
         count = arguments.get("count", 5)
         event = self._store.get(event_id)

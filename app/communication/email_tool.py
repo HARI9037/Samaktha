@@ -15,11 +15,14 @@ from app.tools.framework.models import ToolPermission, ToolPolicy
 log = logging.getLogger(__name__)
 
 
+from app.integrations.contracts import IntegrationProvider, IntegrationRequest, IntegrationStatus, ExternalSubmissionStatus
+
 class EmailTool(Tool):
     """Tool for email communication."""
 
-    def __init__(self) -> None:
+    def __init__(self, integration_provider: IntegrationProvider | None = None) -> None:
         self._sent_history: list[dict] = []
+        self._provider = integration_provider
 
     @property
     def name(self) -> str:
@@ -89,7 +92,7 @@ class EmailTool(Tool):
         elif action == "draft":
             return self._draft(arguments)
         elif action == "send":
-            return self._send(arguments)
+            return await self._send(arguments)
         elif action == "reply":
             return self._reply(arguments)
         elif action == "forward":
@@ -106,37 +109,99 @@ class EmailTool(Tool):
     def _compose(self, args: dict) -> ToolResult:
         return ToolResult(
             ok=True,
-            data={"action": "compose", "recipient": args.get("recipient", ""), "subject": args.get("subject", "")},
+            data={"action": "compose", "recipient": args.get("recipient", ""), "subject": args.get("subject", ""), "body": args.get("body", ""), "status": "drafted", "externally_delivered": False},
         )
 
     def _draft(self, args: dict) -> ToolResult:
         return ToolResult(
             ok=True,
-            data={"action": "draft", "recipient": args.get("recipient", ""), "subject": args.get("subject", "")},
+            data={"action": "draft", "recipient": args.get("recipient", ""), "subject": args.get("subject", ""), "body": args.get("body", ""), "status": "drafted", "externally_delivered": False},
         )
 
-    def _send(self, args: dict) -> ToolResult:
+    async def _send(self, args: dict) -> ToolResult:
+        if self._provider and self._provider.is_configured():
+            request = IntegrationRequest(
+                provider_id="smtp",
+                action="send",
+                payload={"to": args.get("recipient", ""), "subject": args.get("subject", ""), "body": args.get("body", "")}
+            )
+            integration_result = await self._provider.execute(request)
+
+            if integration_result.status == IntegrationStatus.PROVIDER_ACCEPTED:
+                self._sent_history.append({
+                    "recipient": args.get("recipient", ""),
+                    "subject": args.get("subject", ""),
+                    "timestamp": "now",
+                    "status": "provider_accepted",
+                    "message_id": integration_result.external_id,
+                    "submission_status": integration_result.submission_status.value,
+                    "delivery_status": integration_result.delivery_status,
+                })
+                return ToolResult(
+                    ok=True,
+                    data={
+                        "action": "send",
+                        "recipient": args.get("recipient", ""),
+                        "subject": args.get("subject", ""),
+                        "status": "provider_accepted",
+                        "externally_delivered": False,
+                        "message_id": integration_result.external_id,
+                        "submission_status": integration_result.submission_status.value,
+                        "delivery_status": integration_result.delivery_status,
+                    },
+                )
+            elif integration_result.status == IntegrationStatus.DELIVERED:
+                self._sent_history.append({
+                    "recipient": args.get("recipient", ""),
+                    "subject": args.get("subject", ""),
+                    "timestamp": "now",
+                    "status": "delivered",
+                    "message_id": integration_result.external_id,
+                })
+                return ToolResult(
+                    ok=True,
+                    data={"action": "send", "recipient": args.get("recipient", ""), "subject": args.get("subject", ""), "status": "delivered", "externally_delivered": True, "message_id": integration_result.external_id},
+                )
+            elif integration_result.status == IntegrationStatus.SIMULATED:
+                self._sent_history.append({
+                    "recipient": args.get("recipient", ""),
+                    "subject": args.get("subject", ""),
+                    "timestamp": "now",
+                    "status": "simulated",
+                })
+                return ToolResult(
+                    ok=True,
+                    data={"action": "send", "recipient": args.get("recipient", ""), "subject": args.get("subject", ""), "status": "simulated", "externally_delivered": False},
+                )
+            else:
+                return ToolResult(
+                    ok=False,
+                    error=f"Email delivery failed: {', '.join(integration_result.errors)}"
+                )
+
+        # Fallback to simulated if no provider or provider not configured
         entry = {
             "recipient": args.get("recipient", ""),
             "subject": args.get("subject", ""),
             "timestamp": "now",
+            "status": "simulated",
         }
         self._sent_history.append(entry)
         return ToolResult(
             ok=True,
-            data={"action": "send", "recipient": args.get("recipient", ""), "subject": args.get("subject", ""), "status": "sent"},
+            data={"action": "send", "recipient": args.get("recipient", ""), "subject": args.get("subject", ""), "status": "simulated", "externally_delivered": False},
         )
 
     def _reply(self, args: dict) -> ToolResult:
         return ToolResult(
             ok=True,
-            data={"action": "reply", "message_id": args.get("message_id", ""), "body": args.get("body", "")},
+            data={"action": "reply", "message_id": args.get("message_id", ""), "body": args.get("body", ""), "status": "simulated", "externally_delivered": False},
         )
 
     def _forward(self, args: dict) -> ToolResult:
         return ToolResult(
             ok=True,
-            data={"action": "forward", "message_id": args.get("message_id", ""), "recipient": args.get("recipient", "")},
+            data={"action": "forward", "message_id": args.get("message_id", ""), "recipient": args.get("recipient", ""), "status": "simulated", "externally_delivered": False},
         )
 
     def _read(self, args: dict) -> ToolResult:

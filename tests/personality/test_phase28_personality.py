@@ -290,8 +290,11 @@ class _LegacyPlanner:
 class TestPersonalityGambitIntegration:
     def test_planner_records_personality_directive_in_plan(self):
         from app.core.gambit import Planner
+        from app.tools.capability_registry import CapabilityEntry, CapabilityRegistry
 
-        planner = Planner()
+        planner = Planner(capability_registry=CapabilityRegistry([
+            CapabilityEntry(domain="filesystem", tool_id="resolver")
+        ]))
         import asyncio
 
         result = asyncio.run(
@@ -312,8 +315,11 @@ class TestPersonalityGambitIntegration:
 
     def test_planner_without_personality_context_is_unchanged(self):
         from app.core.gambit import Planner
+        from app.tools.capability_registry import CapabilityEntry, CapabilityRegistry
 
-        planner = Planner()
+        planner = Planner(capability_registry=CapabilityRegistry([
+            CapabilityEntry(domain="filesystem", tool_id="resolver")
+        ]))
         import asyncio
 
         result = asyncio.run(
@@ -404,4 +410,3 @@ class TestPersonalityApi:
         assert json.loads(state_path.read_text(encoding="utf-8"))["profile_id"] == (
             DEFAULT_PERSONALITY_ID
         )
-

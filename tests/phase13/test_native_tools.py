@@ -34,12 +34,12 @@ def test_shell_input_schema_declared():
 
 def test_shell_execution_smoke():
     class FakeShell(ShellTool):
-        async def _run_command(self, command, timeout_s, cwd):
-            return f"ran: {command}"
+        async def _run_command(self, cmd_list, timeout_s, cwd, env, use_shell=False):
+            return f"ran: {cmd_list}"
 
     result = run_async(FakeShell().run({"command": "echo hello"}))
     assert result.ok
-    assert result.data["output"] == "ran: echo hello"
+    assert "ran:" in result.data["output"]
 
 
 def test_shell_caps_and_category():

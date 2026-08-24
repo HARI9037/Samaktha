@@ -76,14 +76,17 @@ async def test_openrouter_missing_key_safely():
 
 def test_provider_settings_loads_groq_config():
     os.environ["SAMAKTHA_GROQ_API_KEY"] = "test-groq-key"
-    os.environ["SAMAKTHA_GROQ_MODEL"] = "llama-3.3-70b-versatile"
+    os.environ["SAMAKTHA_GROQ_MODEL"] = "openai/gpt-oss-120b"
+    os.environ["SAMAKTHA_GROQ_BASE_URL"] = "https://api.groq.com/openai/v1"
 
     settings = ProviderSettings()
     assert settings.groq_api_key == "test-groq-key"
-    assert settings.groq_model == "llama-3.3-70b-versatile"
+    assert settings.groq_model == "openai/gpt-oss-120b"
+    assert settings.groq_base_url == "https://api.groq.com/openai/v1"
 
     del os.environ["SAMAKTHA_GROQ_API_KEY"]
     del os.environ["SAMAKTHA_GROQ_MODEL"]
+    del os.environ["SAMAKTHA_GROQ_BASE_URL"]
 
 
 def test_provider_settings_loads_openrouter_config():

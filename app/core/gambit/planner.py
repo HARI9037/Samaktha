@@ -24,6 +24,7 @@ from app.core.gambit.task_decomposer import TaskDecomposer
 from app.core.gambit.plan_builder import PlanBuilder
 from app.tools.capability_registry import CapabilityRegistry
 from app.tools.framework import ToolSelector
+from app.tools.framework.validator import ToolValidator
 from app.intelligence.planning import (
     AdaptivePlanningPolicy,
     ExplainabilityEngine,
@@ -48,6 +49,8 @@ class _CapabilityRegistryView:
     def list_tools(self) -> list[SimpleNamespace]:
         tools: list[SimpleNamespace] = []
         for entry in self._registry.entries():
+            if not entry.tool_id or not self._registry.is_installed(entry.domain):
+                continue
             tools.append(
                 SimpleNamespace(
                     info=SimpleNamespace(
@@ -85,6 +88,7 @@ class Planner:
         self._failure_patterns = FailurePatternLibrary()
         self._adaptive_policy = AdaptivePlanningPolicy()
         self._planning_metrics = PlanningMetricsCollector()
+        self._tool_validator = ToolValidator()
 
     def _resolve_tool_ids(self, tasks: list[PlanTask]) -> None:
         """Fill in concrete tool ids for capability-based tool tasks.
@@ -104,6 +108,37 @@ class Planner:
             if selected is not None:
                 metadata["tool"] = selected
                 log.info("Planner resolved capability %s -> tool %s", domain or capability, selected)
+
+    def _tool_input_errors(self, tasks: list[PlanTask]) -> list[str]:
+        """Validate resolved plan inputs against the production ToolRegistry."""
+        source = self._capability_registry.source_registry
+        if source is None:
+            return []
+        errors: list[str] = []
+        for task in tasks:
+            if task.execution_action_type != "tool":
+                continue
+            tool_id = task.metadata.get("tool")
+            if not tool_id:
+                errors.append("tool: no registered implementation resolved")
+                continue
+            info = source.info_for(tool_id)
+            if info is None or not info.available:
+                errors.append(f"{tool_id}: registered implementation unavailable")
+                continue
+            action = str(task.metadata.get("action") or "")
+            if info.supported_actions and action not in info.supported_actions:
+                errors.append(f"{tool_id}: unsupported action '{action}'")
+                continue
+            arguments = dict(task.metadata.get("args") or {})
+            if action:
+                arguments.setdefault("action", action)
+            errors.extend(
+                self._tool_validator.validate_arguments(
+                    tool_id, arguments, info.input_schema
+                )
+            )
+        return errors
 
     @staticmethod
     def _personality_directive(personality_context: dict) -> str:
@@ -227,12 +262,26 @@ class Planner:
                 required_capability=required_domain,
             )
 
+        if goal.missing_arguments:
+            return PlannerResult(
+                status=PlannerStatus.NEEDS_INPUT,
+                required_capability=required_domain,
+                missing_arguments=list(goal.missing_arguments),
+            )
+
         # Capability is available (or not required) — build the full plan.
         skill_matches = await self._skill_registry.search(goal.raw_request)
         tasks = self._task_decomposer.decompose(goal, skill_matches)
         if planning_context is not None:
             tasks = self._plan_optimizer.optimize(tasks, planning_context)
         self._resolve_tool_ids(tasks)
+        input_errors = self._tool_input_errors(tasks)
+        if input_errors:
+            return PlannerResult(
+                status=PlannerStatus.NEEDS_INPUT,
+                required_capability=required_domain,
+                missing_arguments=input_errors,
+            )
 
         used_skill_ids: list[str] = []
         used_skill_names: list[str] = []

@@ -50,10 +50,12 @@ class ContextEngine:
         )
         memories = await self._retrieve_memories(request.memory_keys)
         system_context = self._build_system_context(
+            system_prompt=request.system_prompt,
             phase=request.workflow_phase,
             summary=request.summary,
         )
         model_messages = self._build_model_messages(
+            system_context=system_context,
             compressed_memory=compressed_memory,
             memories=memories,
             recent_messages=recent_messages,
@@ -66,6 +68,9 @@ class ContextEngine:
             retrieved_memories=memories,
             workflow_context={"phase": request.workflow_phase or ""},
             model_messages=model_messages,
+            visible_memory_ids=list(request.visible_memory_ids),
+            conversation_message_count=len(request.messages),
+            truncated_message_count=len(older_messages),
         )
 
     @staticmethod
@@ -91,8 +96,14 @@ class ContextEngine:
         return textwrap.shorten(combined, width=width, placeholder="...")
 
     @staticmethod
-    def _build_system_context(phase: str | None, summary: str | None) -> str:
+    def _build_system_context(
+        system_prompt: str | None,
+        phase: str | None,
+        summary: str | None,
+    ) -> str:
         parts = []
+        if system_prompt and system_prompt.strip():
+            parts.append(system_prompt.strip())
         if phase:
             parts.append(f"Current phase: {phase}.")
         if summary:
@@ -119,11 +130,20 @@ class ContextEngine:
 
     @staticmethod
     def _build_model_messages(
+        system_context: str,
         compressed_memory: str,
         memories: list[MemoryRecord],
         recent_messages: list[ConversationMessage],
     ) -> list[ConversationMessage]:
         model_messages: list[ConversationMessage] = []
+        if system_context:
+            model_messages.append(
+                ConversationMessage(
+                    role=MessageRole.SYSTEM,
+                    content=system_context,
+                    metadata={"context_source": "prompt_composer"},
+                )
+            )
         if compressed_memory:
             model_messages.append(
                 ConversationMessage(

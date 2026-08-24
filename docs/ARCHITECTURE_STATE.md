@@ -1,163 +1,128 @@
 # Architecture State
 
-## Executive Summary
+## Status
 
-Samaktha Core concludes Phase 10A, wiring the deterministic Personality vertical
-slice (Phase 9.1–9.5) and Session Memory (Phase 10.1) into the production
-orchestration path. The architecture definitively separates planning,
-coordination, execution, governance, and communication into completely isolated
-subsystems. The Personality Engine is a permanent, co-equal first-class
-subsystem: it decides **how** Samaktha behaves and communicates, never what it
-plans, governs, or executes. The composed system prompt is now the single prompt
-source for all text-generation tasks; the legacy raw `memory_context` string is
-removed from the runtime path.
+Samaktha 0.5.0 has completed the P0–P14 engineering-convergence baseline and is
+ready for a private controlled pilot. This document describes executable
+production composition, not roadmap subsystems or historical phase intent.
 
-## Current Architecture
+## Production composition
 
-The architecture strictly enforces an execution pipeline separated by discrete
-contracts (`app.core.contracts`). No subsystem is permitted to bypass its defined
-scope. The contracts layer remains fully decoupled from runtime implementations,
-guaranteeing zero circular dependencies. All subsystem dependencies point
-inwards to `contracts`.
+`app.core.app.create_orchestrator()` owns the canonical composition:
 
-## Subsystem Responsibilities
+```text
+Interface
+  → ExecutionCoordinator
+  → SamakthaOrchestrator
+  → CAP
+  → GAMBIT
+  → WorkflowEngine
+  → Router
+  → RuntimeEngine
+      → ProviderExecutor → ProviderManager → Provider
+      → ToolExecutor → ToolSecurityEnforcer → ToolManager → Tool
+  → Memory / Evidence / Checkpoints
+```
 
-- **CAP (Cognitive Alignment and Policy):** The absolute governance boundary.
-  Evaluates the risk and privacy of actions.
-- **GAMBIT (Goal-directed Autonomous Meaning and Behavioral Intent Translator):**
-  The planning, reflection, and learning engine. Generates execution plans,
-  extracts reusable skills from execution traces, and injects retrieved skills
-  into future plans. It has no direct access to tools, providers, or memory
-  modification beyond safe API boundaries.
-- **Personality Engine:** The communication boundary. Deterministically
-  transforms a single request into a structured evaluation — identity and
-  greeting classification (9.1), a memory-visibility gate (9.2), a behavior
-  decision (9.3), and a composed system prompt (9.4). It never reasons, never
-  plans, never governs, never writes to memory, never selects models, and never
-  invokes tools. A deterministic reflection engine (9.5) observes completed
-  interactions read-only.
-- **Workflow:** The coordination engine. Transforms GAMBIT plans into sequential
-  execution steps. Operates deterministically without autonomous loops.
-- **Runtime:** The execution engine. Executes `RuntimeTask` definitions by
-  invoking the appropriate Managers. Does not manage tool lifecycles, select
-  providers, or perform any cognitive tasks.
-- **Router:** The selection engine. Routes runtime executions to the most
-  appropriate provider/model combination deterministically.
-- **ProviderManager:** The absolute entry point for all provider invocations,
-  equipped with resilient retries, cooldowns, and performance tracking.
-- **ToolManager:** The canonical, metered execution boundary for all tool
-  operations, standardizing execution and tracking.
-- **Memory (MemoryManager):** Cognitive storage system and lifecycle owner.
-  Responsible for persisting learned skills, managing decay, deprecation,
-  archival, and duplicate merging.
-- **Memory Controller:** Read/write facade and lifecycle manager over
-  `MemoryManager` (deletion by id/type, consolidation, preference resolution,
-  promotion). Backed by the SQLite store.
-- **Session Memory (Phase 10.1):** Deterministic, structured, temporary
-  conversational knowledge (current task, project context, temporary decisions).
-  Strictly separate from long-term memory; never promoted automatically.
+The API, CLI/TUI, and voice adapter converge on this lifecycle. Runtime batch
+and parallel scheduling remain internal infrastructure and preserve per-task
+permit validation.
 
-## Execution Pipeline
+## Boundaries and responsibilities
 
-1. **Orchestrator** receives the user request and provisions a `RuntimeContext`
-   and `ExecutionTrace`.
-2. **ContextEngine** retrieves necessary conversation and memory history.
-3. **Personality Engine** evaluates the request against retrieved memories
-   (visibility gate + behavior decision); the **Prompt Composer** emits the
-   composed `system_prompt`.
-4. **GAMBIT Planner** retrieves relevant, ACTIVE skills from Memory and
-   deterministically injects them into an `ExecutionPlan`.
-5. **CAP** audits the plan for privacy and policy violations, halting execution
-   if blocked.
-6. **WorkflowEngine** sequences the approved plan into tasks, injecting the
-   composed `system_prompt` into text-generation tasks.
-7. **Router** determines the execution provider for each task.
-8. **Runtime** executes the tasks sequentially through the **ProviderManager**
-   and **ToolManager** using the composed `system_prompt`.
-9. **GAMBIT ReflectionEngine, Phase 8.2 Memory Formation, and the Personality
-   ReflectionEngine** analyze the trace to extract `SkillCandidate`s, form
-   observations, and produce a reflection report — persisted to Memory.
-10. **Orchestrator** returns a `RuntimeResult` to the user interface.
+- **ExecutionCoordinator** owns user-visible lifecycle state: start, wait,
+  approval, cancel, result, inspection, and recovery.
+- **CAP** evaluates policy/risk, obtains human decisions where required, and
+  issues the signed final `ExecutionPermit` bound to the exact operation.
+- **GAMBIT** parses goals and creates deterministic plans. It cannot invoke
+  providers or tools.
+- **ContextEngine / PreparedContext** form the single provider-context boundary
+  from normalized conversation, visible memory, personality, and completed tool
+  evidence.
+- **WorkflowEngine** coordinates tasks and approval pauses without becoming an
+  execution authority.
+- **Router** selects compatible provider/model pairs under typed privacy and
+  local-only constraints.
+- **RuntimeEngine** validates permits and dispatches the two canonical
+  executors.
+- **ProviderExecutor** serializes validated prepared context and delegates to
+  `ProviderManager`; fallback cannot escape execution-location policy.
+- **ToolExecutor** delegates only after permit/governance validation and applies
+  `ToolSecurityEnforcer` before `ToolManager` invokes a registered tool.
+- **Memory/session stores** enforce principal, session, and workspace scope.
+- **EvidenceStore** records correlated, sanitized authorization, routing,
+  execution, and outcome events.
+- **CheckpointStore / recovery** integrity-protect execution state and prevent
+  unsafe replay of unknown non-idempotent effects.
+- **PluginManager** owns discovery and explicit lifecycle only. Enabled trusted
+  plugins register adapters into the canonical ToolRegistry and do not gain an
+  alternate execution path.
 
-## Architecture Invariants
+## Architectural invariants
 
-- CAP is the sole governance boundary.
-- GAMBIT only plans, reflects, and learns.
-- Personality only communicates — it never reasons, plans, governs, selects
-  models, invokes tools, or writes to memory.
-- Personality output is deterministic: given identical inputs, a byte-identical
-  directive is produced (no LLM, no embeddings, no remote calls, no randomness).
-- Workflow only coordinates.
-- Runtime only executes.
-- Router only selects.
-- Memory owns skill persistence and lifecycle management (not GAMBIT).
-- Session Memory owns temporary conversational state (never promoted).
-- ProviderManager is the sole provider execution entry point.
-- ToolManager is the sole tool execution entry point.
-- ModelRegistry is the canonical metadata source.
-- No direct GAMBIT → Memory dependency for modification.
-- No `app.core.contracts` → `app.runtime` dependency.
-- No unmetered bypasses exist for tool or provider execution.
-- No circular imports.
+1. Models and planners may propose actions but cannot execute them.
+2. Every user-reachable provider/tool task enters Runtime with a valid signed
+   permit bound to the exact principal and operation.
+3. A valid approved permit is not subjected to a second human approval for the
+   same operation; mismatched, expired, tampered, or invalid permits are denied.
+4. Runtime exposes exactly two canonical executor types: provider and tool.
+5. Every tool action passes through ToolExecutor and ToolSecurityEnforcer.
+6. Generated prose is not execution evidence and cannot fabricate success.
+7. Local-only and privacy constraints survive routing, retry, and fallback.
+8. PreparedContext is the authoritative model-message contract.
+9. Memory access is explicitly scoped before retrieval, caching, or writeback.
+10. Recovery cannot automatically replay an uncertain non-idempotent effect.
+11. Scheduled reminder firing obtains fresh authorization and re-enters Runtime.
+12. Plugin discovery never enables code; PluginManager is not execution
+    authority.
+13. Evidence and diagnostics sanitize secrets and user content by default.
+14. Frozen/disconnected future subsystems may not become production paths
+    without updating architecture guards and the production composition.
 
-## Observability
+## Capability truth
 
-- **ExecutionReport**: Synthesizes the end-to-end task workflow (success/failure,
-  duration, generated results, errors, diagnostic metadata).
-- **ExecutionTrace**: High-resolution, hierarchical timeline recording engine
-  (`TimelineEvent`) embedded throughout the execution stack.
-- **Metrics**: Real-time, strictly deterministic, in-memory telemetry gathered by
-  decoupled components, including `SkillMetricsCollector` to track skill
-  lifecycle health.
-- **PipelineState**: Captures per-request `personality_evaluation`,
-  `prompt_composition`, and `reflection_report` alongside the execution plan.
+The production `ToolRegistry` and product capability registry, not class
+existence, determine user-visible support. The controlled pilot currently treats
+filesystem as production-ready; memory and personal-information tools as local
+only; internet/provider work as conditional on configuration; shell as an
+advanced governed capability; email/message delivery as simulated or explicitly
+limited; plugins as engineering-only; document extraction as internal; and
+browser/media as unavailable.
 
-## Testing
+See `docs/pilot/PILOT_SCOPE.md` for the complete matrix.
 
-The system currently boasts a robust 883-test regression suite ensuring stable
-execution. Tests strictly target architectural integrity, boundary preservation,
-deterministic cognitive behavior, persistent memory deletion, session memory,
-and the production personality wiring — without mimicking autonomous behavior.
+## Reliability and observability
 
-## Current Metrics
-- **Phase 10A Completion**: 100%
-- **Failing Tests**: 0
-- **Total Tests**: 883
-- **Critical Issues**: 0
+- ExecutionCoordinator state and signed checkpoints support pause/restart and
+  recovery.
+- Unknown mutations are not automatically replayed.
+- Evidence uses correlated execution, permit, operation, principal, and outcome
+  identities and persists independently of checkpoints.
+- Runtime capacity, retries, timeouts, cancellation, and retention are bounded.
+- Diagnostics are read-only; explicit export contains sanitized aggregate data
+  and performs no upload.
 
-## Phase 9 Achievements (Personality Engine)
+## Verification baseline
 
-- **9.1 Identity & Greeting**: Deterministic `IdentityPolicy` and
-  `GreetingPolicy` with structured decisions.
-- **9.2 Memory Visibility**: `MemoryVisibilityPolicy` + rule detectors gate which
-  memories may surface; greeting turns expose zero memories.
-- **9.3 Behavior Engine**: Deterministic feature extraction and policy
-  evaluators producing a structured `BehaviorDecision` (no tone-in-prompts).
-- **9.4 Prompt Composer**: Deterministic section builders (`prompt_sections.py`)
-  emitting the composed `system_prompt` — the single prompt source.
-- **9.5 Reflection Engine**: Deterministic feature extraction and reflection
-  report models, observed read-only after interactions.
+Canonical P14 acceptance, Python 3.14.5:
 
-## Phase 10 Achievements
+```text
+2851 passed
+0 failed
+0 skipped
+149 warnings
+```
 
-- **10.1 Session Memory**: `SessionManager` with structured models, a
-  deterministic store, and an index; wired through `create_orchestrator`.
-- **10A Production Runtime Integration**: The personality vertical slice is wired
-  into the orchestrator (`personality_engine` / `prompt_composer` /
-  `reflection_engine`); composed `system_prompt` injected into runtime
-  text-generation tasks; `delete_session` session_id injection; CAP
-  `delete*` action normalization; persistent memory deletion paths verified;
-  `ProviderExecutor` prefers the composed prompt; the raw `memory_context`
-  string is removed from the runtime path.
+Relevant maintained gates include 115 architecture tests, 145 adversarial
+security tests, 112 production tests, 159 stress tests, 150 plugin tests, and 27
+pilot-readiness tests.
 
-## Final Architecture Status (v0.10)
+## Transitional and excluded systems
 
-Samaktha Core represents the finalized foundational architecture. All invariant
-boundaries (CAP, GAMBIT, Personality, Workflow, Runtime, Memory) are strictly
-enforced and thoroughly covered by automated tests. The Personality Engine is
-fully integrated into production routing, execution, and reflection.
+`AgentPlanner`, `MultimodalExecutor`, `ToolChainExecutor`, and
+`CommunicationManager` are not canonical user execution paths. Runtime-parallel
+workers are canonical infrastructure, not a second runtime. Plugins are excluded
+from the initial user cohort despite their maintained engineering lifecycle.
 
-## Phase 10B Entry Point
-
-Phase 10B continues production-facing work on top of the integrated personality
-and session-memory foundation.
+Historical phase documents under `docs/` record earlier designs and do not
+supersede this file.

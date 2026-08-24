@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.memory.session_index import SessionIndex
+from app.core.contracts.memory import DEFAULT_LOCAL_PRINCIPAL_ID
 from app.memory.session_models import (
     Session,
     SessionHistoryEntry,
@@ -244,6 +245,9 @@ class SessionManager:
         title: str = "",
         tags: list[str] | None = None,
         projects: list[str] | None = None,
+        principal_id: str = DEFAULT_LOCAL_PRINCIPAL_ID,
+        workspace_id: str | None = None,
+        profile_id: str | None = None,
     ) -> Session:
         """Create a new session and persist its folder and index entry."""
         with self._lock:
@@ -255,6 +259,9 @@ class SessionManager:
                 raise ValueError(f"session already exists: {resolved_id}")
             metadata = SessionMetadata(
                 session_id=resolved_id,
+                principal_id=principal_id,
+                workspace_id=workspace_id,
+                profile_id=profile_id,
                 created_at=now,
                 updated_at=now,
                 title=title,
@@ -271,7 +278,12 @@ class SessionManager:
     def session_exists(self, session_id: str) -> bool:
         return self._index.contains(session_id)
 
-    def load_session(self, session_id: str) -> Session:
+    def load_session(
+        self,
+        session_id: str,
+        *,
+        principal_id: str = DEFAULT_LOCAL_PRINCIPAL_ID,
+    ) -> Session:
         """Load a session from its folder (cached). Reads JSON only.
 
         Phase 20.2.2: applies schema migration on every load so old sessions
@@ -279,7 +291,31 @@ class SessionManager:
         recoverable data and emits a warning — never raises on a partial read.
         """
         with self._lock:
-            return self._load_session_locked(session_id)
+            session = self._load_session_locked(session_id)
+            self._assert_owner(session, principal_id)
+            return session
+
+    @staticmethod
+    def _assert_owner(session: Session, principal_id: str) -> None:
+        if session.metadata.principal_id != principal_id:
+            raise PermissionError("session is not owned by the requesting principal")
+
+    def resolve_session(
+        self,
+        session_id: str | None,
+        *,
+        principal_id: str = DEFAULT_LOCAL_PRINCIPAL_ID,
+        create_if_missing: bool = True,
+    ) -> Session:
+        """Resolve an owned session; never create an unknown explicit ID."""
+
+        if session_id:
+            if not self.session_exists(session_id):
+                raise KeyError(f"session not found: {session_id}")
+            return self.load_session(session_id, principal_id=principal_id)
+        if not create_if_missing:
+            raise KeyError("session id is required")
+        return self.create_session(principal_id=principal_id)
 
     def _load_session_locked(self, session_id: str) -> Session:
         """Internal load (must be called under self._lock)."""
@@ -536,14 +572,29 @@ class SessionManager:
     # Listing / forgetting
     # ------------------------------------------------------------------
 
-    def list_sessions(self) -> list[SessionMetadata]:
-        """Index metadata for all sessions (never session content)."""
-        return self._index.list_entries()
+    def list_sessions(
+        self,
+        *,
+        principal_id: str = DEFAULT_LOCAL_PRINCIPAL_ID,
+    ) -> list[SessionMetadata]:
+        """Index metadata owned by one principal (never session content)."""
+        return [
+            metadata for metadata in self._index.list_entries()
+            if metadata.principal_id == principal_id
+        ]
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(
+        self,
+        session_id: str,
+        *,
+        principal_id: str = DEFAULT_LOCAL_PRINCIPAL_ID,
+    ) -> bool:
         """Deterministic deletion: folder + index entry + cache entry."""
         with self._lock:
             if not self._index.contains(session_id):
+                return False
+            metadata = self._index.get(session_id)
+            if metadata is None or metadata.principal_id != principal_id:
                 return False
             folder = session_dir(self._base_dir, session_id)
             if folder.exists():

@@ -65,7 +65,7 @@ async def test_runtime_execution_pool_worker_assignment():
     engine = RuntimeEngine(dispatcher, worker_registry=registry)
     
     ctx = RuntimeContext(request_id="req1")
-    task = approved_task(task_id="t1", title="T1", description="desc", action_type="test")
+    task = approved_task(task_id="t1", title="T1", description="desc", action_type="test", subject_id="req1")
     routing = RoutingDecision(provider_id="x", model_id="y", reasoning_summary="z")
 
     # Should assign to w1 in metadata, but run locally because we simulate remote
@@ -93,7 +93,7 @@ async def test_runtime_execution_pool_worker_fallback_failure():
     engine = RuntimeEngine(dispatcher, worker_registry=registry)
     
     ctx = RuntimeContext(request_id="req1")
-    task = approved_task(task_id="t1", title="T1", description="desc", action_type="test", inputs={"fail": True})
+    task = approved_task(task_id="t1", title="T1", description="desc", action_type="test", inputs={"fail": True}, subject_id="req1")
     routing = RoutingDecision(provider_id="x", model_id="y", reasoning_summary="z")
 
     # Task is designed to fail

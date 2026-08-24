@@ -44,8 +44,8 @@ async def test_handle_message_reuses_bus(runtime):
 
 @pytest.mark.asyncio
 async def test_resume_reuses_bus(runtime):
-    # Setup initial state
-    runtime._active_states["session_1"] = AsyncMock()
+    # Presentation keeps only the coordinator's stable execution handle.
+    runtime._session_executions["session_1"] = "missing-test-execution"
     
     bus1 = runtime.get_event_bus("session_1")
     generator = runtime.resume("session_1", "task_id", {})

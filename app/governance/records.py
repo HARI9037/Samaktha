@@ -106,6 +106,9 @@ def build_execution_record(
     status: DecisionStatus,
     permissions: tuple[str, ...] = (),
     error: Optional[str] = None,
+    permit_id: Optional[str] = None,
+    operation_digest: Optional[str] = None,
+    authorization_source: Optional[str] = None,
     recorded_at: Optional[str] = None,
 ) -> ExecutionRecord:
     """Factory for a new (unchained) execution record.
@@ -131,4 +134,7 @@ def build_execution_record(
         status=status,
         permissions=permissions,
         error=error,
+        permit_id=permit_id,
+        operation_digest=operation_digest,
+        authorization_source=authorization_source,
     )

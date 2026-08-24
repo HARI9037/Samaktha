@@ -267,7 +267,7 @@ async def test_resume_without_runtime_restores_input():
     async with _MainHost(runtime=None).run_test() as pilot:
         screen = pilot.app.query_one(MainScreen)
 
-        await screen._submit_resume("task-1", {"permit": {"decision": "allow"}})
+        await screen._submit_resume("task-1", {"approval_decision": "allow"})
 
         conv = screen.query_one("#conversation", ConversationPanel)
         assert any(m.role == "error" for m in conv.messages)

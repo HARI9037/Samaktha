@@ -10,10 +10,15 @@ from app.tools.framework.models import ToolContext, ToolPermission, ToolPolicy
 _TYPE_CHECKS = {
     "string": (str, "string"),
     "int": (int, "integer"),
+    "integer": (int, "integer"),
     "float": (float, "float"),
+    "number": ((int, float), "number"),
     "bool": (bool, "boolean"),
+    "boolean": (bool, "boolean"),
     "list": (list, "list"),
+    "array": (list, "array"),
     "dict": (dict, "object"),
+    "object": (dict, "object"),
 }
 
 
@@ -40,6 +45,19 @@ class ToolValidator:
         if arguments is None:
             arguments = {}
 
+        # Native tools use both the historical flat schema and standard
+        # JSON Schema object/properties/required form. Normalize the latter
+        # without weakening the former.
+        if input_schema.get("type") == "object" and isinstance(
+            input_schema.get("properties"), dict
+        ):
+            required = set(input_schema.get("required") or ())
+            input_schema = {
+                name: {**spec, "required": name in required}
+                for name, spec in input_schema["properties"].items()
+                if isinstance(spec, dict)
+            }
+
         errors: list[str] = []
         for field, spec in input_schema.items():
             if not isinstance(spec, dict):
@@ -63,12 +81,12 @@ class ToolValidator:
                         continue
 
             if expected_type in ("string",) and isinstance(value, str):
-                max_length = spec.get("max_length")
+                max_length = spec.get("max_length", spec.get("maxLength"))
                 if max_length is not None and len(value) > max_length:
                     errors.append(
                         f"{tool_id}: argument '{field}' exceeds max length {max_length}"
                     )
-                min_length = spec.get("min_length")
+                min_length = spec.get("min_length", spec.get("minLength"))
                 if min_length is not None and len(value) < min_length:
                     errors.append(
                         f"{tool_id}: argument '{field}' below min length {min_length}"
@@ -79,11 +97,11 @@ class ToolValidator:
                         f"{tool_id}: argument '{field}' must be one of {enum_values}"
                     )
 
-            if expected_type in ("int", "float") and isinstance(value, (int, float)) and not isinstance(value, bool):
-                minimum = spec.get("min")
+            if expected_type in ("int", "integer", "float", "number") and isinstance(value, (int, float)) and not isinstance(value, bool):
+                minimum = spec.get("min", spec.get("minimum"))
                 if minimum is not None and value < minimum:
                     errors.append(f"{tool_id}: argument '{field}' below minimum {minimum}")
-                maximum = spec.get("max")
+                maximum = spec.get("max", spec.get("maximum"))
                 if maximum is not None and value > maximum:
                     errors.append(f"{tool_id}: argument '{field}' above maximum {maximum}")
 

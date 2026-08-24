@@ -636,9 +636,13 @@ class TestExecutorIntegration:
         assert result.status == TaskStatus.FAILED
         assert "governance_rollback" not in result.metadata
 
-    async def test_provider_executor_governance_blocked(self):
+    async def test_provider_executor_does_not_request_second_approval(self):
+        calls = 0
+
         class DenyingProviderManager:
             async def execute_provider(self, **kwargs):
+                nonlocal calls
+                calls += 1
                 raise AssertionError("must not run")
 
         engine = GovernanceEngine()
@@ -656,9 +660,12 @@ class TestExecutorIntegration:
             routing,
         )
         assert result.status == TaskStatus.FAILED
-        assert result.metadata.get("governance_blocked") is True
+        assert result.metadata.get("governance_blocked") is not True
+        assert calls == 1
         assert len(engine.records) == 1
-        assert engine.records.last().status == DecisionStatus.APPROVAL_REQUIRED
+        assert engine.records.last().status == DecisionStatus.FAILED
+        assert engine.records.last().permit_id is not None
+        assert engine.records.last().decision == "allow"
 
     async def test_provider_executor_allowed_without_rule(self):
         class OkProviderManager:

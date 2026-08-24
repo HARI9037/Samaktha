@@ -35,53 +35,40 @@ def _source(module) -> str:
 def test_production_runtime_builds_exactly_one_orchestrator():
     source = _source(production_module)
     assert source.count("create_orchestrator()") == 1
-    assert source.count("SamakthaOrchestrator(") == 1
-    assert source.count("bridge = _StreamingRuntimeBridge(") == 1
+    assert "SamakthaOrchestrator(" not in source
+    assert "_StreamingRuntimeBridge" not in source
 
 
 def test_message_and_resume_reuse_the_shared_orchestrator():
     source = _source(production_module)
-    assert "self._orchestrator.run_pipeline" in source
-    assert "self._orchestrator.resume_pipeline" in source
+    assert "self._coordinator.start_execution" in source
+    assert "self._coordinator.submit_approval" in source
     assert "async def handle_message" in source
     assert "async def resume" in source
 
 
 def test_single_orchestrator_serves_message_and_resume():
     """A message and its resume traverse the SAME orchestrator instance."""
-    real_orchestrator = production_module.SamakthaOrchestrator
     real_factory = production_module.create_orchestrator
     constructed: list = []
 
     class RecordingOrchestrator:
-        def __init__(self, *args, **kwargs):
+        def __init__(self):
             constructed.append(self)
-            self._runtime = kwargs.get("runtime")
+            self._runtime = object()
             self.streaming_executor = None
+            self.reminder_scheduler = None
+            self._event_callback = None
 
-        async def run_pipeline(self, request, context):
+        async def run_pipeline(self, request, context, conversation=None):
             return SimpleNamespace(runtime_result=None)
 
         async def resume_pipeline(self, state, context, task_id, updates):
             return state
 
     def _stub_base():
-        return SimpleNamespace(
-            streaming_executor=None,
-            _runtime=None,
-            _context_engine=None,
-            _planner=None,
-            _router=None,
-            _workflow_engine=None,
-            _policy_engine=None,
-            _approval_engine=None,
-            memory_manager=None,
-            memory_controller=None,
-            session_manager=None,
-            conversation_state_manager=None,
-        )
+        return RecordingOrchestrator()
 
-    production_module.SamakthaOrchestrator = RecordingOrchestrator
     production_module.create_orchestrator = _stub_base
     try:
         runtime = production_module.ProductionAgentRuntime()
@@ -94,13 +81,13 @@ def test_single_orchestrator_serves_message_and_resume():
 
         async def main():
             await consume(runtime.handle_message("session-a", "hello"))
-            state = runtime._active_states["session-a"]
+            execution_id = runtime.active_execution_id("session-a")
             await consume(runtime.resume("session-a", "task-1", {}))
-            assert state is runtime._active_states["session-a"]
+            assert execution_id == runtime.active_execution_id("session-a")
+            assert runtime._coordinator._orchestrator is runtime._orchestrator
 
         asyncio.run(main())
     finally:
-        production_module.SamakthaOrchestrator = real_orchestrator
         production_module.create_orchestrator = real_factory
 
     assert len(constructed) == 1

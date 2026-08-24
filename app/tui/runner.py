@@ -6,6 +6,7 @@ import logging
 import sys
 
 from app.tui.app import SamakthaApp
+from app.bootstrap import run_bootstrap
 
 log = logging.getLogger(__name__)
 
@@ -40,10 +41,13 @@ def run_tui(runtime=None) -> None:
     """Launch the TUI with the production runtime by default."""
     import importlib
 
+    # P11.3 — Run bootstrap before starting
+    run_bootstrap()
+
     provider_mod = importlib.import_module("app.providers")
     settings = provider_mod.ProviderSettings()
     if settings.groq_enabled and settings.groq_api_key:
-        log.info("Groq Ready")
+        log.info("Groq Ready | model=%s base_url=%s", settings.groq_model, settings.groq_base_url)
     else:
         log.warning("Groq API key missing")
     if runtime is None:

@@ -467,11 +467,19 @@ class TestProvider(CommunicationProvider):
 
     Records every sent message so tests can assert on delivery without any
     external dependency. Health is always true once connected.
+
+    DEPRECATED in P10: Use IntegrationRegistry and TestIntegrationProvider instead.
     """
 
     __test__ = False
 
     def __init__(self) -> None:
+        import warnings
+        warnings.warn(
+            "TestProvider is deprecated. Use TestIntegrationProvider.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._sent: list[CommunicationResult] = []
         self._seq = 0
 

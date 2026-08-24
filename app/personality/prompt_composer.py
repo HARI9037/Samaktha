@@ -49,6 +49,7 @@ class PromptComposer:
         *,
         cap_context: CapContextView | None = None,
         conversation_metadata: ConversationMetadataView | None = None,
+        include_current_task: bool = True,
     ) -> PromptComposition:
         """Build one system prompt from structured personality data.
 
@@ -63,7 +64,10 @@ class PromptComposer:
             evaluation.visible_memories,
             evaluation.visibility_summary,
         )
-        task = build_task_section(evaluation.message)
+        # Compatibility callers may still request the legacy task section.
+        # Canonical production places the current request once as a USER
+        # message in PreparedContext and calls with include_current_task=False.
+        task = build_task_section(evaluation.message) if include_current_task else ""
 
         sections = (identity, behavior, context, memory, task)
         system_prompt = "\n\n".join(section for section in sections if section)

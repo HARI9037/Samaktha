@@ -138,14 +138,17 @@ class ContactsStore:
         return None
 
 
+from app.integrations.contracts import IntegrationProvider, IntegrationRequest, IntegrationStatus
+
 class ContactsTool(Tool):
     @property
     def name(self) -> str:
         return "contacts"
     """Tool for managing contacts with CRUD, search, and vCard support."""
 
-    def __init__(self, db_path: str | None = None) -> None:
+    def __init__(self, db_path: str | None = None, integration_provider: IntegrationProvider | None = None) -> None:
         self._store = ContactsStore(db_path=db_path)
+        self._provider = integration_provider
         self._capabilities = ["contact_create", "contact_read", "contact_update", "contact_delete", "contact_search", "contact_list", "contact_lookup", "contact_import", "contact_export"]
 
     @property
@@ -204,27 +207,27 @@ class ContactsTool(Tool):
         action = arguments.get("action", "list")
 
         if action == "create":
-            return self._create_contact(arguments)
+            return await self._create_contact(arguments)
         elif action == "read":
-            return self._read_contact(arguments)
+            return await self._read_contact(arguments)
         elif action == "update":
-            return self._update_contact(arguments)
+            return await self._update_contact(arguments)
         elif action == "delete":
-            return self._delete_contact(arguments)
+            return await self._delete_contact(arguments)
         elif action == "search":
-            return self._search_contacts(arguments)
+            return await self._search_contacts(arguments)
         elif action == "list":
-            return self._list_contacts(arguments)
+            return await self._list_contacts(arguments)
         elif action == "lookup":
-            return self._lookup_contact(arguments)
+            return await self._lookup_contact(arguments)
         elif action == "import":
-            return self._import_vcard(arguments)
+            return await self._import_vcard(arguments)
         elif action == "export":
-            return self._export_vcard(arguments)
+            return await self._export_vcard(arguments)
         else:
             return ToolResult(ok=False, data={"error": f"Unknown action: {action}"})
 
-    def _create_contact(self, arguments: dict) -> ToolResult:
+    async def _create_contact(self, arguments: dict) -> ToolResult:
         contact_id = str(uuid.uuid4())[:8]
         name = arguments.get("name", "Unknown")
         contact = Contact(
@@ -237,16 +240,29 @@ class ContactsTool(Tool):
             notes=arguments.get("notes", ""),
         )
         self._store.create(contact)
-        return ToolResult(ok=True, data={"contact": contact.to_dict(), "message": f"Contact '{name}' created."})
 
-    def _read_contact(self, arguments: dict) -> ToolResult:
+        sync_status = "local_only"
+        if self._provider:
+            req = IntegrationRequest(
+                provider_id="contacts",
+                action="sync_contact",
+                payload={"contact": contact.to_dict()}
+            )
+            res = await self._provider.execute(req)
+            sync_status = "synced" if res.status == IntegrationStatus.DELIVERED else "sync_failed"
+        else:
+            sync_status = "simulated_sync"
+
+        return ToolResult(ok=True, data={"contact": contact.to_dict(), "sync_status": sync_status, "message": f"Contact '{name}' created."})
+
+    async def _read_contact(self, arguments: dict) -> ToolResult:
         contact_id = arguments.get("contact_id", "")
         contact = self._store.get(contact_id)
         if not contact:
             return ToolResult(ok=False, data={"error": f"Contact {contact_id} not found."})
         return ToolResult(ok=True, data={"contact": contact.to_dict()})
 
-    def _update_contact(self, arguments: dict) -> ToolResult:
+    async def _update_contact(self, arguments: dict) -> ToolResult:
         contact_id = arguments.get("contact_id", "")
         contact = self._store.get(contact_id)
         if not contact:
@@ -255,25 +271,50 @@ class ContactsTool(Tool):
         update_fields = {k: v for k, v in arguments.items() if k not in ("action", "contact_id")}
         self._store.update(contact_id, **update_fields)
         updated = self._store.get(contact_id)
-        return ToolResult(ok=True, data={"contact": updated.to_dict() if updated else {}, "message": f"Contact {contact_id} updated."})
 
-    def _delete_contact(self, arguments: dict) -> ToolResult:
+        sync_status = "local_only"
+        if updated:
+            if self._provider:
+                req = IntegrationRequest(
+                    provider_id="contacts",
+                    action="sync_contact",
+                    payload={"contact": updated.to_dict()}
+                )
+                res = await self._provider.execute(req)
+                sync_status = "synced" if res.status == IntegrationStatus.DELIVERED else "sync_failed"
+            else:
+                sync_status = "simulated_sync"
+
+        return ToolResult(ok=True, data={"contact": updated.to_dict() if updated else {}, "sync_status": sync_status, "message": f"Contact {contact_id} updated."})
+
+    async def _delete_contact(self, arguments: dict) -> ToolResult:
         contact_id = arguments.get("contact_id", "")
         deleted = self._store.delete(contact_id)
         if deleted:
-            return ToolResult(ok=True, data={"message": f"Contact {contact_id} deleted."})
+            sync_status = "local_only"
+            if self._provider:
+                req = IntegrationRequest(
+                    provider_id="contacts",
+                    action="delete_contact",
+                    payload={"contact_id": contact_id}
+                )
+                res = await self._provider.execute(req)
+                sync_status = "deleted" if res.status == IntegrationStatus.DELIVERED else "delete_failed"
+            else:
+                sync_status = "simulated_delete"
+            return ToolResult(ok=True, data={"message": f"Contact {contact_id} deleted.", "sync_status": sync_status})
         return ToolResult(ok=False, data={"error": f"Contact {contact_id} not found."})
 
-    def _search_contacts(self, arguments: dict) -> ToolResult:
+    async def _search_contacts(self, arguments: dict) -> ToolResult:
         query = arguments.get("query", "")
         results = self._store.search(query)
         return ToolResult(ok=True, data={"contacts": [c.to_dict() for c in results], "count": len(results)})
 
-    def _list_contacts(self, arguments: dict) -> ToolResult:
+    async def _list_contacts(self, arguments: dict) -> ToolResult:
         contacts = self._store.list_all()
         return ToolResult(ok=True, data={"contacts": [c.to_dict() for c in contacts], "count": len(contacts)})
 
-    def _lookup_contact(self, arguments: dict) -> ToolResult:
+    async def _lookup_contact(self, arguments: dict) -> ToolResult:
         email = arguments.get("email")
         phone = arguments.get("phone")
         if email:
@@ -287,7 +328,7 @@ class ContactsTool(Tool):
             return ToolResult(ok=True, data={"contact": contact.to_dict()})
         return ToolResult(ok=False, data={"error": "Contact not found."})
 
-    def _import_vcard(self, arguments: dict) -> ToolResult:
+    async def _import_vcard(self, arguments: dict) -> ToolResult:
         vcard_data = arguments.get("vcard_data", "")
         if not vcard_data:
             return ToolResult(ok=False, data={"error": "vcard_data is required"})
@@ -313,7 +354,7 @@ class ContactsTool(Tool):
         self._store.create(contact)
         return ToolResult(ok=True, data={"contact": contact.to_dict(), "message": f"vCard imported: {name or 'Unknown'}"})
 
-    def _export_vcard(self, arguments: dict) -> ToolResult:
+    async def _export_vcard(self, arguments: dict) -> ToolResult:
         contact_id = arguments.get("contact_id", "")
         contact = self._store.get(contact_id)
         if not contact:

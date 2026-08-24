@@ -18,9 +18,28 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from app.plugins.models import PluginManifest
+from app.plugins.models import MAX_MANIFEST_BYTES, PluginManifest
 
 log = logging.getLogger(__name__)
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON field: {key}")
+        result[key] = value
+    return result
+
+
+def _load_manifest(path: Path) -> PluginManifest:
+    if path.stat().st_size > MAX_MANIFEST_BYTES:
+        raise ValueError("Plugin manifest exceeds the configured size limit.")
+    data = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_keys,
+    )
+    return PluginManifest.model_validate(data)
 
 
 class DiscoveryError(RuntimeError):
@@ -50,9 +69,8 @@ class PluginDiscovery:
         seen: set[str] = set()
         for path in self.find_manifest_files(directory):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                manifest = PluginManifest.model_validate(data)
-            except (json.JSONDecodeError, OSError, ValueError, TypeError) as exc:
+                manifest = _load_manifest(path)
+            except (json.JSONDecodeError, OSError, UnicodeError, ValueError, TypeError) as exc:
                 log.warning("PluginDiscovery: skipping %s: %s", path, exc)
                 continue
             if manifest.key in seen:
@@ -70,9 +88,8 @@ class PluginDiscovery:
         seen: set[str] = set()
         for path in self.find_manifest_files(directory):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                manifest = PluginManifest.model_validate(data)
-            except (json.JSONDecodeError, OSError, ValueError, TypeError) as exc:
+                manifest = _load_manifest(path)
+            except (json.JSONDecodeError, OSError, UnicodeError, ValueError, TypeError) as exc:
                 log.warning("PluginDiscovery: skipping %s: %s", path, exc)
                 continue
             if manifest.key in seen:

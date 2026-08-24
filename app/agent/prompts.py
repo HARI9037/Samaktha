@@ -36,6 +36,12 @@ Usage::
     msg = CAPABILITY_UNAVAILABLE_MESSAGE.format(capability="Email")
 """
 
+CAPABILITY_NEEDS_INPUT_MESSAGE: str = (
+    "More information is required before this action can run.\n"
+    "Missing: {missing}"
+)
+"""Returned without provider execution when a tool route lacks user input."""
+
 CAP_DENY_MESSAGE: str = (
     "Request cancelled.\nPermission denied by user."
 )

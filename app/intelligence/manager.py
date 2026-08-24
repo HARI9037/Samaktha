@@ -8,6 +8,7 @@ from app.intelligence.learning import LearningEngine, LearningProposal
 from app.intelligence.planning import FailurePatternLibrary, PlanningContext
 from app.intelligence.reflection import ReflectionEngine, ReflectionSummary
 from app.intelligence.retrieval import RetrievalEngine
+from app.core.contracts.memory import MemoryAccessContext
 
 
 @dataclass
@@ -27,11 +28,23 @@ class IntelligenceManager:
     })
     intelligence_version: str = "17.0.1"
 
-    def retrieve(self, query: str, *, session_id: str | None = None, top_k: int = 10) -> ContextBundle:
-        return self.retrieval_engine.assemble_context(query, session_id=session_id, top_k=top_k)
+    def retrieve(
+        self, query: str, *, session_id: str | None = None, top_k: int = 10,
+        access_context: MemoryAccessContext | None = None,
+    ) -> ContextBundle:
+        return self.retrieval_engine.assemble_context(
+            query, session_id=session_id, top_k=top_k,
+            access_context=access_context,
+        )
 
-    def assemble_context(self, query: str, *, session_id: str | None = None, top_k: int = 10) -> ContextBundle:
-        return self.retrieve(query, session_id=session_id, top_k=top_k)
+    def assemble_context(
+        self, query: str, *, session_id: str | None = None, top_k: int = 10,
+        access_context: MemoryAccessContext | None = None,
+    ) -> ContextBundle:
+        return self.retrieve(
+            query, session_id=session_id, top_k=top_k,
+            access_context=access_context,
+        )
 
     def reflect(self, execution_report: Any) -> ReflectionSummary:
         return self.reflection_engine.reflect(execution_report)
@@ -48,8 +61,12 @@ class IntelligenceManager:
         *,
         session_id: str | None = None,
         top_k: int = 10,
+        access_context: MemoryAccessContext | None = None,
     ) -> PlanningContext:
-        bundle = self.retrieve(query, session_id=session_id, top_k=top_k)
+        bundle = self.retrieve(
+            query, session_id=session_id, top_k=top_k,
+            access_context=access_context,
+        )
         confidence = {
             "retrieval": bundle.confidence,
             "reasoning": 0.5 if bundle.evidence else 0.0,

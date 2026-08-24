@@ -120,7 +120,7 @@ def read_json(path: Path) -> object | None:
 # ---------------------------------------------------------------------------
 
 # Current schema version — must match session_models.CURRENT_SCHEMA_VERSION.
-_CURRENT_SCHEMA_VERSION = 1
+_CURRENT_SCHEMA_VERSION = 2
 
 # Deterministic defaults for every field added after the initial schema.
 # Maps  schema_version → {field_name: default_value}.
@@ -146,6 +146,12 @@ _METADATA_FIELD_DEFAULTS: dict[int, dict[str, object]] = {
         "message_count": 0,
         "schema_version": 1,
     },
+    2: {
+        "principal_id": "local-default",
+        "workspace_id": None,
+        "profile_id": None,
+        "schema_version": 2,
+    },
 }
 
 _MEMORY_FIELD_DEFAULTS: dict[int, dict[str, object]] = {
@@ -153,6 +159,9 @@ _MEMORY_FIELD_DEFAULTS: dict[int, dict[str, object]] = {
         "entries": [],
         "history": [],
         "next_turn_number": 1,
+    },
+    2: {
+        "schema_version": 2,
     },
 }
 

@@ -202,3 +202,61 @@ def test_tool_result_carries_evidence_metadata() -> None:
         assert "/tmp/evidence.py" in metadata.files_created
 
     asyncio.run(run_test())
+
+
+def test_tool_failure_outcome_metadata_controls_safe_retry() -> None:
+    """A tool can prove pre-effect failure without Runtime inventing it."""
+    from app.runtime.reliability import RetryPolicy
+    from app.tools import ToolInfo
+    from app.tools.base import Tool, ToolResult
+
+    class PreEffectFailureTool(Tool):
+        name = "pre_effect_probe"
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.effects = 0
+
+        async def run(self, arguments: dict) -> ToolResult:
+            self.calls += 1
+            if self.calls == 1:
+                return ToolResult(
+                    ok=False,
+                    error="connection reset before effect",
+                    metadata={"operation_outcome": "failed_before_effect"},
+                )
+            self.effects += 1
+            return ToolResult(ok=True, data={"effects": self.effects})
+
+    async def run_test() -> None:
+        probe = PreEffectFailureTool()
+        tools = ToolRegistry()
+        tools.register(
+            probe.name,
+            probe,
+            ToolInfo(tool_id=probe.name, description="retry probe"),
+        )
+        runtimes = RuntimeRegistry()
+        runtimes.register("tool", ToolExecutor(ToolManager(tools)))
+        engine = RuntimeEngine(
+            RuntimeDispatcher(runtimes),
+            retry_policy=RetryPolicy(
+                max_attempts=2,
+                initial_delay_s=0,
+                max_delay_s=0,
+            ),
+        )
+        task = approved_task(
+            task_id="tool-pre-effect-retry",
+            action_type="tool",
+            subject_id="request-1",
+            metadata={"tool": probe.name},
+            inputs={"action": "mutate", "operation": "one"},
+        )
+        result = await engine.run(runtime_context(), task, routing_decision())
+        assert result.status == TaskStatus.COMPLETED
+        assert result.metadata["retry_count"] == 1
+        assert probe.calls == 2
+        assert probe.effects == 1
+
+    asyncio.run(run_test())

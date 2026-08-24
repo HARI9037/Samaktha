@@ -1,82 +1,31 @@
-import asyncio
-
 import pytest
 
-from app.agent.production import _StreamingRuntimeBridge
-from app.core.contracts import RoutingDecision, RuntimeContext, RuntimeResult, RuntimeTask
+import app.agent.production as production
+from app.core.contracts import RuntimeResult
 from app.core.contracts.planning import TaskStatus
-from app.core.contracts.streaming import StreamChunk, StreamEventType
-from tests.conftest import approved_task
 
 
 @pytest.mark.asyncio
-async def test_streaming_bridge_emits_structured_tool_event_without_stringifying():
-    queue = asyncio.Queue()
-    output = {
-        "path": "C:/Users/user/Desktop",
-        "items": [{"name": "Folder", "type": "folder", "size": 0}],
-        "count": 1,
-    }
-
-    class Runtime:
-        async def run(self, context, task, routing):
-            return RuntimeResult(
-                task_id=task.task_id,
-                status=TaskStatus.COMPLETED,
-                output=output,
-            )
-
-    bridge = _StreamingRuntimeBridge(Runtime(), streaming_executor=None, output_queue=queue)
-
-    await bridge.run(
-        RuntimeContext(request_id="test"),
-        RuntimeTask(
-            task_id="tool-task",
-            title="List",
-            description="List desktop",
-            action_type="tool",
-            metadata={"action": "list"},
-        ),
-        RoutingDecision(provider_id="", model_id="", reasoning_summary="tool"),
-    )
-
-    event = await queue.get()
-
-    assert event["type"] == "tool"
-    assert event["action"] == "list"
-    assert event["content"] == output
-    assert isinstance(event["content"], dict)
-
-
-@pytest.mark.asyncio
-async def test_streaming_bridge_buffers_tokens_and_returns_joined_content():
-    queue = asyncio.Queue()
-
-    class Streaming:
-        async def stream_execute(self, request, context):
-            for i, piece in enumerate(["PDF", " summary", " of", " NOR.pdf"]):
-                yield StreamChunk(
-                    stream_id="stream",
-                    event_type=StreamEventType.TOKEN,
-                    content=piece,
-                    timestamp=0,
-                    sequence_number=i,
-                )
-
-    bridge = _StreamingRuntimeBridge(real_runtime=None, streaming_executor=Streaming(), output_queue=queue)
-
-    result = await bridge.run(
-        RuntimeContext(request_id="test"),
-        approved_task(
+async def test_production_tui_buffers_canonical_runtime_result(monkeypatch):
+    class State:
+        runtime_result = RuntimeResult(
             task_id="provider-task",
-            title="Read",
-            description="Read NOR.pdf",
-            action_type="text_generation",
-            inputs={"prompt": "read NOR.pdf"},
-        ),
-        RoutingDecision(provider_id="mock", model_id="mock-model", reasoning_summary="provider"),
-    )
+            status=TaskStatus.COMPLETED,
+            output={"content": "canonical output"},
+        )
 
-    assert result.status == TaskStatus.COMPLETED
-    assert result.output == {"content": "PDF summary of NOR.pdf"}
-    assert queue.empty()
+    class Orchestrator:
+        _runtime = object()
+        streaming_executor = object()
+        reminder_scheduler = None
+        _event_callback = None
+
+        async def run_pipeline(self, user_input, context, conversation=None):
+            return State()
+
+    monkeypatch.setattr(production, "create_orchestrator", Orchestrator)
+    runtime = production.ProductionAgentRuntime()
+
+    events = [event async for event in runtime.handle_message("s1", "hello")]
+
+    assert events == [{"type": "provider", "content": "canonical output"}]

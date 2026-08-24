@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from app.core.contracts.planning import GoalComplexity, RouterRequest
+from app.core.contracts.policy import ExecutionLocation
 from app.router import (
     CapabilityRegistry,
     ModelRouter,
@@ -65,7 +66,7 @@ def _make_router_registry() -> RouterRegistry:
     return RouterRegistry([
         ProviderModelRegistration(provider_id="mock", model_id="mock-model", capabilities=["text_generation"]),
         ProviderModelRegistration(provider_id="openai", model_id="gpt-4o-mini", capabilities=["text_generation", "code_generation"]),
-        ProviderModelRegistration(provider_id="local", model_id="llama3", capabilities=["text_generation"]),
+        ProviderModelRegistration(provider_id="local", model_id="llama3", capabilities=["text_generation"], execution_location=ExecutionLocation.LOCAL),
     ])
 
 

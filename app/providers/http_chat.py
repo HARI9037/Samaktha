@@ -143,8 +143,9 @@ class OpenAICompatibleChatClient:
             return
 
         prompt = str(payload.get("prompt", ""))
+        model_id = str(payload.get("model") or payload.get("model_id") or self._model_id)
         body = {
-            "model": payload.get("model") or payload.get("model_id") or self._model_id,
+            "model": model_id,
             "messages": payload.get("messages") or [{"role": "user", "content": prompt}],
             "stream": True,
         }
@@ -159,7 +160,19 @@ class OpenAICompatibleChatClient:
                 headers=self._headers(),
                 json=body,
             ) as response:
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    error_body = await response.aread()
+                    error_text = ""
+                    try:
+                        error_data = json.loads(error_body)
+                        error_text = error_data.get("error", {}).get("message", "") or str(error_data)
+                    except (json.JSONDecodeError, AttributeError):
+                        error_text = error_body.decode("utf-8", errors="replace")[:500]
+                    raise httpx.HTTPStatusError(
+                        f"{self._display_name} stream error {response.status_code}: {error_text}",
+                        request=response.request,
+                        response=response,
+                    )
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
                         continue
