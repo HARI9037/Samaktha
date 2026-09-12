@@ -38,10 +38,15 @@ from app.runtime.safety import run_with_instance_guard
 
 
 def _run_tui() -> None:
+    from app.setup.first_run import FirstRunCoordinator
+
+    paths = get_application_paths()
+    first_run = FirstRunCoordinator(paths=paths)
+    if first_run.setup_required() and not first_run.launch_setup():
+        return
     # Suppress library-level stdout messages that would corrupt the TUI.
     os.environ["PYMUPDF_SUGGEST_LAYOUT_ANALYZER"] = "0"
 
-    paths = get_application_paths()
     paths.log_root.mkdir(parents=True, exist_ok=True)
     log_file = paths.log_root / "samaktha-tui.log"
     logging.basicConfig(
@@ -143,29 +148,26 @@ def _cmd_bootstrap_status() -> int:
 
 
 def _cmd_doctor(*, export: bool = False) -> int:
-    """Run the deterministic diagnostics sweep and return a health exit code."""
-    from app.diagnostics import SystemDiagnostics, render_report
+    """Run shared setup diagnostics without mutating runtime/security state."""
+    from app.diagnostics import read_only_diagnostic_report, render_report
 
-    base = None
-    settings = None
-    try:
-        runtime = _build_runtime()
-        base = getattr(runtime, "_base", None)
-        settings = getattr(base, "provider_settings", None)
-    except Exception as exc:  # noqa: BLE001 - CLI surface; fall back to config-level
-        print(f"warning: runtime diagnostics unavailable ({exc})", file=sys.stderr)
-    report = SystemDiagnostics(
-        settings=settings,
-        orchestrator=base,
-    ).run()
+    report = read_only_diagnostic_report()
     print(render_report(report))
     if export:
         from app.diagnostics import export_safe_diagnostic_bundle
 
-        bundle_path = export_safe_diagnostic_bundle(report, orchestrator=base)
+        bundle_path = export_safe_diagnostic_bundle(report, orchestrator=None)
         print(f"\nDiagnostic bundle written locally: {bundle_path}")
         print("No diagnostic data was uploaded.")
     return 1 if report.is_critical() else 0
+
+
+def _cmd_setup() -> int:
+    """Open the re-runnable first-run configuration wizard."""
+    from app.setup.first_run import FirstRunCoordinator
+
+    completed = FirstRunCoordinator().launch_setup()
+    return 0 if completed else 1
 
 
 def _cmd_version() -> int:
@@ -255,6 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write a sanitized local diagnostic JSON bundle",
     )
+    subparsers.add_parser("setup", help="configure Samaktha and validate capabilities")
     subparsers.add_parser("version", help="print the canonical project version")
 
     bootstrap = subparsers.add_parser("bootstrap", help="initialize first-run state")
@@ -336,6 +339,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return run_with_instance_guard(
             "doctor", namespace, _cmd_doctor, export=namespace.export
         )
+    if command == "setup":
+        return run_with_instance_guard("setup", namespace, _cmd_setup)
     if command == "version":
         return run_with_instance_guard("version", namespace, _cmd_version)
     if command == "personality":

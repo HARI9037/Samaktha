@@ -10,7 +10,9 @@ always yields an identical ordering.
 from __future__ import annotations
 
 import re
+import hashlib
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.internet.models import SearchConfidence, SearchResponse, SearchResult
 from app.internet.policy import SearchPolicy
@@ -55,23 +57,45 @@ class ResultRanker:
         different domains are independent corroborating sources and survive,
         which is exactly what the verifier needs.
         """
-        best: dict[tuple[str, str], SearchResult] = {}
+        selected: list[SearchResult] = []
         for result in response.results:
             if not result.url:
                 continue
-            dedup_key = (
-                self._normalize_title(result.title),
-                (result.domain or "").lower(),
-            )
+            canonical_url = self._canonical_url(result.url)
             score = round(self._score(result, response.query), 6)
             candidate = result.model_copy(update={"score": score})
-            existing = best.get(dedup_key)
-            if existing is None or score > (existing.score or 0.0):
-                best[dedup_key] = candidate
+            duplicate_index = next(
+                (
+                    index
+                    for index, existing in enumerate(selected)
+                    if self._canonical_url(existing.url) == canonical_url
+                    or (
+                        self._normalize_title(existing.title)
+                        == self._normalize_title(result.title)
+                        and existing.domain.casefold() == result.domain.casefold()
+                    )
+                ),
+                None,
+            )
+            if duplicate_index is None:
+                selected.append(candidate)
+            elif score > (selected[duplicate_index].score or 0.0):
+                selected[duplicate_index] = candidate
 
-        ranked = list(best.values())
+        ranked = selected
         ranked.sort(key=lambda r: (-(r.score or 0.0), r.url))
         ranked = ranked[: max(1, self._policy.max_results)]
+        ranked = [
+            result.model_copy(
+                update={
+                    "rank": index,
+                    "source_id": hashlib.sha256(
+                        self._canonical_url(result.url).encode("utf-8")
+                    ).hexdigest()[:16],
+                }
+            )
+            for index, result in enumerate(ranked, start=1)
+        ]
 
         return response.model_copy(
             update={
@@ -177,6 +201,25 @@ class ResultRanker:
     def _normalize_title(title: str) -> str:
         stripped = re.sub(r"[^\w\s]", " ", (title or "").strip().lower())
         return re.sub(r"\s+", " ", stripped).strip()
+
+    @staticmethod
+    def _canonical_url(url: str) -> str:
+        """Stable attribution URL with fragments and tracking removed."""
+        parsed = urlsplit(url.strip())
+        query = urlencode(
+            [
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if not key.casefold().startswith("utm_")
+                and key.casefold() not in {"fbclid", "gclid"}
+            ]
+        )
+        path = parsed.path or "/"
+        if path != "/":
+            path = path.rstrip("/")
+        return urlunsplit(
+            (parsed.scheme.casefold(), parsed.netloc.casefold(), path, query, "")
+        )
 
     @staticmethod
     def confidence_label(score: float) -> SearchConfidence:

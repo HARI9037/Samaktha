@@ -583,6 +583,34 @@ class SessionManager:
             if metadata.principal_id == principal_id
         ]
 
+    def previous_session(
+        self,
+        *,
+        current_session_id: str | None,
+        principal_id: str = DEFAULT_LOCAL_PRINCIPAL_ID,
+        workspace_id: str | None = None,
+        profile_id: str | None = None,
+    ) -> Session | None:
+        """Return the newest prior durable session in the exact caller scope.
+
+        The session index is already ordered by ``updated_at`` and
+        ``session_id`` newest-first.  Exact workspace/profile equality keeps
+        the lookup inside the same installation context; the current session
+        is always excluded.
+        """
+
+        for metadata in self.list_sessions(principal_id=principal_id):
+            if metadata.session_id == current_session_id:
+                continue
+            if metadata.workspace_id != workspace_id:
+                continue
+            if metadata.profile_id != profile_id:
+                continue
+            return self.load_session(
+                metadata.session_id, principal_id=principal_id
+            )
+        return None
+
     def delete_session(
         self,
         session_id: str,

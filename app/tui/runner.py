@@ -44,16 +44,18 @@ def run_tui(runtime=None) -> None:
     # P11.3 — Run bootstrap before starting
     run_bootstrap()
 
-    provider_mod = importlib.import_module("app.providers")
-    settings = provider_mod.ProviderSettings()
-    if settings.groq_enabled and settings.groq_api_key:
-        log.info("Groq Ready | model=%s base_url=%s", settings.groq_model, settings.groq_base_url)
-    else:
-        log.warning("Groq API key missing")
     if runtime is None:
         from app.agent.production import build_production_runtime
 
         runtime = build_production_runtime()
+    base = getattr(runtime, "_base", None)
+    settings = getattr(base, "provider_settings", None)
+    if settings is not None and settings.groq_enabled and settings.groq_api_key:
+        log.info("Groq Ready | model=%s base_url=%s", settings.groq_model, settings.groq_base_url)
+    elif settings is None:
+        log.warning("Provider settings unavailable on injected runtime")
+    else:
+        log.warning("Groq API key missing")
     _run_startup_diagnostics(runtime)
     app = SamakthaApp(runtime=runtime)
     app.run()

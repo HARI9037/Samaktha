@@ -96,6 +96,7 @@ class FileSystemTool(Tool):
                 await self._internal_unknown_effect_barrier()
                 return ToolResult(ok=True, data={
                     "path": str(target_path), "format": fmt, "written_bytes": written_bytes,
+                    "created": target_path.is_file(),
                 })
             if action in ("list", "list_directory", "ls", "dir"):
                 return self._list(target_path)

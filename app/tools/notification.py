@@ -54,6 +54,10 @@ class NotificationTool(Tool):
 
     category = ToolCategory.SYSTEM
 
+    @staticmethod
+    def backend_available() -> bool:
+        return _PLYER or _WIN10
+
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
         title = str(arguments.get("title", ""))
         message = str(arguments.get("message", ""))

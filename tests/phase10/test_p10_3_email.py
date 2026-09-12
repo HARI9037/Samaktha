@@ -26,8 +26,8 @@ class MockFailingIntegrationProvider(IntegrationProvider):
 
 
 @pytest.mark.asyncio
-async def test_email_tool_simulated_fallback():
-    """Prove that EmailTool without provider defaults to simulated."""
+async def test_email_tool_missing_provider_fails_without_draft_fallback():
+    """Prove that EmailTool without provider never simulates SEND."""
     tool = EmailTool(integration_provider=None)
     result = await tool.run({
         "action": "send",
@@ -36,8 +36,9 @@ async def test_email_tool_simulated_fallback():
         "body": "Hello"
     })
 
-    assert result.ok is True
-    assert result.data["status"] == "simulated"
+    assert result.ok is False
+    assert result.data["action"] == "send"
+    assert result.data["status"] == "unavailable"
     assert result.data["externally_delivered"] is False
 
 

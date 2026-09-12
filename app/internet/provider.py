@@ -1,6 +1,7 @@
 """Phase 12.1 — SearchProvider abstraction.
 
-Every search provider (BraveSearchProvider today, any provider tomorrow) is a
+Every search provider (DDGS by default; SearXNG or Brave when explicitly
+selected) is a
 stateless async adapter that normalizes its raw payload into SearchResponse /
 SearchResult. No planning, ranking, verification or governance logic may live
 in a provider adapter.
@@ -20,7 +21,7 @@ class SearchProvider(ABC):
 
     @abstractmethod
     def is_configured(self) -> bool:
-        """True when the provider holds the credentials it needs."""
+        """True when the provider has the endpoint/credentials it needs."""
         raise NotImplementedError
 
     @abstractmethod

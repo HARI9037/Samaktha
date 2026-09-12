@@ -137,6 +137,9 @@ class DoclingParser(DocumentParser):
         return False
 
     def _is_available(self) -> bool:
+        from app.fileparsers.experimental import docling_enabled
+        if not docling_enabled():
+            return False
         try:
             import docling
             return True
@@ -145,6 +148,9 @@ class DoclingParser(DocumentParser):
 
     def parse(self, path: Path) -> ParseResult:
         logger.info("DoclingParser: START path=%s", path)
+        from app.fileparsers.experimental import docling_enabled
+        if not docling_enabled():
+            return ParseResult(ok=False, error="Experimental Docling is disabled pending native runtime validation.")
         try:
             from docling.document_converter import DocumentConverter
         except ImportError as e:

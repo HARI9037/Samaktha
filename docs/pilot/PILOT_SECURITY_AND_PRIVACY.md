@@ -8,10 +8,10 @@ All user-reachable provider/tool work remains CAP → GAMBIT → Router/Workflow
 
 | Setting group | Classification | Pilot rule |
 |---|---|---|
-| Provider enable/default/model/base URL | User configurable | Configure in the launch process environment; unsupported models fail truthfully. |
-| Provider API credentials | User secret | Process environment only for the pilot. Never place in issues, diagnostics, release artifacts, or committed `.env` files. |
+| Provider enable/default/model/base URL | User configurable | Configure through setup. Environment overrides remain a development compatibility path; unsupported models fail truthfully. |
+| Provider API credentials | User secret | Setup uses Windows Credential Manager, with references only in TOML. Blank widgets retain existing secrets; explicit removal is separate. Never place credentials in issues, diagnostics or release artifacts. |
 | Local model URL/model and cloud enable flags | User configurable | Strict local use requires disabling every cloud provider and fallback as documented. Typed P1 constraints remain authoritative per operation. |
-| SMTP credentials | Advanced secret | External email is not enabled in the initial cohort. If engineering-tested, credentials come only from `SMTP_*` environment variables. |
+| SMTP credentials | Advanced secret | Optional experimental setup uses Credential Manager and requires authentication verification. Legacy `SMTP_*` values take precedence but are not proof of verification; use setup for pilot sending. |
 | Filesystem/shell roots | Advanced | Keep defaults unless an operator reviews all corresponding roots. They never remove approval/security checks. |
 | Plugin root | Advanced / initial-pilot excluded | Discovery is metadata-only. No plugin is trusted or enabled by discovery. |
 | Memory/personality behavior | User configurable where exposed | Existing personality CLI only; ownership/scope controls are internal and not user-disableable. |
@@ -21,6 +21,9 @@ All user-reachable provider/tool work remains CAP → GAMBIT → Router/Workflow
 | Mock/dev/internal validation flags | Test only | Not supported in pilot builds or instructions. |
 
 ## Diagnostic privacy contract
+
+The API defaults to `127.0.0.1` and uses the local principal without remote-user
+authentication. It must not be exposed on `0.0.0.0`, a LAN, or the public internet.
 
 `doctor --export` requires an explicit local command. It writes one JSON file under the per-user cache diagnostics directory and performs no upload. It excludes prompts, responses, conversation/memory contents, file and clipboard contents, email/message bodies, raw environment, raw exception detail, raw paths, checkpoint payloads, credentials, and signing material.
 

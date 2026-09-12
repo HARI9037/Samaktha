@@ -38,8 +38,8 @@ def _patch_runtime(monkeypatch, runtime=None, exc=None):
 def _patch_diagnostics(monkeypatch, critical=False):
     report = SimpleNamespace(is_critical=lambda: critical)
     monkeypatch.setattr(
-        "app.diagnostics.SystemDiagnostics",
-        lambda settings, orchestrator: SimpleNamespace(run=lambda: report),
+        "app.diagnostics.read_only_diagnostic_report",
+        lambda: report,
     )
     monkeypatch.setattr(
         "app.diagnostics.render_report", lambda report: "Fake Report"
@@ -91,7 +91,7 @@ class TestCliDispatch:
             action for action in parser._actions
             if isinstance(action, argparse._SubParsersAction)
         )
-        for command in ("tui", "backend", "doctor", "version", "personality"):
+        for command in ("tui", "backend", "doctor", "setup", "version", "personality"):
             assert command in subparsers.choices
 
     def test_personality_requires_subcommand(self):
@@ -158,12 +158,11 @@ class TestCliDoctor:
         _patch_diagnostics(monkeypatch, critical=True)
         assert app.cli.main(["doctor"]) == 1
 
-    def test_doctor_falls_back_when_runtime_unavailable(self, monkeypatch, capsys):
+    def test_doctor_does_not_construct_runtime(self, monkeypatch, capsys):
         _patch_runtime(monkeypatch, exc=RuntimeError("boom"))
         _patch_diagnostics(monkeypatch, critical=False)
         assert app.cli.main(["doctor"]) == 0
-        captured = capsys.readouterr()
-        assert "warning: runtime diagnostics unavailable" in captured.err
+        assert "Fake Report" in capsys.readouterr().out
 
 
 class TestCliPersonality:

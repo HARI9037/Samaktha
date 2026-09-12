@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import re
 from typing import Iterable
 
+from app.core.contracts.memory import MemorySearchEvidence, SessionRecallEvidence
 from app.personality.models import MemoryVisibilitySummary, PersonalityEvaluation, VisibleMemory
 
 
@@ -38,6 +41,90 @@ class ConversationMemorySynthesizer:
         if mode == "milestones":
             return self._milestone_summary(topics)
         return self._topic_summary(evaluation, topics)
+
+    def synthesize_search_evidence(
+        self,
+        evidence: MemorySearchEvidence,
+        *,
+        request: str = "",
+    ) -> str:
+        """Render only fields present in typed durable-memory evidence."""
+
+        count = evidence.record_count
+        if count == 0:
+            return "I couldn't find a stored memory matching that request."
+        noun = "record" if count == 1 else "records"
+        lines = [
+            f"A scoped durable-memory search returned {count} matching {noun}."
+        ]
+        expose_ids = bool(re.search(r"\b(?:id|ids|identifier|identifiers)\b", request.casefold()))
+        for index, record in enumerate(evidence.records, start=1):
+            facts = [record.memory_type]
+            if record.created_at is not None:
+                facts.append(self._timestamp_label(record.created_at, evidence.retrieved_at))
+            label = f"{index}."
+            if expose_ids:
+                label += f" [{record.memory_id}]"
+            lines.append(f"{label} {'; '.join(facts)}")
+            lines.append(f"   {record.content}")
+        return "\n".join(lines)
+
+    def synthesize_session_evidence(
+        self,
+        evidence: SessionRecallEvidence,
+    ) -> str:
+        """Render a prior-session answer without inferred titles or topics."""
+
+        if evidence.session_id is None:
+            return "I couldn't find a previous stored session in the current scope."
+        count = evidence.stored_message_count
+        noun = "message" if count == 1 else "messages"
+        timing = (
+            self._timestamp_label(evidence.updated_at, evidence.retrieved_at)
+            if evidence.updated_at is not None
+            else "with no stored update timestamp"
+        )
+        availability = "only " if evidence.partial else ""
+        lines = [
+            f"I found the previous stored session, {timing}, with "
+            f"{availability}{count} stored {noun}."
+        ]
+        for message in evidence.messages:
+            role = message.role.capitalize() if message.role else "Message"
+            if message.provenance == "generated_summary":
+                role = f"{role} (generated summary)"
+            timestamp = (
+                f" ({message.created_at.isoformat()})"
+                if message.created_at is not None else ""
+            )
+            lines.append(f"- {role}{timestamp}: {message.content}")
+        if not evidence.messages:
+            lines.append("No stored messages are available for that session.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _timestamp_label(value: datetime, retrieved_at: datetime) -> str:
+        """Return an exact timestamp plus deterministic relative age."""
+
+        value = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        retrieved_at = (
+            retrieved_at
+            if retrieved_at.tzinfo
+            else retrieved_at.replace(tzinfo=timezone.utc)
+        )
+        delta = max(0, int((retrieved_at - value).total_seconds()))
+        if delta < 60:
+            relative = "less than a minute ago"
+        elif delta < 3_600:
+            amount = delta // 60
+            relative = f"{amount} minute{'s' if amount != 1 else ''} ago"
+        elif delta < 86_400:
+            amount = delta // 3_600
+            relative = f"{amount} hour{'s' if amount != 1 else ''} ago"
+        else:
+            amount = delta // 86_400
+            relative = f"{amount} day{'s' if amount != 1 else ''} ago"
+        return f"stored at {value.isoformat()} ({relative})"
 
     @staticmethod
     def _detect_mode(message: str) -> str:

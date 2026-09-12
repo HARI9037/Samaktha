@@ -205,6 +205,14 @@ class ExecutionCoordinator:
             resumed.append(record.state.execution_id)
         return resumed
 
+    def active_execution_ids(self) -> set[str]:
+        """Return process-local nonterminal identities for integrity checks."""
+        return {
+            execution_id
+            for execution_id, record in self._executions.items()
+            if not record.state.terminal
+        }
+
     def resolve_session(
         self,
         principal_id: str,

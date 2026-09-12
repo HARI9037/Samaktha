@@ -125,7 +125,7 @@ def _synthesize_capability_result(output: dict) -> str:
             "No external delivery occurred."
         )
     if status == "drafted":
-        return "Draft created locally. No external delivery occurred."
+        return "Email preview prepared. It has not been saved or sent."
     if "sent" in output:
         if output.get("sent") is True:
             return "Notification delivered by the local notification backend."

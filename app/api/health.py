@@ -9,7 +9,9 @@ router = APIRouter(tags=["health"])
 
 
 def get_provider_settings() -> ProviderSettings:
-    return ProviderSettings()
+    from app.config.runtime_config import resolve_provider_settings
+
+    return resolve_provider_settings()
 
 
 @router.get("/health", response_model=HealthResponse)

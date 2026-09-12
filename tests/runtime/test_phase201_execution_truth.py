@@ -92,6 +92,47 @@ def test_succeeded_report_with_only_text_generation_does_not_claim_execution():
     assert "cannot claim" in text.lower()
 
 
+def test_provider_only_pdf_or_base64_claim_is_rejected():
+    report = ExecutionReport(
+        plan_id="plan-pdf",
+        success=True,
+        execution_state=ExecutionTruthState.SUCCEEDED,
+        executed_tasks=["provider-1"],
+        provider_results=[{"task_id": "provider-1", "status": "completed"}],
+        approval_status="approved",
+        started_at=datetime.now(timezone.utc),
+    )
+    for claim in (
+        "I generated the PDF and attached it.",
+        "data:application/pdf;base64,ZmFrZQ==",
+    ):
+        text = enforce_execution_truth(claim, report)
+        assert "no artifact is available" in text.lower()
+
+
+def test_pdf_claim_requires_matching_existing_runtime_path(tmp_path):
+    artifact = tmp_path / "verified.pdf"
+    artifact.write_bytes(b"%PDF-1.4\n%%EOF")
+    report = ExecutionReport(
+        plan_id="plan-pdf",
+        success=True,
+        execution_state=ExecutionTruthState.SUCCEEDED,
+        executed_tasks=["tool-1"],
+        tool_results=[
+            {
+                "task_id": "tool-1",
+                "status": "completed",
+                "output": {"path": str(artifact), "written_bytes": artifact.stat().st_size},
+                "metadata": {"tool": "filesystem", "action": "write"},
+            }
+        ],
+        approval_status="approved",
+        started_at=datetime.now(timezone.utc),
+    )
+    claim = "I generated the PDF and saved it."
+    assert enforce_execution_truth(claim, report) == claim
+
+
 def test_tool_result_that_deleted_nothing_is_not_success():
     report = ExecutionReport(
         plan_id="plan-1",

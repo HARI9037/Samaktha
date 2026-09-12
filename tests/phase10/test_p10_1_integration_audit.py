@@ -1,11 +1,11 @@
 """P10.1 — Real External Integrations: Pre-P10 Audit and Behavior Freeze.
 
 These tests prove the baseline state BEFORE P10 external integrations are wired:
-1. Email send returns simulated, externally_delivered=False
+1. Email send without SMTP fails truthfully and is never downgraded to draft
 2. Message send returns simulated, externally_delivered=False
 3. Calendar/Contacts are LOCAL_ONLY
 4. CommunicationManager is a DISCONNECTED execution bypass (not reachable via ToolExecutor)
-5. CapabilityRegistry correctly categorizes these as SIMULATED / LOCAL_ONLY
+5. CapabilityRegistry correctly categorizes these as LOCAL_ONLY / SIMULATED
 """
 
 import pytest
@@ -19,8 +19,8 @@ from app.tools.registry import ToolRegistry
 
 
 @pytest.mark.asyncio
-async def test_email_tool_is_simulated():
-    """Prove EmailTool defaults to SIMULATED and does not perform real delivery."""
+async def test_email_tool_send_is_unavailable_without_smtp():
+    """Prove missing SMTP never fabricates a send or silently drafts."""
     tool = EmailTool()
 
     result = await tool.run({
@@ -30,8 +30,9 @@ async def test_email_tool_is_simulated():
         "body": "Hello",
     })
 
-    assert result.ok
-    assert result.data.get("status") == "simulated"
+    assert not result.ok
+    assert result.data.get("action") == "send"
+    assert result.data.get("status") == "unavailable"
     assert result.data.get("externally_delivered") is False
 
 
@@ -74,10 +75,10 @@ async def test_capability_registry_truth(tmp_path):
 
     registry = orchestrator.tool_registry
 
-    # Email should be SIMULATED
+    # Email offers local drafting; external send fails until SMTP setup.
     email_info = registry.info_for("email")
     assert email_info is not None
-    assert email_info.execution_mode == CapabilityAvailability.SIMULATED
+    assert email_info.execution_mode == CapabilityAvailability.LOCAL_ONLY
 
     # Message should be SIMULATED
     message_info = registry.info_for("message")

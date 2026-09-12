@@ -72,6 +72,11 @@ from app.personality.style_controller import (
     UNCERTAIN_MEMORY_VARIANTS,
 )
 from app.runtime.execution_truth import enforce_execution_truth
+from app.core.contracts.memory import (
+    MemoryRecallIntent,
+    MemorySearchEvidence,
+    SessionRecallEvidence,
+)
 
 CREATOR_IDENTITY_TEXT = (
     "I was designed and built by Sreehari R Nair as part of the Samaktha project."
@@ -272,6 +277,8 @@ class ResponseFormatter:
         previous_opening: str | None = None,
         sources: list[dict] | None = None,
         execution_report: dict | None = None,
+        memory_intent: MemoryRecallIntent | str | None = None,
+        memory_evidence: dict | MemorySearchEvidence | SessionRecallEvidence | None = None,
     ) -> str:
         """Format the raw provider response for the user.
 
@@ -292,6 +299,16 @@ class ResponseFormatter:
         """
         intent = _coerce_intent(conversation_intent)
         evaluation = _coerce_evaluation(evaluation)
+
+        if memory_intent is not None:
+            return self._grounded_memory_response(
+                memory_evidence,
+                request=(
+                    memory_evidence.get("query", "")
+                    if isinstance(memory_evidence, dict)
+                    else getattr(memory_evidence, "query", "")
+                ),
+            )
 
         if intent == ConversationIntent.GREETING:
             kind = evaluation.greeting.kind if evaluation is not None else None
@@ -423,6 +440,36 @@ class ResponseFormatter:
         if evaluation.visibility_summary is not None or len(items) > 1:
             return self._synthesizer.synthesize(evaluation, mode="auto")
         return items[0].content
+
+    def _grounded_memory_response(
+        self,
+        evidence: dict | MemorySearchEvidence | SessionRecallEvidence | None,
+        *,
+        request: str = "",
+    ) -> str:
+        """Render historical claims exclusively from typed retrieval evidence."""
+
+        if evidence is None:
+            return UNCERTAIN_MEMORY_TEXT
+        if isinstance(evidence, SessionRecallEvidence):
+            return self._synthesizer.synthesize_session_evidence(evidence)
+        if isinstance(evidence, MemorySearchEvidence):
+            return self._synthesizer.synthesize_search_evidence(
+                evidence, request=request
+            )
+        if isinstance(evidence, dict):
+            try:
+                if "messages" in evidence and "stored_message_count" in evidence:
+                    return self._synthesizer.synthesize_session_evidence(
+                        SessionRecallEvidence.model_validate(evidence)
+                    )
+                return self._synthesizer.synthesize_search_evidence(
+                    MemorySearchEvidence.model_validate(evidence),
+                    request=request,
+                )
+            except Exception:
+                return UNCERTAIN_MEMORY_TEXT
+        return UNCERTAIN_MEMORY_TEXT
 
     @staticmethod
     def _comparison(target: str | None) -> str:

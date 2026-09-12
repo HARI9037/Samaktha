@@ -14,6 +14,7 @@ class CapabilityAvailability(StrEnum):
     SIMULATED = "simulated"
     UNAVAILABLE = "unavailable"
     INTERNAL_ONLY = "internal_only"
+    EXPERIMENTAL = "experimental"
 
 
 class ToolInfo(BaseModel):

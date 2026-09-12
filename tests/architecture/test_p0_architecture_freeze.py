@@ -159,6 +159,15 @@ ALLOWED_PROVIDER_MANAGER_CALLS = {
 # orchestrator, planner, or workflow module is allowed in this inventory.
 ALLOWED_PROVIDER_ADAPTER_CALLS = {
     CallSite(
+        "app.setup.service",
+        "SetupService.test_provider_connection",
+        "provider",
+        "execute",
+    ): AllowedCall(
+        SAFE_INTERNAL,
+        "Explicit setup-only connection probe uses a fixed one-token payload; it cannot execute user requests or tools.",
+    ),
+    CallSite(
         "app.providers.manager",
         "ProviderManager.stream_provider",
         "provider",

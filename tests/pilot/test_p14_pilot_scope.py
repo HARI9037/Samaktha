@@ -21,7 +21,7 @@ def test_pilot_capability_matrix_is_derived_from_production_composition(
         "task": CapabilityAvailability.LOCAL_ONLY,
         "contact": CapabilityAvailability.LOCAL_ONLY,
         "calendar": CapabilityAvailability.LOCAL_ONLY,
-        "email": CapabilityAvailability.SIMULATED,
+        "email": CapabilityAvailability.LOCAL_ONLY,
         "message": CapabilityAvailability.SIMULATED,
     }
 

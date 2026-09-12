@@ -16,12 +16,21 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.internet.brave import BraveSearchProvider
 from app.internet.cache import SearchCache
 from app.internet.fetcher import ContentFetcher
 from app.internet.models import (
+    SearchAuthError,
+    SearchCancelledError,
+    SearchConfigError,
     SearchError,
+    SearchFailureKind,
+    SearchHTTPError,
+    SearchNetworkError,
+    SearchProviderError,
+    SearchRateLimitError,
     SearchResponse,
+    SearchTimeoutError,
+    SearchUnknownError,
     SourceMetadata,
 )
 from app.internet.policy import SearchPolicy
@@ -44,7 +53,7 @@ class InternetTool(Tool):
 
     def __init__(
         self,
-        provider: SearchProvider | None = None,
+        provider: SearchProvider,
         policy: SearchPolicy | None = None,
         cache: SearchCache | None = None,
         ranker: ResultRanker | None = None,
@@ -57,7 +66,7 @@ class InternetTool(Tool):
         max_response_bytes: int = 2_000_000,
         sensitive_header_allowlist: tuple[str, ...] = (),
     ) -> None:
-        self._provider = provider or BraveSearchProvider()
+        self._provider = provider
         self._policy = policy or SearchPolicy()
         self._cache = cache or SearchCache()
         self._ranker = ranker or ResultRanker(self._policy)
@@ -73,6 +82,11 @@ class InternetTool(Tool):
     @property
     def name(self) -> str:
         return "internet"
+
+    @property
+    def provider(self) -> SearchProvider:
+        """The explicitly injected canonical search provider."""
+        return self._provider
 
     # ------------------------------------------------------------------
     # Tool interface
@@ -119,10 +133,16 @@ class InternetTool(Tool):
                 ok=False, error="Query exceeds the maximum allowed length."
             )
         if not self._provider.is_configured():
+            provider_name = str(getattr(self._provider, "name", "") or "").lower()
+            if provider_name == "searxng":
+                guidance = "SearXNG is selected but SAMAKTHA_SEARXNG_URL is not configured."
+            elif provider_name == "brave":
+                guidance = "Brave is selected but SAMAKTHA_BRAVE_API_KEY is not configured."
+            else:
+                guidance = "No internet search provider is configured."
             return ToolResult(
                 ok=False,
-                error="No internet search provider is configured "
-                "(set SAMAKTHA_BRAVE_API_KEY or inject a provider).",
+                error=guidance,
             )
 
         max_results = self._policy.max_results
@@ -147,10 +167,25 @@ class InternetTool(Tool):
                 )
         except SearchError as exc:
             log.info("InternetTool: search failed — category=%s error=%s", category, exc)
-            return ToolResult(ok=False, error=str(exc))
+            return ToolResult(
+                ok=False,
+                error=str(exc),
+                metadata={"failure_type": self._failure_kind(exc).value},
+            )
         except Exception as exc:  # pragma: no cover - defensive boundary
             log.warning("InternetTool: unexpected search failure: %s", exc, exc_info=True)
-            return ToolResult(ok=False, error=f"Search failed: {exc}")
+            return ToolResult(
+                ok=False,
+                error=f"Search failed: {exc}",
+                metadata={"failure_type": SearchFailureKind.UNKNOWN.value},
+            )
+
+        if not response.results:
+            return ToolResult(
+                ok=False,
+                error="Search completed but returned no results.",
+                metadata={"failure_type": SearchFailureKind.EMPTY.value},
+            )
 
         ranked = self._ranker.rank(response)
         verified = self._verifier.verify(ranked)
@@ -213,6 +248,28 @@ class InternetTool(Tool):
             return True
         return "_cap_permit" in arguments
 
+    @staticmethod
+    def _failure_kind(exc: SearchError) -> SearchFailureKind:
+        if isinstance(exc, SearchConfigError):
+            return SearchFailureKind.CONFIGURATION
+        if isinstance(exc, SearchTimeoutError):
+            return SearchFailureKind.TIMEOUT
+        if isinstance(exc, SearchNetworkError):
+            return SearchFailureKind.OFFLINE
+        if isinstance(exc, SearchRateLimitError):
+            return SearchFailureKind.RATE_LIMIT
+        if isinstance(exc, SearchAuthError):
+            return SearchFailureKind.AUTHENTICATION
+        if isinstance(exc, SearchHTTPError):
+            return SearchFailureKind.HTTP
+        if isinstance(exc, SearchProviderError):
+            return SearchFailureKind.MALFORMED
+        if isinstance(exc, SearchCancelledError):
+            return SearchFailureKind.CANCELLED
+        if isinstance(exc, SearchUnknownError):
+            return SearchFailureKind.UNKNOWN
+        return SearchFailureKind.UNKNOWN
+
     def _build_data(
         self,
         response: SearchResponse,
@@ -228,6 +285,8 @@ class InternetTool(Tool):
                 retrieved_at=result.retrieved_at,
                 published_at=result.published_at,
                 confidence=result.confidence,
+                source_id=result.source_id,
+                rank=result.rank,
             ).model_dump()
             for result in response.results
         ]
@@ -241,4 +300,7 @@ class InternetTool(Tool):
             "cached": cached,
             "provider": response.source,
             "verification": verification.model_dump(),
+            "evidence_type": "runtime_search_result",
+            "degraded": bool(response.metadata.get("degraded")),
+            "failed_engines": list(response.metadata.get("failed_engines") or [])[:16],
         }

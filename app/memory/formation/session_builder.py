@@ -85,6 +85,7 @@ class SessionBuilder:
         base_turn_number: int = 0,
         logical_id: str | None = None,
         timestamp: str | None = None,
+        assistant_provenance: str = "assistant_message",
     ) -> list[SessionHistoryEntry]:
         """Convert one conversation turn into two SessionHistoryEntry objects.
 
@@ -161,6 +162,7 @@ class SessionBuilder:
             role="user",
             content=user_message,
             turn_number=base_turn_number,
+            provenance="user_message",
         )
 
         assistant_entry = SessionHistoryEntry(
@@ -175,6 +177,7 @@ class SessionBuilder:
             tool_calls=tool_calls,
             provider=provider,
             runtime_summary=runtime_summary,
+            provenance=assistant_provenance,
         )
 
         return [user_entry, assistant_entry]

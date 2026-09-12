@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased — 0.5.0 Controlled Pilot RC]
 
+### Post-P14 controlled changes
+
+- R1–R6 source reliability: unified resource parsing and pre-approval workspace
+  resolution; exact multiline payloads; evidence-backed empty-file creation;
+  saved-credential setup recovery and explicit removal; truthful unsaved email
+  previews and authentication-gated experimental SMTP. Docling is quarantined
+  after Windows native faults; basic Office readers avoid that stack. Direct
+  runtime dependencies and Windows/Python 3.14 constraints are declared.
+  Real-user acceptance and current-source packaged validation remain pending.
+
+- Made the existing provider-neutral `SearchProvider` composition default to
+  the maintained zero-key DDGS package. DDGS needs no endpoint, API key,
+  Docker service, or background process. SearXNG and Brave remain available
+  only through explicit selection, with no automatic cross-provider fallback.
+- Preserved CAP approval, signed permits, Runtime/ToolExecutor dispatch,
+  ToolSecurityEnforcer, evidence, cache, ranking, verification, and ContentFetcher
+  SSRF controls for web and news operations.
+- Added a bounded DDGS text/news normalization adapter, sanitized typed failure
+  mapping, offline diagnostics, package collection, and exact-production
+  authorization/network-isolation regressions. Runtime remains the sole owner
+  of semantic search retries.
+- Preserved the existing bounded SearXNG HTTP/JSON adapter and Brave keyed
+  adapter as explicit choices.
+- Verified the canonical post-migration suite under Python 3.14.5: 2,979
+  passed, zero failed, zero skipped, and 87 warnings.
+
 ### Engineering convergence
 
 - Converged authorization on CAP-issued, signed execution permits bound to exact

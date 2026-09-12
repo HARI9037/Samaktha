@@ -25,6 +25,8 @@ def _provider(secret: str = "P13_SMTP_PASSWORD") -> SMTPIntegrationProvider:
         "password": secret,
         "use_tls": True,
         "use_ssl": False,
+        "smtp_enabled": True,
+        "auth_verified": True,
     })
 
 

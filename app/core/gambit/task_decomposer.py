@@ -13,6 +13,7 @@ from app.core.contracts.planning import (
     TaskKind,
     TaskStatus,
 )
+from app.core.contracts.memory import MemoryRecallIntent
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class TaskDecomposer:
       READ_RESOURCE     → [UNDERSTAND, tool:resolver(read), EXECUTE_VIA_RUNTIME(text_generation), REFLECT]
                           ResolverTool selects the specific handler (pdf, image, filesystem) after planning.
       LIST_DIRECTORY    → [UNDERSTAND, tool:resolver(list), REFLECT]  — no LLM required
-      SEARCH_MEMORY     → [UNDERSTAND, tool:memory(search), EXECUTE_VIA_RUNTIME, REFLECT]
+      SEARCH_MEMORY     → [UNDERSTAND, tool:memory(read), REFLECT]
       SEARCH_INTERNET   → [UNDERSTAND, tool:internet(search), EXECUTE_VIA_RUNTIME, REFLECT]
       OPERATE_WINDOWS   → [UNDERSTAND, tool:windows(action), REFLECT]
       RUN_COMMAND       → [UNDERSTAND, tool:<shell via capability>, REFLECT]
@@ -70,6 +71,8 @@ class TaskDecomposer:
                 GoalIntent.WRITE_RESOURCE: "write",
             }
             action = action_map[intent]
+            if intent == GoalIntent.WRITE_RESOURCE:
+                action = goal.intent_action or action
             
             # Support multiple paths delimited by | (produced by GoalParser for WRITE_RESOURCE)
             paths = (goal.target_path or "").split("|") if goal.target_path else [""]
@@ -121,7 +124,7 @@ class TaskDecomposer:
             search_task = self._tool_task(
                 title="Search the internet for current information",
                 tool="internet",
-                action="search",
+                action="news" if goal.search_category.value == "news" else "search",
                 args={"query": goal.query or goal.raw_request},
                 goal=goal,
                 dependencies=[prev_id],
@@ -146,28 +149,42 @@ class TaskDecomposer:
             prev_id = llm_task.task_id
 
         elif intent == GoalIntent.SEARCH_MEMORY:
+            recall_intent = goal.memory_intent or MemoryRecallIntent.MEMORY_SEARCH
+            result_ids = list(goal.intent_arguments.get("memory_result_ids", []))
+            if result_ids:
+                action = "retrieve"
+                args = {
+                    "item_ids": result_ids,
+                    "query": goal.raw_request,
+                    "memory_intent": recall_intent.value,
+                }
+            elif recall_intent in {
+                MemoryRecallIntent.LAST_SESSION,
+                MemoryRecallIntent.SESSION_RECALL,
+                MemoryRecallIntent.WORKFLOW_RECALL,
+            }:
+                action = "last_session"
+                args = {
+                    "query": goal.raw_request,
+                    "memory_intent": recall_intent.value,
+                }
+            else:
+                action = "search"
+                args = {
+                    "query": goal.query or goal.raw_request,
+                    "memory_intent": recall_intent.value,
+                }
             mem_task = self._tool_task(
-                title="Search conversation and skill memory",
+                title="Retrieve scoped durable memory evidence",
                 tool="memory",
-                action="search",
-                args={"query": goal.query or goal.raw_request},
+                action=action,
+                args=args,
                 goal=goal,
                 dependencies=[prev_id],
+                policy_action="search",
             )
             tasks.append(mem_task)
             prev_id = mem_task.task_id
-
-            llm_task = self._task(
-                title="Synthesize memory results into response",
-                kind=TaskKind.EXECUTE_VIA_RUNTIME,
-                description="Combine memory results with user request and produce a response.",
-                goal=goal,
-                skills=skill_matches,
-                dependencies=[prev_id],
-            )
-            llm_task.execution_action_type = "text_generation"
-            tasks.append(llm_task)
-            prev_id = llm_task.task_id
 
         elif intent == GoalIntent.DELETE_MEMORY:
             action, args = self._detect_memory_delete(goal)
@@ -262,10 +279,10 @@ class TaskDecomposer:
                 GoalIntent.MANAGE_CONTACT: ("contact", "Manage contact"),
                 GoalIntent.SEARCH_CONTACT: ("contact", "Search contacts"),
                 GoalIntent.MANAGE_CALENDAR: ("calendar", "Manage local calendar"),
-                GoalIntent.SEND_EMAIL: ("email", "Prepare simulated email action"),
-                GoalIntent.READ_EMAIL: ("email", "Read local email simulation state"),
-                GoalIntent.REPLY_EMAIL: ("email", "Prepare simulated email reply"),
-                GoalIntent.FORWARD_EMAIL: ("email", "Prepare simulated email forward"),
+                GoalIntent.SEND_EMAIL: ("email", "Prepare email preview or experimental SMTP submission"),
+                GoalIntent.READ_EMAIL: ("email", "Mailbox read unavailable"),
+                GoalIntent.REPLY_EMAIL: ("email", "Mailbox reply unavailable"),
+                GoalIntent.FORWARD_EMAIL: ("email", "Mailbox forward unavailable"),
                 GoalIntent.SEND_MESSAGE: ("message", "Prepare simulated message action"),
                 GoalIntent.READ_MESSAGES: ("message", "Read local message simulation state"),
                 GoalIntent.SEARCH_MESSAGES: ("message", "Search local message simulation state"),

@@ -37,6 +37,9 @@ def test_tui_logging_uses_bounded_canonical_log_root(
     runner.run_tui = lambda: calls.append("ran")
     monkeypatch.setitem(sys.modules, "app.tui.runner", runner)
     monkeypatch.setattr(cli, "get_application_paths", lambda: paths)
+    monkeypatch.setattr(
+        "app.setup.first_run.FirstRunCoordinator.setup_required", lambda self: False
+    )
     legacy_log = Path.cwd() / "data" / "opencode_debug.log"
     legacy_state = legacy_log.stat() if legacy_log.exists() else None
 

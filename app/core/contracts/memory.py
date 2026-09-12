@@ -41,6 +41,93 @@ class MemoryScope(StrEnum):
     SYSTEM = "system"
 
 
+class MemoryRecallIntent(StrEnum):
+    """Typed read-only memory intent carried through planning and execution."""
+
+    LAST_SESSION = "last_session"
+    SESSION_RECALL = "session_recall"
+    MEMORY_SEARCH = "memory_search"
+    PROFILE_RECALL = "profile_recall"
+    WORKFLOW_RECALL = "workflow_recall"
+    PREFERENCE_RECALL = "preference_recall"
+
+
+class MemoryEvidenceSource(StrEnum):
+    """Durable source that produced a memory-retrieval fact."""
+
+    MEMORY_STORE = "memory_store"
+    SESSION_STORE = "session_store"
+
+
+class MemoryEvidenceRecord(BaseModel):
+    """One scoped record returned by the durable memory store."""
+
+    memory_id: str
+    memory_type: str
+    principal_id: str
+    scope: MemoryScope
+    content: str
+    session_id: str | None = None
+    workspace_id: str | None = None
+    profile_id: str | None = None
+    importance: float | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    provenance: str | None = None
+    source_authority: str | None = None
+
+
+class MemorySearchEvidence(BaseModel):
+    """Typed, count-safe result of one scoped durable-memory lookup."""
+
+    intent: MemoryRecallIntent
+    query: str
+    principal_id: str
+    session_id: str | None = None
+    workspace_id: str | None = None
+    profile_id: str | None = None
+    records: list[MemoryEvidenceRecord] = Field(default_factory=list)
+    source: MemoryEvidenceSource = MemoryEvidenceSource.MEMORY_STORE
+    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def record_count(self) -> int:
+        return len(self.records)
+
+
+class SessionRecallMessage(BaseModel):
+    """One actual message read from durable session history."""
+
+    message_id: str
+    role: str
+    content: str
+    created_at: datetime | None = None
+    turn_number: int
+    provenance: str = "unknown"
+
+
+class SessionRecallEvidence(BaseModel):
+    """Typed result of resolving an exact durable prior session."""
+
+    intent: MemoryRecallIntent
+    principal_id: str
+    current_session_id: str | None = None
+    session_id: str | None = None
+    workspace_id: str | None = None
+    profile_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    stored_message_count: int = 0
+    messages: list[SessionRecallMessage] = Field(default_factory=list)
+    partial: bool = False
+    source: MemoryEvidenceSource = MemoryEvidenceSource.SESSION_STORE
+    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def session_count(self) -> int:
+        return int(self.session_id is not None)
+
+
 class MemoryAccessContext(BaseModel):
     """Identity and clearance required for every production memory operation."""
 

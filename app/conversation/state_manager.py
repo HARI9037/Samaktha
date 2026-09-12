@@ -30,6 +30,7 @@ from app.conversation.conversation_state import (
     record_request,
 )
 from app.conversation.models import ConversationState, ReferenceResolution
+from app.conversation.models import PendingClarification
 from app.conversation.reference_resolver import ReferenceResolver
 
 DEFAULT_SESSION_ID = "default"
@@ -164,3 +165,34 @@ class ConversationStateManager:
         session_id: str | None = None,
     ) -> ConversationState:
         return record_outputs(self.get_state(session_id), outputs)
+
+    def set_pending_clarification(
+        self, pending: PendingClarification
+    ) -> None:
+        state = self.get_state(pending.session_id)
+        state.pending_clarification = pending
+        state.touch()
+
+    def consume_pending_clarification(
+        self, *, principal_id: str, session_id: str
+    ) -> PendingClarification | None:
+        """Consume the matching continuation exactly once.
+
+        Mismatched principals cannot inspect or consume another principal's
+        pending goal. Expired state is removed rather than resurrected.
+        """
+        state = self.get_state(session_id)
+        pending = state.pending_clarification
+        if pending is None:
+            return None
+        if not pending.available_to(principal_id, session_id):
+            if pending.session_id == session_id and (
+                pending.consumed or datetime.now(timezone.utc) >= pending.expires_at
+            ):
+                state.pending_clarification = None
+                state.touch()
+            return None
+        pending.consumed = True
+        state.pending_clarification = None
+        state.touch()
+        return pending

@@ -200,6 +200,7 @@ COMMANDS_REQUIRING_LOCK = {
     "tui",
     "backend",
     "bootstrap",  # bootstrap --force mutates state
+    "setup",
 }
 
 COMMANDS_READ_ONLY = {

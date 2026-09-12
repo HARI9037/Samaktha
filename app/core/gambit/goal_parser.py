@@ -88,7 +88,14 @@ CODE_SIGNALS = (
 
 import logging
 
-from app.core.contracts.planning import Goal, GoalComplexity, GoalIntent
+from app.core.contracts.planning import (
+    FreshnessRequirement,
+    Goal,
+    GoalComplexity,
+    GoalIntent,
+    SearchCategory,
+)
+from app.core.contracts.memory import MemoryRecallIntent
 
 log = logging.getLogger(__name__)
 
@@ -108,9 +115,13 @@ class GoalParser:
     def parse(self, request: str) -> Goal:
         normalized = " ".join(request.split())
         complexity = self.estimate_complexity(normalized)
-        intent, target_path, query = self.detect_intent(normalized)
+        intent, target_path, query = self.detect_intent(request)
+        memory_intent = self.detect_memory_intent(normalized)
         intent_action, intent_arguments, missing_arguments = (
-            self.extract_intent_arguments(intent, normalized)
+            # Preserve user-authored line boundaries for structured payloads
+            # such as ``subject:`` / multiline ``body:`` email fields. Intent
+            # classification remains based on normalized text.
+            self.extract_intent_arguments(intent, request)
         )
         log.info("GoalParser: detect_intent returned intent=%s target_path=%s", intent, target_path)
         requires_long_context = self._contains_any(normalized, LONG_CONTEXT_SIGNALS) or intent == GoalIntent.READ_RESOURCE
@@ -142,11 +153,27 @@ class GoalParser:
             intent_action=intent_action,
             intent_arguments=intent_arguments,
             missing_arguments=missing_arguments,
+            freshness_requirement=(
+                FreshnessRequirement.CURRENT
+                if self._requires_current_evidence(normalized.casefold())
+                else FreshnessRequirement.STABLE
+            ),
+            search_category=(
+                SearchCategory.NEWS
+                if self._is_news_request(normalized.casefold())
+                else SearchCategory.GENERAL
+            ),
+            memory_intent=memory_intent,
         )
 
     @staticmethod
     def detect_intent(request: str) -> tuple[GoalIntent, str | None, str | None]:
         lowered = request.lower()
+        # An explicit file payload is data, even when it mentions other tools.
+        from app.core.gambit.resource_parser import parse_resource_write
+        resource = parse_resource_write(request)
+        if resource is not None:
+            return GoalIntent.WRITE_RESOURCE, "|".join(resource.paths) or None, resource.content
         
         # 1. Path extraction helper
         quoted_path_match = re.search(
@@ -168,6 +195,12 @@ class GoalParser:
         # filesystem tool. Deterministic phrase matching only; no LLM.
         if GoalParser._is_memory_delete(lowered):
             return GoalIntent.DELETE_MEMORY, None, request
+
+        # Durable-memory reads are classified before internet/filesystem
+        # search so "search your memory" cannot fall through to provider
+        # prose or be mistaken for a local file lookup.
+        if GoalParser.detect_memory_intent(request) is not None:
+            return GoalIntent.SEARCH_MEMORY, None, request
 
         # 1c. Internet Intelligence Intent (Phase 12) — evaluated before any
         # filesystem search routing so "search the web for X" never resolves
@@ -247,81 +280,6 @@ class GoalParser:
             return GoalIntent.READ_RESOURCE, extracted_path, None
 
 
-        # 3.5. Write Resource
-        write_keywords = ("create", "write", "save", "make", "generate file", "create file", "write file", "save file")
-        if any(kw in lowered for kw in write_keywords):
-            # Isolate the substring between the write verb and modifiers (with, in, content, text)
-            # This prevents us from accidentally matching paths inside the directory specifier
-            # (e.g. "in C:/Users/...") or the content block (e.g. "Completed Phase 11.5").
-            _verb_re = re.search(
-                r"(?:create|write|save|make|generate file|create file|write file|save file)\s+(?:a\s+|an\s+|the\s+)?(.*?)\s+(?:with|in|content|text|$)", 
-                request, 
-                re.IGNORECASE
-            )
-            _paths = []
-            if _verb_re:
-                _paths_str = _verb_re.group(1)
-                _multi_matches = re.findall(
-                    r"['\"]?([a-zA-Z]:[\\/][^'\",\s]+|/?[^'\",\s]+\.[a-zA-Z0-9]+)['\"]?", 
-                    _paths_str
-                )
-                _paths = [m for m in _multi_matches if m]
-                
-            # Use the first path if multi-match failed but the fallback extracted_path worked
-            if not _paths and extracted_path:
-                _paths = [extracted_path]
-                
-            write_path_str = "|".join(_paths) if _paths else None
-
-            content_match = re.search(r"(?:content|text)\s*(?:of|is|:)?\s*(.*)", request, re.IGNORECASE | re.DOTALL)
-            if content_match:
-                _raw = content_match.group(1).strip()
-                # Only strip a matching outer quote PAIR (e.g. "..." or '...').
-                # Never use .strip("'\"") which greedily eats internal quotes.
-                if len(_raw) >= 2 and _raw[0] in ('"', "'") and _raw[-1] == _raw[0]:
-                    content = _raw[1:-1]
-                else:
-                    content = _raw
-            else:
-                # Fallback: strip the write verb and the target path(s) from the raw
-                # request so the path prefix is never injected into the file body.
-                content = request
-                # Strip leading write verb (e.g. "Create", "Write", "Save")
-                _verb_re = re.compile(
-                    r"^\s*(?:create|write|save|make|generate file|create file|write file|save file)\s+(?:a\s+|an\s+|the\s+)?",
-                    re.IGNORECASE,
-                )
-                content = _verb_re.sub("", content, count=1).strip()
-                # Strip ALL extracted target paths from the start of what remains
-                for p in _paths:
-                    _path_escaped = re.escape(p)
-                    # Strip the path and optional commas/ands
-                    content = re.sub(
-                        r"^\s*(?:and\s+|,\s*)?" + _path_escaped + r"\s*(?:with\s+(?:the\s+)?(?:content|text)?\s*:?\s*)?",
-                        "",
-                        content,
-                        count=1,
-                        flags=re.IGNORECASE,
-                    ).strip()
-                # Strip any remaining leading "with the content/text" preamble
-                content = re.sub(
-                    r"^with\s+(?:the\s+)?(?:content|text)?\s*:?\s*",
-                    "",
-                    content,
-                    count=1,
-                    flags=re.IGNORECASE,
-                ).strip()
-                # Strip surrounding quotes that may wrap the entire content block
-                if len(content) >= 2 and content[0] in ('"', "'") and content[-1] == content[0]:
-                    content = content[1:-1].strip()
-                    
-            # Require strong evidence for WRITE_RESOURCE to prevent generic generation
-            # from being classified as a file creation attempt.
-            strong_keywords = ("create file", "save file", "write to file", "save as", "create document", "write into", "write file")
-            has_strong_keyword = any(kw in lowered for kw in strong_keywords)
-            
-            if write_path_str or has_strong_keyword:
-                return GoalIntent.WRITE_RESOURCE, write_path_str, content
             
         # 4. Directory Listing Intent
         list_keywords = (
@@ -366,6 +324,46 @@ class GoalParser:
         return GoalIntent.ANSWER_QUESTION, None, None
 
     @staticmethod
+    def detect_memory_intent(request: str) -> MemoryRecallIntent | None:
+        """Classify read-only memory requests without consulting a model."""
+
+        lowered = " ".join(request.casefold().split())
+        if re.search(r"\b(?:last|previous)\s+(?:stored\s+)?(?:session|conversation)\b", lowered):
+            if "workflow" in lowered or "continue" in lowered:
+                return MemoryRecallIntent.WORKFLOW_RECALL
+            return MemoryRecallIntent.LAST_SESSION
+        if re.search(r"\b(?:workflow|work)\b.*\b(?:last time|previously|left off)\b", lowered):
+            return MemoryRecallIntent.WORKFLOW_RECALL
+        if re.search(r"\b(?:coding\s+)?preferences?\b", lowered) and re.search(
+            r"\b(?:remember|recall|know|memory|stored)\b", lowered
+        ):
+            return MemoryRecallIntent.PREFERENCE_RECALL
+        if re.search(r"\b(?:what|tell|show)\b.*\b(?:remember|recall|know|stored)\b.*\b(?:about me|profile|my)\b", lowered):
+            return MemoryRecallIntent.PROFILE_RECALL
+        if re.search(
+            r"\b(?:search|find|look up|query|check)\b.*\b(?:your\s+|my\s+)?(?:memory|memories)\b",
+            lowered,
+        ) or re.search(r"\bfind\s+in\s+memory\b", lowered):
+            return MemoryRecallIntent.MEMORY_SEARCH
+        if re.search(r"\b(?:ids?|timestamps?|content)\b.*\b(?:those|these|the)\s+memories\b", lowered):
+            return MemoryRecallIntent.MEMORY_SEARCH
+        if any(
+            phrase in lowered
+            for phrase in (
+                "what did we discuss",
+                "what were we working on",
+                "remind me what we discussed",
+                "past conversation",
+                "yesterday",
+                "recollection",
+            )
+        ):
+            return MemoryRecallIntent.SESSION_RECALL
+        if re.search(r"\b(?:what|tell me)\b.*\b(?:remember|recall|know)\b", lowered):
+            return MemoryRecallIntent.PROFILE_RECALL
+        return None
+
+    @staticmethod
     def extract_intent_arguments(
         intent: GoalIntent, request: str
     ) -> tuple[str | None, dict, list[str]]:
@@ -381,6 +379,15 @@ class GoalParser:
         def _match(pattern: str, group: str = "value") -> str | None:
             found = re.search(pattern, request, re.IGNORECASE | re.DOTALL)
             return found.group(group).strip(" \t\r\n'\"") if found else None
+
+        if intent == GoalIntent.WRITE_RESOURCE:
+            from app.core.gambit.resource_parser import parse_resource_write
+            resource = parse_resource_write(request)
+            if resource is None:
+                return "write", {}, ["path", "content"]
+            args = resource.arguments()
+            action = "mkdir" if resource.operation == "directory_create" else "write"
+            return action, args, [name for name in (("path",) if action == "mkdir" else ("path", "content")) if name not in args]
 
         if intent in {
             GoalIntent.READ_RESOURCE,
@@ -537,9 +544,15 @@ class GoalParser:
                     return "search", {"action": "search", "query": query or ""}, ([] if query else ["query"])
                 return "list_folders", {"action": "list_folders"}, []
             action = "reply" if intent == GoalIntent.REPLY_EMAIL else "forward" if intent == GoalIntent.FORWARD_EMAIL else "draft" if re.search(r"\b(?:draft|compose)\b", lowered) else "send"
-            recipient = _match(r"\bto\s+(?P<value>[^\s,;]+@[^\s,;]+)")
-            subject = _match(r"\bsubject\s+(?P<value>.+?)(?:\s+body\b|$)")
-            body = _match(r"\bbody\s+(?P<value>.+)$")
+            recipient = _match(
+                r"(?:\bto\s+|\brecipient\s*:\s*)(?P<value>[^\s,;]+@[^\s,;]+)"
+            )
+            subject = _match(
+                r"\bsubject\s*:\s*(?P<value>.*?)(?=\r?\n\s*body\s*:|\s+body\s*:|$)"
+            ) or _match(r"\bsubject\s+(?P<value>.+?)(?:\s+body\b|$)")
+            body = _match(r"\bbody\s*:\s*(?P<value>.+)$") or _match(
+                r"\bbody\s+(?P<value>.+)$"
+            )
             message_id = _match(r"\bemail\s+(?P<value>[A-Za-z0-9_-]+)") if action in {"reply", "forward"} else None
             args = {"action": action}
             if recipient: args["recipient"] = recipient
@@ -549,6 +562,18 @@ class GoalParser:
             required = ["recipient", "subject", "body"] if action in {"send", "draft"} else ["message_id", "body"] if action == "reply" else ["message_id", "recipient"]
             missing.extend(field for field in required if not args.get(field))
             return action, args, missing
+
+        if intent == GoalIntent.SEARCH_INTERNET:
+            args = {"query": request}
+            # Ranked requests for a bare, overloaded subject need a domain;
+            # retaining this as typed missing input prevents the follow-up
+            # from being treated as a standalone provider question.
+            if re.search(r"\b(?:top|best|leading)\s+\d*\s*agents?\b", lowered) and not re.search(
+                r"\b(?:ai|software|travel|real estate|insurance|sales|support|sports|government)\b",
+                lowered,
+            ):
+                missing.append("agent domain")
+            return "search", args, missing
 
         if intent in {GoalIntent.SEND_MESSAGE, GoalIntent.READ_MESSAGES, GoalIntent.SEARCH_MESSAGES}:
             if intent == GoalIntent.READ_MESSAGES:
@@ -727,6 +752,21 @@ class GoalParser:
         "release",
         "version",
         "update",
+        "currently",
+        "right now",
+        "as of now",
+    )
+
+    _NON_INTERNET_SEARCH_TARGETS: tuple[str, ...] = (
+        "file", "folder", "directory", "filesystem", "workspace", "repository",
+        "repo", "codebase", "memory", "conversation", "messages", "contacts",
+        "notes", "tasks",
+    )
+
+    _FRESHNESS_RE = re.compile(
+        r"\b(?:latest|current|currently|newest|recent|recently|today|live|trending)\b"
+        r"|\bright\s+now\b|\bas\s+of\s+(?:now|today)\b|\bthis\s+(?:week|month)\b",
+        re.IGNORECASE,
     )
 
     @classmethod
@@ -734,17 +774,50 @@ class GoalParser:
         # Memory searches are always local; never route them to the internet.
         if any(k in lowered for k in ("memory", "conversation", "recollection")):
             return False
-        if any(phrase in lowered for phrase in cls._INTERNET_INTENT_PHRASES):
+        local_target = any(
+            re.search(rf"\b{re.escape(noun)}s?\b", lowered)
+            for noun in cls._NON_INTERNET_SEARCH_TARGETS
+        )
+        if any(phrase in lowered for phrase in cls._INTERNET_INTENT_PHRASES) and not local_target:
             return True
         if any(f"{verb} " in lowered or lowered.endswith(verb) for verb in cls._INTERNET_INTENT_VERBS):
             return True
+        # A bare search verb is an internet request unless the request names a
+        # local/product domain. This preserves explicit search intent without
+        # stealing deterministic filesystem/memory searches.
+        if re.search(r"\b(?:search|look\s+up|find\s+online)\b", lowered):
+            if not local_target:
+                return True
         # "search/look up/find <something>" about a current topic → internet.
         if any(kw in lowered for kw in ("search", "find", "look up")):
-            if cls._INTERNET_FRESHNESS_MARKERS and any(
+            if not local_target and cls._INTERNET_FRESHNESS_MARKERS and any(
                 marker in lowered for marker in cls._INTERNET_FRESHNESS_MARKERS
             ):
                 return True
+        # Natural questions/lists whose truth is explicitly time-dependent
+        # require current external evidence even without a search verb.
+        if not local_target and cls._requires_current_evidence(lowered):
+            return True
         return False
+
+    @classmethod
+    def _requires_current_evidence(cls, lowered: str) -> bool:
+        if "current" in lowered and "request" in lowered:
+            return False
+        if any(
+            noun in lowered
+            for noun in (
+                "current directory", "current folder", "current file",
+                "current request", "current context", "current conversation",
+                "current code", "current document", "current project",
+            )
+        ):
+            return False
+        return bool(cls._FRESHNESS_RE.search(lowered))
+
+    @staticmethod
+    def _is_news_request(lowered: str) -> bool:
+        return bool(re.search(r"\b(?:news|headline|headlines|breaking)\b", lowered))
 
     # ---------------------------------------------------------------------------
     # Capability domain mapping — used by the Planner to run registry check

@@ -34,7 +34,7 @@ CAPABILITY_MATRIX = {
     "task": "local_only",
     "contact": "local_only",
     "calendar": "local_only",
-    "email": "simulated",
+    "email": "local_only",
     "message": "simulated",
     "memory": "local_only",
     "windows": "local_only",
@@ -205,7 +205,8 @@ async def test_communication_simulation_never_claims_external_delivery() -> None
     message = await MessageTool().run(
         {"action": "send", "recipient": "Ada", "body": "Hello"}
     )
-    assert email.data["status"] == "simulated"
+    assert email.data["status"] == "unavailable"
+    assert email.ok is False
     assert message.data["status"] == "simulated"
     assert email.data["externally_delivered"] is False
     assert message.data["externally_delivered"] is False
@@ -447,26 +448,39 @@ async def test_exact_production_contact_search_route(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("user_text", "tool_id"),
-    [
-        ("Send an email to ada@example.com subject Hello body Welcome", "email"),
-        ("Send a message to Ada saying Hello", "message"),
-    ],
-)
-async def test_exact_production_communication_is_explicitly_simulated(
-    production_orchestrator, user_text: str, tool_id: str
+async def test_exact_production_message_is_explicitly_simulated(
+    production_orchestrator,
 ) -> None:
     state = await _execute_approved(
         production_orchestrator,
-        user_text,
-        session=f"p2-{tool_id}",
+        "Send a message to Ada saying Hello",
+        session="p2-message",
     )
-    result = _completed_tool_results(state, tool_id)[0]
+    result = _completed_tool_results(state, "message")[0]
     assert result["output"]["status"] == "simulated"
     assert result["output"]["externally_delivered"] is False
     response = state.runtime_result.output.get("content") or state.runtime_result.output.get("response") or ""
     assert "no external delivery" in response.lower()
+
+
+@pytest.mark.asyncio
+async def test_exact_production_email_send_requires_smtp_setup(
+    production_orchestrator,
+) -> None:
+    state = await _execute_approved(
+        production_orchestrator,
+        "Send an email to ada@example.com subject Hello body Welcome",
+        session="p2-email-unconfigured",
+    )
+    assert state.execution_report is not None
+    email_rows = [
+        row for row in state.execution_report.tool_results
+        if row.get("metadata", {}).get("tool") == "email"
+    ]
+    assert len(email_rows) == 1
+    assert email_rows[0]["status"] != "completed"
+    rendered = str(email_rows[0]).casefold()
+    assert "setup" in rendered or "unavailable" in rendered
 
 
 @pytest.mark.asyncio
@@ -516,7 +530,7 @@ async def test_exact_production_capability_help_is_registry_derived(
         session="p2-capability-help",
     )
     response = state.runtime_result.output.get("content") or state.runtime_result.output.get("response") or ""
-    assert "email: simulated locally; no external delivery" in response
+    assert "email: local only" in response
     assert "message: simulated locally; no external delivery" in response
     assert "browser" not in response
     assert "media" not in response

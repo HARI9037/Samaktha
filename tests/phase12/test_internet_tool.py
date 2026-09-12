@@ -204,7 +204,19 @@ async def test_news_action_routes_to_news():
 
         async def news(self, query, *, max_results=5, timeout=None):
             self.news_calls += 1
-            return SearchResponse(query=query, category="news", source="news-fake")
+            return SearchResponse(
+                query=query,
+                category="news",
+                source="news-fake",
+                results=[
+                    SearchResult(
+                        title="News result",
+                        url="https://news.example/result",
+                        description="Verified current news result.",
+                        domain="news.example",
+                    )
+                ],
+            )
 
         async def search(self, query, *, max_results=5, timeout=None):
             return SearchResponse(query=query, category="web", source="news-fake")
@@ -215,3 +227,28 @@ async def test_news_action_routes_to_news():
     assert result.ok
     assert result.data["action"] == "news"
     assert provider.news_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_results_are_a_typed_failure():
+    provider = FakeProvider(response=SearchResponse(query="q", source="fake"))
+    tool = InternetTool(provider=provider)
+    result = await tool.run(_args())
+    assert result.ok is False
+    assert result.metadata["failure_type"] == "empty"
+
+
+@pytest.mark.asyncio
+async def test_search_failure_categories_are_typed():
+    from app.internet.models import SearchTimeoutError, SearchProviderError
+
+    for error, expected in (
+        (SearchTimeoutError("timeout"), "timeout"),
+        (SearchRateLimitError("limited"), "rate_limit"),
+        (SearchProviderError("bad payload"), "malformed"),
+    ):
+        result = await InternetTool(
+            provider=FakeProvider(raise_error=error)
+        ).run(_args())
+        assert result.ok is False
+        assert result.metadata["failure_type"] == expected

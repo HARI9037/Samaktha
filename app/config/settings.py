@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     shell_max_stdout_bytes: int = Field(default=200_000)
     shell_max_stderr_bytes: int = Field(default=50_000)
     shell_max_runtime_seconds: int = Field(default=300)
+    # Preserve source/development behavior. A completed product setup writes
+    # the explicit user choice, whose safe default is disabled.
+    shell_enabled: bool = Field(default=True)
 
     # P7B — Windows/Process security
     process_max_list_entries: int = Field(default=50)
@@ -136,6 +139,17 @@ class Settings(BaseSettings):
     network_request_timeout_seconds: float = Field(default=15.0)
     network_allowed_ports: list[int] = Field(default_factory=lambda: [80, 443])
     network_sensitive_header_allowlist: list[str] = Field(default_factory=list)
+
+    # Post-P14 governed search provider. DDGS is the zero-key default;
+    # SearXNG and Brave remain explicit operator-selected alternatives.
+    search_provider: str = Field(default="ddgs")
+    internet_search_enabled: bool = Field(default=True)
+    ddgs_timeout: float = Field(default=10.0, gt=0, le=60)
+    ddgs_backend: str = Field(default="duckduckgo")
+    searxng_url: str = Field(default="")
+    searxng_timeout: float = Field(default=15.0, gt=0, le=60)
+    searxng_max_retries: int = Field(default=2, ge=0, le=5)
+    brave_api_key: str = Field(default="", repr=False)
 
     # P8 — Durable execution evidence & observability
     evidence_enabled: bool = Field(default=True)
@@ -159,7 +173,25 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    base = Settings()
+    try:
+        from app.config.store import SettingsStore, application_settings_overrides
+
+        store = SettingsStore()
+        if not store.exists():
+            return base
+        persisted = application_settings_overrides(store.load())
+    except Exception:
+        # Startup diagnostics provide the actionable malformed-store error.
+        # Environment/development configuration remains available meanwhile.
+        return base
+
+    values = base.model_dump()
+    explicit_fields = set(base.model_fields_set)
+    for field, value in persisted.items():
+        if field in Settings.model_fields and field not in explicit_fields:
+            values[field] = value
+    return Settings(**values)
 
 
 def resolve_sqlite_path(sqlite_url: str) -> str:

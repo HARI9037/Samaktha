@@ -49,6 +49,10 @@ permit validation.
   `ProviderManager`; fallback cannot escape execution-location policy.
 - **ToolExecutor** delegates only after permit/governance validation and applies
   `ToolSecurityEnforcer` before `ToolManager` invokes a registered tool.
+- **InternetTool / SearchProvider** preserve the same governed tool boundary for
+  web and news search. Production explicitly injects one configured provider;
+  DDGS is the zero-key default, while SearXNG and Brave are explicit options.
+  No adapter performs cross-provider fallback.
 - **Memory/session stores** enforce principal, session, and workspace scope.
 - **EvidenceStore** records correlated, sanitized authorization, routing,
   execution, and outcome events.
@@ -78,6 +82,10 @@ permit validation.
 13. Evidence and diagnostics sanitize secrets and user content by default.
 14. Frozen/disconnected future subsystems may not become production paths
     without updating architecture guards and the production composition.
+15. Search provider choice does not change authorization: DDGS, localhost or
+    remote SearXNG, and Brave operations require CAP approval and
+    `network_allowed`. Arbitrary result fetching remains under ContentFetcher
+    SSRF controls.
 
 ## Capability truth
 
@@ -114,8 +122,15 @@ Canonical P14 acceptance, Python 3.14.5:
 ```
 
 Relevant maintained gates include 115 architecture tests, 145 adversarial
-security tests, 112 production tests, 159 stress tests, 150 plugin tests, and 27
+security tests, 112 baseline production tests, 159 stress tests, 150 plugin tests, and 27
 pilot-readiness tests.
+
+The pre-DDGS-migration canonical baseline completed with 2,939 passing tests,
+zero failures, zero skips, and 87 warnings. The P14 tag and its historical
+2,851-test acceptance record remain unchanged.
+
+The post-DDGS-migration canonical suite completed with 2,979 passing tests,
+zero failures, zero skips, and 87 warnings under Python 3.14.5.
 
 ## Transitional and excluded systems
 

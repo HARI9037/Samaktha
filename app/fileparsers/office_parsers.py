@@ -14,6 +14,9 @@ class DocxParser(DocumentParser):
         return self._is_available()
 
     def _is_available(self) -> bool:
+        from app.fileparsers.experimental import docling_enabled
+        if not docling_enabled():
+            return False
         try:
             import docling
             return True
@@ -22,6 +25,9 @@ class DocxParser(DocumentParser):
 
     def parse(self, path: Path) -> ParseResult:
         logger.info("DocxParser: START path=%s", path)
+        from app.fileparsers.experimental import docling_enabled
+        if not docling_enabled():
+            return ParseResult(ok=False, error="Experimental Docling is disabled pending native runtime validation.")
         try:
             from docling.document_converter import DocumentConverter
         except ImportError as e:
@@ -81,6 +87,9 @@ class PptxParser(DocumentParser):
         return self._is_available()
 
     def _is_available(self) -> bool:
+        from app.fileparsers.experimental import docling_enabled
+        if not docling_enabled():
+            return False
         try:
             import docling
             return True
@@ -89,6 +98,9 @@ class PptxParser(DocumentParser):
 
     def parse(self, path: Path) -> ParseResult:
         logger.info("PptxParser: START path=%s", path)
+        from app.fileparsers.experimental import docling_enabled
+        if not docling_enabled():
+            return ParseResult(ok=False, error="Experimental Docling is disabled pending native runtime validation.")
         try:
             from docling.document_converter import DocumentConverter
         except ImportError as e:
@@ -148,6 +160,9 @@ class XlsxParser(DocumentParser):
         return self._is_available()
 
     def _is_available(self) -> bool:
+        from app.fileparsers.experimental import docling_enabled
+        if not docling_enabled():
+            return False
         try:
             import docling
             return True
@@ -156,6 +171,9 @@ class XlsxParser(DocumentParser):
 
     def parse(self, path: Path) -> ParseResult:
         logger.info("XlsxParser: START path=%s", path)
+        from app.fileparsers.experimental import docling_enabled
+        if not docling_enabled():
+            return ParseResult(ok=False, error="Experimental Docling is disabled pending native runtime validation.")
         try:
             from docling.document_converter import DocumentConverter
         except ImportError as e:

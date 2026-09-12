@@ -27,6 +27,21 @@ class SearchConfidence(StrEnum):
     UNKNOWN = "unknown"
 
 
+class SearchFailureKind(StrEnum):
+    """Stable failure categories exposed at the governed tool boundary."""
+
+    CONFIGURATION = "configuration"
+    OFFLINE = "offline"
+    TIMEOUT = "timeout"
+    RATE_LIMIT = "rate_limit"
+    AUTHENTICATION = "authentication"
+    HTTP = "http"
+    MALFORMED = "malformed"
+    EMPTY = "empty"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
 class SearchResult(BaseModel):
     """A single normalized search result from any provider.
 
@@ -35,10 +50,10 @@ class SearchResult(BaseModel):
     context injection and memory all depend exclusively on this model.
     """
 
-    title: str = ""
-    url: str = ""
-    description: str = ""
-    domain: str = ""
+    title: str = Field(default="", max_length=500)
+    url: str = Field(default="", max_length=2_048)
+    description: str = Field(default="", max_length=4_000)
+    domain: str = Field(default="", max_length=255)
     published_at: str | None = None
     retrieved_at: str = ""
     provider: str = ""
@@ -46,6 +61,8 @@ class SearchResult(BaseModel):
     confidence: SearchConfidence = SearchConfidence.UNKNOWN
     duplicate_of: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
+    source_id: str = Field(default="", max_length=64)
+    rank: int | None = Field(default=None, ge=1, le=100)
 
 
 class SearchResponse(BaseModel):
@@ -75,6 +92,8 @@ class SourceMetadata(BaseModel):
     retrieved_at: str = ""
     published_at: str | None = None
     confidence: SearchConfidence = SearchConfidence.UNKNOWN
+    source_id: str = Field(default="", max_length=64)
+    rank: int | None = Field(default=None, ge=1, le=100)
 
 
 class VerificationReport(BaseModel):
@@ -149,3 +168,7 @@ class SearchProviderError(SearchError):
 
 class SearchCancelledError(SearchError):
     """The search request was cancelled or aborted."""
+
+
+class SearchUnknownError(SearchError):
+    """The provider failed without a safer stable classification."""

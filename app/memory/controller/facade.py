@@ -157,6 +157,7 @@ class MemoryController:
         tags: list[str] | None = None,
         importance_kind: str = "conversation",
         security_level: SecurityLevel = SecurityLevel.LOW,
+        extra_metadata: dict[str, Any] | None = None,
         access_context: MemoryAccessContext | None = None,
     ) -> MemoryItem:
         access_context = self._access_context(access_context, session_id, security_level)
@@ -171,6 +172,7 @@ class MemoryController:
             tags=tags,
             importance_kind=importance_kind,
             security_level=security_level,
+            extra_metadata=extra_metadata,
             access_context=access_context,
         )
         self._cache.clear_retrievals()

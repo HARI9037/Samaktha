@@ -6,6 +6,7 @@ produced by the InternetTool pipeline.
 """
 
 from app.internet.brave import BraveSearchProvider
+from app.internet.ddgs import DDGSSearchProvider
 from app.internet.cache import SearchCache
 from app.internet.fetcher import ContentFetcher
 from app.internet.models import (
@@ -22,17 +23,20 @@ from app.internet.models import (
     SearchResponse,
     SearchResult,
     SearchTimeoutError,
+    SearchUnknownError,
     SourceMetadata,
     VerificationReport,
 )
 from app.internet.policy import SearchPolicy
 from app.internet.provider import SearchProvider
+from app.internet.searxng import SearXNGSearchProvider
 from app.internet.ranker import ResultRanker
 from app.internet.tool import InternetTool
 from app.internet.verifier import SearchVerifier
 
 __all__ = [
     "BraveSearchProvider",
+    "DDGSSearchProvider",
     "ContentFetcher",
     "FetchResult",
     "InternetTool",
@@ -48,10 +52,12 @@ __all__ = [
     "SearchPolicy",
     "SearchProvider",
     "SearchProviderError",
+    "SearXNGSearchProvider",
     "SearchRateLimitError",
     "SearchResponse",
     "SearchResult",
     "SearchTimeoutError",
+    "SearchUnknownError",
     "SearchVerifier",
     "SourceMetadata",
     "VerificationReport",

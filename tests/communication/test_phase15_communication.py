@@ -383,14 +383,16 @@ class TestEmailTool:
     def test_email_tool_send_action(self):
         tool = EmailTool()
         result = asyncio.run(tool.run({"action": "send", "recipient": "user@example.com", "subject": "Test", "body": "Hello"}))
-        assert result.ok is True
+        assert result.ok is False
+        assert result.data["status"] == "unavailable"
+        assert result.data["action"] == "send"
 
     def test_email_tool_search_action(self):
         tool = EmailTool()
-        asyncio.run(tool.run({"action": "send", "recipient": "user@example.com", "subject": "Test", "body": "Hello"}))
+        asyncio.run(tool.run({"action": "draft", "recipient": "user@example.com", "subject": "Test", "body": "Hello"}))
         result = asyncio.run(tool.run({"action": "search", "query": "Test"}))
-        assert result.ok is True
-        assert result.data["count"] == 1
+        assert result.ok is False
+        assert result.data["status"] == "unavailable"
 
 
 # ---------------------------------------------------------------------------

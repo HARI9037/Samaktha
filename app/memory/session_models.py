@@ -80,6 +80,7 @@ class SessionHistoryEntry(BaseModel):
     provider: str | None = None
     references: list[str] = Field(default_factory=list)
     runtime_summary: str | None = None
+    provenance: str = "unknown"
 
 
 class SessionMemoryEntry(BaseModel):

@@ -14,18 +14,25 @@ From PowerShell in the unpacked/installed Samaktha directory:
 
 ```powershell
 .\samaktha.exe --version
-.\samaktha.exe bootstrap
-.\samaktha.exe bootstrap --status
+.\samaktha.exe setup
 .\samaktha.exe doctor
 ```
 
-`bootstrap` is safe to repeat. It creates configuration, data, cache, log, workspace, checkpoint, and plugin directories plus the memory/evidence databases. `doctor` composes the real production runtime and creates the private permit-signing key if it does not exist.
+An incomplete installed configuration opens the same setup wizard on normal
+startup. Setup commits non-secret TOML settings atomically, stores credentials
+in the per-user Windows Credential Manager, and initializes security state
+through the production composition. `setup` is safe to reopen. `doctor` uses
+the same validators in read-only mode; it does not create or repair security
+state. The legacy `bootstrap` command remains available for engineering flows.
 
 An unconfigured provider causes `doctor` to return a non-zero health result and show the default provider as `ERROR`. This is expected and truthful: bootstrap/local stores work, but model generation does not.
 
 ## Provider configuration
 
-The controlled pilot uses process environment variables; no source files need editing. Set variables only in the PowerShell process used to launch Samaktha. This avoids writing API keys to release files or command examples that are committed to the repository.
+The installed controlled pilot uses the setup wizard and Windows Credential
+Manager; no source files need editing. Process environment variables remain a
+higher-precedence development/operator override. Never place API keys in
+committed files or diagnostic reports.
 
 Example Groq setup (replace the placeholder interactively and do not paste it into an issue):
 
@@ -53,9 +60,62 @@ $env:SAMAKTHA_FALLBACK_ENABLED = "false"
 
 This prevents model fallback to cloud. It does not authorize InternetTool use; tool network access remains a separately governed action.
 
+## Search configuration
+
+Web and news search use DDGS by default. It is installed with Samaktha and needs
+no API key, configured endpoint, Docker service, or background process:
+
+```powershell
+$env:SAMAKTHA_SEARCH_PROVIDER = "ddgs"  # optional default
+$env:SAMAKTHA_DDGS_TIMEOUT = "10"
+```
+
+DDGS sends approved queries to public search backends. Their availability and
+rate limits are outside Samaktha's control. SearXNG remains an explicit option
+for operators running a trusted service with JSON output enabled:
+
+```powershell
+$env:SAMAKTHA_SEARCH_PROVIDER = "searxng"
+$env:SAMAKTHA_SEARXNG_URL = "http://127.0.0.1:8080"
+$env:SAMAKTHA_SEARXNG_TIMEOUT = "15"
+$env:SAMAKTHA_SEARXNG_MAX_RETRIES = "2"
+```
+
+No SearXNG API key is required by default, but the configured instance must
+support `GET /search` with `format=json`; Samaktha does not scrape HTML or
+choose a public instance. Selecting SearXNG without a URL makes only search
+unavailable and does not prevent offline startup.
+
+Brave remains an explicit optional selection:
+
+```powershell
+$env:SAMAKTHA_SEARCH_PROVIDER = "brave"
+$env:SAMAKTHA_BRAVE_API_KEY = Read-Host "Brave Search API key"
+```
+
+There is no automatic fallback among DDGS, SearXNG, and Brave. Search always
+requires CAP approval, including DDGS and `127.0.0.1` or `localhost`. A remote SearXNG service
+receives the query directly; a local service may still forward it to configured
+upstream search engines. This trusted service endpoint does not weaken the
+separate ContentFetcher restrictions on localhost, private addresses, redirects,
+DNS resolution, ports, headers, or response size.
+
 ## Workspace configuration
 
-The default governed workspace is `%LOCALAPPDATA%\Samaktha\workspace`. For the initial pilot, use this default. Advanced custom roots require coordinated `SAMAKTHA_FILESYSTEM_*` and `SAMAKTHA_SHELL_*` JSON-list settings and must be reviewed by the operator; a filesystem root is not permission to bypass CAP or ToolSecurityEnforcer.
+The default governed workspace is `%LOCALAPPDATA%\Samaktha\workspace`. Setup can choose a different dedicated folder; this sets both filesystem and shell roots. `samaktha doctor` and setup completion show the folder. Advanced multi-root environment overrides require operator review. A filesystem root never bypasses CAP or ToolSecurityEnforcer.
+
+`create a file called report.txt with the text Hello` resolves inside that workspace.
+Approval shows the actual destination; completion uses the Runtime file result.
+`create notes.txt` creates an empty file. `save as notes.txt` asks for content if
+none is supplied or available through an explicit conversation reference.
+Desktop/Documents resolve to their actual Windows locations, including redirected
+folders. If outside allowed roots, the action is denied without silently saving
+elsewhere. No automatic root expansion occurs.
+
+Reopening setup and leaving secret fields blank preserves existing credentials
+and verification. Enter a replacement or select Remove explicitly. Removing the
+active provider credential switches setup to offline mode. SMTP can remain
+disabled throughout core onboarding; its send test is optional and external.
 
 ## Installation path coverage
 

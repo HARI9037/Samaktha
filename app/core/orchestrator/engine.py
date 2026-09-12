@@ -7,7 +7,7 @@ log = logging.getLogger(__name__)
 from app.core.cap import ApprovalEngine, ContextEngine, PolicyEngine
 from app.memory.controller.facade import MemoryController
 from app.memory.formation.engine import MemoryFormationEngine
-from app.core.contracts.memory import MemoryAccessContext
+from app.core.contracts.memory import MemoryAccessContext, MemoryRecallIntent
 from app.core.contracts import (
     ContextRequest,
     ConversationMessage,
@@ -25,7 +25,7 @@ from app.core.contracts.policy import (
     authorization_subject_id,
     authorization_target,
 )
-from app.core.contracts.planning import PlannerStatus, TaskKind, TaskStatus
+from app.core.contracts.planning import GoalIntent, PlannerStatus, TaskKind, TaskStatus
 from app.core.gambit import Planner
 from app.core.orchestrator.metrics import OrchestratorMetricsCollector, OrchestratorMetricsSnapshot
 from app.core.orchestrator.pipeline import PipelineState
@@ -37,6 +37,7 @@ from app.workflow import WorkflowEngine
 from app.core.orchestrator.pipeline import PipelineEvent
 from app.agent.prompts import CAPABILITY_NEEDS_INPUT_MESSAGE, CAPABILITY_UNAVAILABLE_MESSAGE
 from app.conversation import ConversationStateManager
+from app.conversation.models import PendingClarification
 from app.personality import (
     IntentEngine,
     PersonalityEngine,
@@ -305,6 +306,23 @@ class SamakthaOrchestrator:
         from app.core.events import RuntimeEventBus
 
         session_id = runtime_context.session_id or "default"
+        clarification_principal = authorization_subject_id(
+            user_id=runtime_context.user_id,
+            session_id=session_id,
+            request_id=None,
+        )
+        pending_clarification = self._conversation_state.consume_pending_clarification(
+            principal_id=clarification_principal,
+            session_id=session_id,
+        )
+        if pending_clarification is not None:
+            # The merged operation is replanned and re-authorized from scratch;
+            # no permit or approval can survive materially changed arguments.
+            effective_request = (
+                f"{pending_clarification.original_request} {request.strip()}"
+            ).strip()
+        else:
+            effective_request = None
         memory_access = MemoryAccessContext(
             principal_id=runtime_context.user_id or MemoryAccessContext.local_default().principal_id,
             session_id=session_id,
@@ -322,17 +340,76 @@ class SamakthaOrchestrator:
         # so "Summarize it" deterministically becomes "Summarize profile.pdf".
         # State observation is restricted to the session's short-lived working
         # memory; the original request is preserved for memory formation.
-        effective_request = self._conversation_state.resolve(request, session_id).request
+        conversation_state = self._conversation_state.get_state(session_id)
+        memory_followup_ids = self._memory_followup_result_ids(
+            request, conversation_state
+        )
+        if effective_request is None:
+            effective_request = (
+                request
+                if memory_followup_ids
+                else self._conversation_state.resolve(request, session_id).request
+            )
         self._conversation_state.record_command(request, session_id)
 
         # 1. Goal Parser
         goal = self._planner._goal_parser.parse(effective_request)
+        if memory_followup_ids:
+            goal = goal.model_copy(
+                update={
+                    "intent": GoalIntent.SEARCH_MEMORY,
+                    "query": request,
+                    "memory_intent": MemoryRecallIntent.MEMORY_SEARCH,
+                    "intent_action": "retrieve",
+                    "intent_arguments": {
+                        "memory_result_ids": memory_followup_ids
+                    },
+                    "missing_arguments": [],
+                }
+            )
         self._conversation_state.record_goal(
             getattr(goal, "intent", None),
             getattr(goal, "target_path", None),
             session_id,
         )
         log.info("Orchestrator: goal intent=%s target_path=%s", goal.intent, goal.target_path)
+
+        # Clarify materially incomplete operations before asking CAP to
+        # authorize them. The eventual merged operation is parsed, bound and
+        # authorized as a fresh request; no pre-clarification permit exists.
+        if goal.missing_arguments:
+            missing = ", ".join(goal.missing_arguments)
+            subject_id = authorization_subject_id(
+                user_id=runtime_context.user_id,
+                session_id=session_id,
+                request_id=runtime_context.request_id,
+            )
+            self._conversation_state.set_pending_clarification(
+                PendingClarification(
+                    principal_id=subject_id,
+                    session_id=session_id,
+                    execution_id=runtime_context.request_id,
+                    original_request=effective_request,
+                    intent=goal.intent.value,
+                    capability_domain=self._planner._goal_parser.capability_domain_for_intent(goal.intent),
+                    missing_fields=tuple(goal.missing_arguments),
+                    freshness_requirement=goal.freshness_requirement.value,
+                    search_category=goal.search_category.value,
+                )
+            )
+            state.runtime_result = RuntimeResult(
+                task_id=runtime_context.request_id,
+                status=TaskStatus.FAILED,
+                error=CAPABILITY_NEEDS_INPUT_MESSAGE.format(missing=missing),
+                metadata={
+                    "needs_input": True,
+                    "missing_arguments": list(goal.missing_arguments),
+                    "pending_clarification": True,
+                },
+            )
+            self._format_result_error(state)
+            self._metrics.record_pipeline(success=False)
+            return state
         
         # 2. Risk Analysis and Policy Evaluation on the User Request Intent
         intent_action = goal.intent.value.split('_')[0]
@@ -399,7 +476,16 @@ class SamakthaOrchestrator:
         # vertical slice: deterministic visibility gate + behavior engine +
         # prompt composer. The composed system prompt is the single prompt
         # source for text-generation tasks.
-        retrieved_items = self._retrieve_memory_items(request, memory_access)
+        # Typed memory reads obtain their historical facts from the canonical
+        # Runtime MemoryTool below. Do not also perform the generic prompt-
+        # context retrieval: previous-session resolution must use the exact
+        # durable session store, and explicit searches must have one auditable
+        # scoped lookup rather than a hidden preliminary lookup.
+        retrieved_items = (
+            []
+            if goal.memory_intent is not None
+            else self._retrieve_memory_items(request, memory_access)
+        )
         evaluation = self._personality_engine.evaluate(
             request, retrieved_memories=retrieved_items)
         composition = self._prompt_composer.compose(
@@ -427,7 +513,7 @@ class SamakthaOrchestrator:
         
         # 4. GAMBIT Planner — with Capability Registry gate
         planning_context = None
-        if self._intelligence_manager is not None:
+        if self._intelligence_manager is not None and goal.memory_intent is None:
             planning_context = self._intelligence_manager.build_planning_context(
                 effective_request,
                 session_id=runtime_context.session_id,
@@ -453,7 +539,7 @@ class SamakthaOrchestrator:
             "explanation": behavior.explanation.value,
         }
         planner_result = await self._planner_plan(
-            effective_request, planning_context, personality_context
+            effective_request, planning_context, personality_context, goal
         )
 
         if planner_result.status == PlannerStatus.CAPABILITY_UNAVAILABLE:
@@ -480,6 +566,19 @@ class SamakthaOrchestrator:
                     "needs_input": True,
                     "missing_arguments": list(planner_result.missing_arguments),
                 },
+            )
+            self._conversation_state.set_pending_clarification(
+                PendingClarification(
+                    principal_id=subject_id,
+                    session_id=session_id,
+                    execution_id=runtime_context.request_id,
+                    original_request=effective_request,
+                    intent=goal.intent.value,
+                    capability_domain=planner_result.required_capability,
+                    missing_fields=tuple(planner_result.missing_arguments),
+                    freshness_requirement=goal.freshness_requirement.value,
+                    search_category=goal.search_category.value,
+                )
             )
             self._format_result_error(state)
             self._metrics.record_pipeline(success=False)
@@ -690,6 +789,10 @@ class SamakthaOrchestrator:
         if state.runtime_result is not None and state.runtime_result.status == TaskStatus.COMPLETED:
             if state.runtime_result.output:
                 content = self._response_content(state.runtime_result.output)
+                if not content:
+                    content = self._internet_evidence_fallback(
+                        workflow_result.outputs
+                    )
                 intent_result = self._intent_engine.classify_detailed(request)
                 session = self._conversation_state.get_state(session_id)
                 formatted = self._response_formatter.format(
@@ -703,6 +806,10 @@ class SamakthaOrchestrator:
                         workflow_result.execution_report.model_dump()
                         if workflow_result.execution_report is not None
                         else None
+                    ),
+                    memory_intent=goal.memory_intent,
+                    memory_evidence=self._memory_evidence(
+                        workflow_result.outputs
                     ),
                 )
                 if formatted:
@@ -740,6 +847,9 @@ class SamakthaOrchestrator:
                     metadata={
                         "internet_sourced": self._used_internet(workflow_result.outputs),
                         "session_deleted": self._deleted_session(workflow_result.outputs),
+                        "memory_retrieval": self._memory_evidence(
+                            workflow_result.outputs
+                        ) is not None,
                     },
                     execution_report=state.execution_report,
                     workflow_result=workflow_result,
@@ -795,7 +905,13 @@ class SamakthaOrchestrator:
         self._apply_output_security(state)
         return state
 
-    async def _planner_plan(self, request: str, planning_context: Any | None, personality_context: dict | None = None):
+    async def _planner_plan(
+        self,
+        request: str,
+        planning_context: Any | None,
+        personality_context: dict | None = None,
+        goal: Any | None = None,
+    ):
         method = getattr(self._planner, "plan_with_capability_check")
         try:
             signature = inspect.signature(method)
@@ -804,6 +920,8 @@ class SamakthaOrchestrator:
                 kwargs["planning_context"] = planning_context
             if personality_context is not None and "personality_context" in signature.parameters:
                 kwargs["personality_context"] = personality_context
+            if goal is not None and "goal" in signature.parameters:
+                kwargs["goal"] = goal
             return await method(request, **kwargs)
         except Exception:
             pass
@@ -978,6 +1096,10 @@ class SamakthaOrchestrator:
         if state.runtime_result is not None and state.runtime_result.status == TaskStatus.COMPLETED:
             if state.runtime_result.output:
                 content = self._response_content(state.runtime_result.output)
+                if not content:
+                    content = self._internet_evidence_fallback(
+                        workflow_result.outputs
+                    )
                 intent_result = self._intent_engine.classify_detailed(
                     state.request or ""
                 )
@@ -993,6 +1115,13 @@ class SamakthaOrchestrator:
                         workflow_result.execution_report.model_dump()
                         if workflow_result.execution_report is not None
                         else None
+                    ),
+                    memory_intent=(
+                        state.execution_plan.goal.memory_intent
+                        if state.execution_plan is not None else None
+                    ),
+                    memory_evidence=self._memory_evidence(
+                        workflow_result.outputs
                     ),
                 )
                 if formatted:
@@ -1036,6 +1165,9 @@ class SamakthaOrchestrator:
                     metadata={
                         "internet_sourced": self._used_internet(workflow_result.outputs),
                         "session_deleted": self._deleted_session(workflow_result.outputs),
+                        "memory_retrieval": self._memory_evidence(
+                            workflow_result.outputs
+                        ) is not None,
                     },
                     execution_report=state.execution_report,
                     workflow_result=workflow_result,
@@ -1290,6 +1422,118 @@ class SamakthaOrchestrator:
             if isinstance(collected, list):
                 sources.extend(collected)
         return sources
+
+    @staticmethod
+    def _memory_evidence(outputs: list[Any]) -> dict | None:
+        """Return typed evidence emitted by the completed MemoryTool only."""
+
+        for output in outputs:
+            if getattr(output, "status", None) != TaskStatus.COMPLETED:
+                continue
+            metadata = getattr(output, "metadata", None) or {}
+            data = getattr(output, "output", None)
+            if metadata.get("tool") != "memory" or not isinstance(data, dict):
+                continue
+            evidence = data.get("memory_evidence")
+            if isinstance(evidence, dict):
+                return evidence
+        return None
+
+    @staticmethod
+    def _memory_followup_result_ids(request: str, state: Any) -> list[str]:
+        """Resolve bounded ordinal/all-result memory follow-ups by stored IDs."""
+
+        import re
+
+        ids = list(getattr(state, "last_memory_result_ids", []) or [])
+        if not ids:
+            return []
+        lowered = " ".join(request.casefold().split())
+        if re.search(r"\b(?:those|these|the)\s+memories\b", lowered) or re.search(
+            r"\b(?:ids?|timestamps?)\b.*\bmemories\b", lowered
+        ):
+            return ids
+        ordinals = {
+            "first": 0,
+            "1st": 0,
+            "second": 1,
+            "2nd": 1,
+            "third": 2,
+            "3rd": 2,
+        }
+        if not re.search(
+            r"\b(?:one|memory|record|result|content|id|timestamp)\b", lowered
+        ):
+            return []
+        for word, index in ordinals.items():
+            if re.search(rf"\b{word}\b", lowered) and index < len(ids):
+                return [ids[index]]
+        return []
+
+    @staticmethod
+    def _internet_evidence_fallback(outputs: list[Any]) -> str:
+        """Render completed search evidence when answer synthesis is empty.
+
+        This is deliberately narrower than general response synthesis: only a
+        completed Runtime InternetTool output marked ``internet=True`` is
+        eligible.  Planner text and provider prose can never create this
+        fallback, preserving execution-truth and source provenance.
+        """
+        for output in reversed(outputs):
+            data = getattr(output, "output", None)
+            if not isinstance(data, dict) or data.get("internet") is not True:
+                continue
+            results = data.get("results")
+            if not isinstance(results, list) or not results:
+                return "Internet search completed but returned no results."
+            
+            # Try to extract entities from snippets first
+            from app.internet.entity_extractor import (
+                extract_entities_for_fallback,
+                infer_domain_hint,
+                infer_format_intent,
+                infer_requested_count,
+            )
+            # The original query is in the search results data
+            query = data.get("query", "")
+            domain_hint = infer_domain_hint(query)
+            format_intent = infer_format_intent(query)
+            requested_count = infer_requested_count(query)
+            
+            entities, fallback_msg = extract_entities_for_fallback(
+                results,
+                requested_count=requested_count,
+                domain_hint=domain_hint,
+            )
+            
+            if entities:
+                # Format according to intent
+                if format_intent == "names_only":
+                    lines = [f"{i+1}. {entity}" for i, entity in enumerate(entities)]
+                    return "\n".join(lines)
+                else:
+                    # Default: numbered list with names
+                    lines = [f"{i+1}. {entity}" for i, entity in enumerate(entities)]
+                    return "\n".join(lines)
+            
+            # Fallback to source titles if entity extraction failed
+            lines: list[str] = []
+            for result in results[:5]:
+                if not isinstance(result, dict):
+                    continue
+                title = str(result.get("title") or "").strip()
+                url = str(result.get("url") or "").strip()
+                if title and url:
+                    lines.append(f"{len(lines) + 1}. {title} — {url}")
+                elif title:
+                    lines.append(f"{len(lines) + 1}. {title}")
+            if not lines:
+                return "Internet search completed but returned no usable results."
+            return (
+                "Search completed, but answer synthesis returned no text.\n\n"
+                "Verified results:\n" + "\n".join(lines)
+            )
+        return ""
 
     @staticmethod
     def _response_content(output: Any) -> str:

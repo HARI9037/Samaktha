@@ -138,8 +138,29 @@ class ApplicationPaths:
             self.workspace_root,
             self.checkpoint_root,
             self.plugin_root,
+            self.backup_root,
         ]:
             path.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def settings_file(self) -> Path:
+        """Canonical non-secret product settings file."""
+        return self.config_root / "settings.toml"
+
+    @property
+    def capability_state_file(self) -> Path:
+        """Canonical persisted setup/readiness state."""
+        return self.config_root / "capability_state.json"
+
+    @property
+    def setup_state_file(self) -> Path:
+        """Canonical first-run transaction state."""
+        return self.config_root / "setup_state.json"
+
+    @property
+    def backup_root(self) -> Path:
+        """User-owned backup directory outside the installation root."""
+        return self.data_root.parent / "backups"
 
     def get_settings_overrides(self) -> dict[str, str]:
         """Return settings overrides for the resolved paths."""

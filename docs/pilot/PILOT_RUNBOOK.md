@@ -38,10 +38,10 @@ Advancement is paused immediately for any SEV-0/SEV-1, unexplained duplicate eff
 
 1. Give the user the artifact, exact version, SHA-256, unsigned-build warning, release notes, and rollback document.
 2. Have the user run `bootstrap`, `bootstrap --status`, then `doctor`.
-3. Configure a provider only in the launch process environment. Never ask for the credential value.
+3. Configure and test the provider through setup using Windows Credential Manager. Reopen setup with blank secret fields to confirm verification survives. Never ask for the credential value.
 4. Keep work inside the governed workspace.
 5. Explain that approvals bind one exact operation. Deny or cancel anything unclear.
-6. Treat simulated message/email results and SMTP `PROVIDER_ACCEPTED` as non-delivery.
+6. Email previews are unsaved; messaging remains simulated. SMTP `PROVIDER_ACCEPTED` is not proof of delivery. SMTP is optional and experimental.
 7. If support is needed, ask the user to run `samaktha.exe doctor --export`. The user decides whether to share the resulting local JSON file.
 8. Stop with Ctrl+C/normal TUI exit. If unresponsive, terminate the Samaktha process; recovery rules prevent unsafe unknown-mutation replay.
 

@@ -8,13 +8,14 @@ from app.fileparsers.pdf_parsers import DoclingParser, PdfPlumberParser, PyMuPDF
 from app.fileparsers.text_parsers import MarkdownParser, TxtParser
 from app.fileparsers.html_parser import HtmlParser
 from app.fileparsers.office_parsers import DocxParser, PptxParser, XlsxParser
+from app.fileparsers.basic_office import BasicOfficeParser
 
 logger = logging.getLogger(__name__)
 
 PDF_PARSERS = [PyMuPDFParser(), PdfPlumberParser(), OCRParser(), DoclingParser()]
 TEXT_PARSERS = [MarkdownParser(), TxtParser()]
 HTML_PARSERS = [HtmlParser()]
-OFFICE_PARSERS = [DocxParser(), PptxParser(), XlsxParser()]
+OFFICE_PARSERS = [BasicOfficeParser(), DocxParser(), PptxParser(), XlsxParser()]
 
 _ALL_PARSERS = PDF_PARSERS + TEXT_PARSERS + HTML_PARSERS + OFFICE_PARSERS
 

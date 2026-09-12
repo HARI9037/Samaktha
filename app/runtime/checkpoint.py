@@ -5,7 +5,10 @@ import json
 import hashlib
 import hmac
 import os
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,20 +19,88 @@ from app.core.contracts.state import ExecutionState
 CHECKPOINT_SCHEMA_VERSION = 1
 
 
+class CheckpointFailureCode(str, Enum):
+    SECURITY_STATE_ACCESS_DENIED = "security_state_access_denied"
+    INTEGRITY_INDEX_MALFORMED = "integrity_index_malformed"
+    INTEGRITY_INDEX_AUTHENTICATION_FAILED = "integrity_index_authentication_failed"
+    CHECKPOINT_MALFORMED = "checkpoint_malformed"
+    CHECKPOINT_AUTHENTICATION_FAILED = "checkpoint_authentication_failed"
+    CHECKPOINT_ANTI_ROLLBACK_FAILED = "checkpoint_anti_rollback_failed"
+    CHECKPOINT_SCHEMA_UNSUPPORTED = "checkpoint_schema_unsupported"
+    CHECKPOINT_ORPHANED = "checkpoint_orphaned"
+    CHECKPOINT_RECOVERY_UNSAFE = "checkpoint_recovery_unsafe"
+
+
 class CheckpointError(ValueError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: CheckpointFailureCode = CheckpointFailureCode.CHECKPOINT_MALFORMED,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class CheckpointInvalidError(CheckpointError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: CheckpointFailureCode = CheckpointFailureCode.CHECKPOINT_MALFORMED,
+    ) -> None:
+        super().__init__(message, code=code)
 
 
 class CheckpointVersionError(CheckpointError):
-    pass
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message, code=CheckpointFailureCode.CHECKPOINT_SCHEMA_UNSUPPORTED
+        )
 
 
 class CheckpointStaleError(CheckpointError):
-    pass
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message, code=CheckpointFailureCode.CHECKPOINT_ANTI_ROLLBACK_FAILED
+        )
+
+
+@dataclass(frozen=True)
+class CheckpointRejection:
+    execution_id: str
+    code: CheckpointFailureCode
+    detail: str
+    active_execution: bool = False
+
+
+@dataclass(frozen=True)
+class CheckpointReconciliation:
+    total_files: int
+    valid_terminal_count: int
+    valid_recoverable_count: int
+    valid_recovery_unsafe_count: int
+    rejected: tuple[CheckpointRejection, ...]
+
+    @property
+    def valid_count(self) -> int:
+        return (
+            self.valid_terminal_count
+            + self.valid_recoverable_count
+            + self.valid_recovery_unsafe_count
+        )
+
+    @property
+    def rejected_count(self) -> int:
+        return len(self.rejected)
+
+    @property
+    def critical_rejected_count(self) -> int:
+        return sum(1 for item in self.rejected if item.active_execution)
+
+    @property
+    def rejected_by_code(self) -> dict[CheckpointFailureCode, int]:
+        return dict(Counter(item.code for item in self.rejected))
 
 
 class RecoveryCheckpoint(BaseModel):
@@ -158,8 +229,13 @@ class CheckpointStore:
         state.updated_at = now
         self._checkpoints[state.execution_id] = state.model_copy(deep=True)
 
-    def load_checkpoint(self, execution_id: str) -> ExecutionState | RecoveryCheckpoint | None:
-        checkpoint = self._checkpoints.get(execution_id)
+    def load_checkpoint(
+        self,
+        execution_id: str,
+        *,
+        refresh: bool = False,
+    ) -> ExecutionState | RecoveryCheckpoint | None:
+        checkpoint = None if refresh else self._checkpoints.get(execution_id)
         if checkpoint is not None:
             return checkpoint.model_copy(deep=True)
         if self._directory is None:
@@ -169,26 +245,41 @@ class CheckpointStore:
             return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError as exc:
+            raise CheckpointError(
+                "Checkpoint security state is not accessible.",
+                code=CheckpointFailureCode.SECURITY_STATE_ACCESS_DENIED,
+            ) from exc
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise CheckpointInvalidError(f"Checkpoint is corrupt: {exc}") from exc
+            raise CheckpointInvalidError(
+                f"Checkpoint JSON is malformed: {exc}",
+                code=CheckpointFailureCode.CHECKPOINT_MALFORMED,
+            ) from exc
         version = payload.get("schema_version") if isinstance(payload, dict) else None
         if version != CHECKPOINT_SCHEMA_VERSION:
             raise CheckpointVersionError(
                 f"Checkpoint schema {version!r} is incompatible with {CHECKPOINT_SCHEMA_VERSION}."
             )
         if _contains_secret_key(payload):
-            raise CheckpointInvalidError("Checkpoint contains forbidden secret-bearing fields.")
+            raise CheckpointInvalidError(
+                "Checkpoint contains forbidden secret-bearing fields.",
+                code=CheckpointFailureCode.CHECKPOINT_MALFORMED,
+            )
         if self._integrity_key is not None:
             digest = payload.get("integrity_digest") if isinstance(payload, dict) else None
             if not isinstance(digest, str) or not hmac.compare_digest(
                 digest, _checkpoint_signature(payload, self._integrity_key)
             ):
-                raise CheckpointInvalidError("Checkpoint integrity validation failed.")
+                raise CheckpointInvalidError(
+                    "Checkpoint integrity authentication failed.",
+                    code=CheckpointFailureCode.CHECKPOINT_AUTHENTICATION_FAILED,
+                )
             if self._integrity_index_path is not None:
                 expected = self._integrity_entries.get(execution_id)
                 if expected is None:
                     raise CheckpointInvalidError(
-                        "Checkpoint is not present in the protected integrity index."
+                        "Checkpoint is not present in the protected integrity index.",
+                        code=CheckpointFailureCode.CHECKPOINT_ORPHANED,
                     )
                 if (
                     expected.get("generation") != payload.get("generation")
@@ -202,9 +293,15 @@ class CheckpointStore:
         try:
             loaded = RecoveryCheckpoint.model_validate(payload)
         except ValidationError as exc:
-            raise CheckpointInvalidError(f"Checkpoint validation failed: {exc}") from exc
+            raise CheckpointInvalidError(
+                f"Checkpoint validation failed: {exc}",
+                code=CheckpointFailureCode.CHECKPOINT_MALFORMED,
+            ) from exc
         if loaded.execution_id != execution_id:
-            raise CheckpointInvalidError("Checkpoint execution identity does not match filename.")
+            raise CheckpointInvalidError(
+                "Checkpoint execution identity does not match filename.",
+                code=CheckpointFailureCode.CHECKPOINT_MALFORMED,
+            )
         self._checkpoints[execution_id] = loaded
         self._prune_cached_terminal(preserve=execution_id)
         return loaded.model_copy(deep=True)
@@ -258,71 +355,172 @@ class CheckpointStore:
         return loaded
 
     def list_invalid(self) -> list[tuple[str, str]]:
-        invalid: list[tuple[str, str]] = []
+        return [
+            (item.execution_id, item.detail)
+            for item in self.reconcile().rejected
+        ]
+
+    def reconcile(
+        self,
+        *,
+        active_execution_ids: set[str] | None = None,
+    ) -> CheckpointReconciliation:
+        """Classify durable files without modifying or trusting rejected state.
+
+        Reconciliation always refreshes from disk so an already-cached object
+        cannot hide later tampering. Rejected payload fields are never used to
+        make recovery decisions; only the trusted caller-provided active ID set
+        can make a rejection critical to a currently running execution.
+        """
         if self._directory is None:
-            return invalid
-        for path in self._directory.glob("*.json"):
+            return CheckpointReconciliation(0, 0, 0, 0, ())
+        active = active_execution_ids or set()
+        terminal_values = {
+            "completed", "failed", "denied", "cancelled", "timed_out"
+        }
+        terminal = 0
+        recoverable = 0
+        recovery_unsafe = 0
+        rejected: list[CheckpointRejection] = []
+        paths = sorted(self._directory.glob("*.json"))
+        for path in paths:
             try:
-                self.load_checkpoint(path.stem)
+                checkpoint = self.load_checkpoint(path.stem, refresh=True)
             except CheckpointError as exc:
-                invalid.append((path.stem, str(exc)))
-        return invalid
+                rejected.append(
+                    CheckpointRejection(
+                        execution_id=path.stem,
+                        code=exc.code,
+                        detail=str(exc),
+                        active_execution=path.stem in active,
+                    )
+                )
+                continue
+            if checkpoint is None:
+                continue
+            if isinstance(checkpoint, RecoveryCheckpoint):
+                status = str(checkpoint.execution_state.get("status", ""))
+                if status in terminal_values:
+                    terminal += 1
+                elif checkpoint.recovery_safe:
+                    recoverable += 1
+                else:
+                    recovery_unsafe += 1
+            else:
+                if checkpoint.status.value in terminal_values:
+                    terminal += 1
+                else:
+                    recovery_unsafe += 1
+        return CheckpointReconciliation(
+            total_files=len(paths),
+            valid_terminal_count=terminal,
+            valid_recoverable_count=recoverable,
+            valid_recovery_unsafe_count=recovery_unsafe,
+            rejected=tuple(rejected),
+        )
 
     def _load_integrity_index(self) -> dict[str, dict[str, Any]]:
         assert self._integrity_index_path is not None
         assert self._integrity_key is not None
         path = self._integrity_index_path
-        if not path.exists():
-            # One-time migration: anchor only currently valid signed files.
-            entries: dict[str, dict[str, Any]] = {}
-            if self._directory is not None:
-                for checkpoint_path in self._directory.glob("*.json"):
-                    try:
-                        payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-                        digest = payload.get("integrity_digest")
-                        execution_id = payload.get("execution_id")
-                        generation = payload.get("generation")
-                        if (
-                            isinstance(digest, str)
-                            and isinstance(execution_id, str)
-                            and isinstance(generation, int)
-                            and hmac.compare_digest(
-                                digest,
-                                _checkpoint_signature(payload, self._integrity_key),
-                            )
-                        ):
-                            entries[execution_id] = {
-                                "generation": generation,
-                                "integrity_digest": digest,
-                            }
-                    except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
-                        continue
-            self._integrity_entries = entries
-            if entries:
-                self._save_integrity_index()
-            return entries
+        repaired_access = False
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            os.lstat(path)
+            index_exists = True
+        except FileNotFoundError:
+            index_exists = False
+        except PermissionError as access_error:
+            if self._secure_file is None:
+                raise CheckpointError(
+                    "Checkpoint integrity security state is not accessible.",
+                    code=CheckpointFailureCode.SECURITY_STATE_ACCESS_DENIED,
+                ) from access_error
+            try:
+                self._secure_file(path)
+                repaired_access = True
+                os.lstat(path)
+                index_exists = True
+            except OSError as repair_error:
+                raise CheckpointError(
+                    "Checkpoint integrity security state is not accessible; "
+                    "the existing index was preserved.",
+                    code=CheckpointFailureCode.SECURITY_STATE_ACCESS_DENIED,
+                ) from repair_error
+        if not index_exists:
+            # A missing anti-rollback anchor must never be reconstructed from
+            # checkpoint files that an attacker could have rolled back too.
+            if self._directory is not None and any(
+                self._directory.glob("*.json")
+            ):
+                raise CheckpointError(
+                    "Checkpoint integrity index is missing while durable "
+                    "checkpoints exist; automatic re-anchoring was refused.",
+                    code=CheckpointFailureCode.INTEGRITY_INDEX_AUTHENTICATION_FAILED,
+                )
+            return {}
+
+        try:
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except PermissionError as access_error:
+                if self._secure_file is None:
+                    raise CheckpointError(
+                        "Checkpoint integrity security state is not accessible.",
+                        code=CheckpointFailureCode.SECURITY_STATE_ACCESS_DENIED,
+                    ) from access_error
+                try:
+                    self._secure_file(path)
+                    repaired_access = True
+                    raw = path.read_text(encoding="utf-8")
+                except OSError as repair_error:
+                    raise CheckpointError(
+                        "Checkpoint integrity security state is not accessible; "
+                        "the existing index was preserved.",
+                        code=CheckpointFailureCode.SECURITY_STATE_ACCESS_DENIED,
+                    ) from repair_error
+            payload = json.loads(raw)
             if not isinstance(payload, dict):
                 raise CheckpointInvalidError(
-                    "Checkpoint integrity index must be a JSON object."
+                    "Checkpoint integrity index must be a JSON object.",
+                    code=CheckpointFailureCode.INTEGRITY_INDEX_MALFORMED,
                 )
             digest = payload.get("integrity_digest")
             if (
                 payload.get("schema_version") != 1
                 or not isinstance(payload.get("entries"), dict)
-                or not isinstance(digest, str)
-                or not hmac.compare_digest(
-                    digest, _checkpoint_signature(payload, self._integrity_key)
-                )
             ):
                 raise CheckpointInvalidError(
-                    "Checkpoint integrity index validation failed."
+                    "Checkpoint integrity index is malformed.",
+                    code=CheckpointFailureCode.INTEGRITY_INDEX_MALFORMED,
                 )
+            if not isinstance(digest, str) or not hmac.compare_digest(
+                digest, _checkpoint_signature(payload, self._integrity_key)
+            ):
+                raise CheckpointInvalidError(
+                    "Checkpoint integrity index authentication failed.",
+                    code=CheckpointFailureCode.INTEGRITY_INDEX_AUTHENTICATION_FAILED,
+                )
+            if self._secure_file is not None and not repaired_access:
+                try:
+                    self._secure_file(path)
+                except OSError as access_error:
+                    raise CheckpointError(
+                        "Checkpoint integrity index permissions could not be "
+                        "secured; the existing index was preserved.",
+                        code=CheckpointFailureCode.SECURITY_STATE_ACCESS_DENIED,
+                    ) from access_error
             return dict(payload["entries"])
+        except CheckpointError:
+            raise
+        except PermissionError as exc:
+            raise CheckpointError(
+                "Checkpoint integrity security state is not accessible.",
+                code=CheckpointFailureCode.SECURITY_STATE_ACCESS_DENIED,
+            ) from exc
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
             raise CheckpointInvalidError(
-                f"Checkpoint integrity index is corrupt: {exc}"
+                f"Checkpoint integrity index is malformed: {exc}",
+                code=CheckpointFailureCode.INTEGRITY_INDEX_MALFORMED,
             ) from exc
 
     def _save_integrity_index(self) -> None:

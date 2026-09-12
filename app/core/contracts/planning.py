@@ -6,6 +6,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from app.core.contracts.policy import ExecutionConstraints
+from app.core.contracts.memory import MemoryRecallIntent
 
 
 class GoalComplexity(StrEnum):
@@ -88,6 +89,20 @@ class GoalIntent(StrEnum):
     MANAGE_CONTACT = "manage_contact"
 
 
+class FreshnessRequirement(StrEnum):
+    """Whether answering the goal requires externally current evidence."""
+
+    STABLE = "stable"
+    CURRENT = "current"
+
+
+class SearchCategory(StrEnum):
+    """Provider-independent search category selected during planning."""
+
+    GENERAL = "general"
+    NEWS = "news"
+
+
 class Goal(BaseModel):
     """Normalized representation of a user goal."""
 
@@ -107,6 +122,9 @@ class Goal(BaseModel):
     intent_action: str | None = None
     intent_arguments: dict = Field(default_factory=dict)
     missing_arguments: list[str] = Field(default_factory=list)
+    freshness_requirement: FreshnessRequirement = FreshnessRequirement.STABLE
+    search_category: SearchCategory = SearchCategory.GENERAL
+    memory_intent: MemoryRecallIntent | None = None
 
 
 class Skill(BaseModel):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from uuid import uuid4
+import re
 
 import logging
 
@@ -74,6 +75,7 @@ class Planner:
         capability_registry: CapabilityRegistry | None = None,
         memory_manager: object | None = None,
         intelligence_manager: object | None = None,
+        filesystem_policy: object | None = None,
     ) -> None:
         self._goal_parser = goal_parser or GoalParser()
         self._task_decomposer = task_decomposer or TaskDecomposer()
@@ -89,6 +91,21 @@ class Planner:
         self._adaptive_policy = AdaptivePlanningPolicy()
         self._planning_metrics = PlanningMetricsCollector()
         self._tool_validator = ToolValidator()
+        self._filesystem_policy = filesystem_policy
+
+    def _resolve_resource_destinations(self, tasks: list[PlanTask]) -> None:
+        """Bind workspace destinations before CAP signs the operation. P7 still enforces scope."""
+        from app.core.gambit.resource_parser import resolve_resource_path
+        if self._filesystem_policy is None or self._filesystem_policy.default_root is None:
+            return
+        for task in tasks:
+            if task.metadata.get("tool") not in {"filesystem", "resolver"}:
+                continue
+            args = task.metadata.setdefault("args", {})
+            for field in ("path", "destination"):
+                if args.get(field):
+                    args[field] = resolve_resource_path(str(args[field]), self._filesystem_policy.default_root,
+                                                       args.get("target_root"))
 
     def _resolve_tool_ids(self, tasks: list[PlanTask]) -> None:
         """Fill in concrete tool ids for capability-based tool tasks.
@@ -166,6 +183,7 @@ class Planner:
         if planning_context is not None:
             tasks = self._plan_optimizer.optimize(tasks, planning_context)
         self._resolve_tool_ids(tasks)
+        self._resolve_resource_destinations(tasks)
         
         used_skill_ids = []
         used_skill_names = []
@@ -239,7 +257,13 @@ class Planner:
             planner_reasoning=planner_reasoning,
         )
 
-    async def plan_with_capability_check(self, request: str, planning_context: PlanningContext | None = None, personality_context: dict | None = None) -> PlannerResult:
+    async def plan_with_capability_check(
+        self,
+        request: str,
+        planning_context: PlanningContext | None = None,
+        personality_context: dict | None = None,
+        goal: Goal | None = None,
+    ) -> PlannerResult:
         """Build a plan with a Capability Registry gate.
 
         Flow:
@@ -252,7 +276,24 @@ class Planner:
         The Orchestrator MUST NOT call the Workflow Engine when
         PlannerResult.status == CAPABILITY_UNAVAILABLE.
         """
-        goal = self._goal_parser.parse(request)
+        # The installed PDF capability is read/extract-only. Refuse creation
+        # deterministically instead of routing a `.pdf` path to the text
+        # filesystem writer or allowing provider prose to simulate an artifact.
+        if re.search(
+            r"\b(?:create|generate|make|export|save)\b.{0,60}\bpdf\b"
+            r"|\bpdf\b.{0,60}\b(?:create|generate|make|export|save)\b",
+            request,
+            re.IGNORECASE,
+        ):
+            return PlannerResult(
+                status=PlannerStatus.CAPABILITY_UNAVAILABLE,
+                required_capability="PDF creation",
+            )
+        # The canonical orchestrator may already have enriched the parsed goal
+        # with a scoped conversational reference (for example, the exact IDs
+        # behind "the second memory"). Reuse that typed goal so planning does
+        # not discard the resolution by parsing the raw sentence a second time.
+        goal = goal or self._goal_parser.parse(request)
         required_domain = GoalParser.capability_domain_for_intent(goal.intent)
 
         # Only check the registry when a specific tool is required.
@@ -275,6 +316,14 @@ class Planner:
         if planning_context is not None:
             tasks = self._plan_optimizer.optimize(tasks, planning_context)
         self._resolve_tool_ids(tasks)
+        try:
+            self._resolve_resource_destinations(tasks)
+        except (OSError, ValueError) as exc:
+            return PlannerResult(
+                status=PlannerStatus.NEEDS_INPUT,
+                required_capability=required_domain,
+                missing_arguments=[f"path: could not resolve destination; specify an explicit path ({exc})"],
+            )
         input_errors = self._tool_input_errors(tasks)
         if input_errors:
             return PlannerResult(

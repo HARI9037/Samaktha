@@ -29,6 +29,23 @@ def test_empty_request_is_passthrough() -> None:
     assert result.request == ""
 
 
+def test_above_content_uses_only_observed_session_text() -> None:
+    result = ReferenceResolver().resolve(
+        "summarize the above content",
+        _state(last_generated_text="Grounded search summary"),
+    )
+    assert result.resolved is True
+    assert result.kind == ReferenceKind.GENERATED_TEXT
+    assert result.request == "summarize Grounded search summary"
+
+
+def test_above_content_without_observed_output_remains_unresolved() -> None:
+    result = ReferenceResolver().resolve(
+        "create a PDF from the above content", ConversationState()
+    )
+    assert result.resolved is False
+
+
 def test_summarize_it_resolves_active_document() -> None:
     resolver = ReferenceResolver()
     result = resolver.resolve("Summarize it", _state(active_document="profile.pdf"))

@@ -140,6 +140,66 @@ def record_outputs(
         if isinstance(candidates, list) and candidates:
             state.last_search_results = [_candidate_path(c) for c in candidates]
 
+        internet_results = data.get("results") if data.get("internet") is True else None
+        if isinstance(internet_results, list) and internet_results:
+            state.last_search_results = [
+                str(item.get("url") or item.get("title"))
+                for item in internet_results[:10]
+                if isinstance(item, dict) and (item.get("url") or item.get("title"))
+            ]
+            # Extract and store entities for follow-up resolution
+            from app.internet.entity_extractor import (
+                extract_entities_from_snippets,
+                infer_domain_hint,
+                infer_format_intent,
+                infer_requested_count,
+            )
+            # Use the original user request to infer intent
+            original_request = state.last_command or ""
+            domain_hint = infer_domain_hint(original_request)
+            format_intent = infer_format_intent(original_request)
+            requested_count = infer_requested_count(original_request)
+            
+            entities = extract_entities_from_snippets(
+                internet_results,
+                max_entities=requested_count,
+                domain_hint=domain_hint,
+                format_intent=format_intent,
+            )
+            state.last_search_entities = entities
+            state.last_search_format_intent = format_intent
+            state.last_search_domain_hint = domain_hint
+            state.last_search_requested_count = requested_count
+            
+            state.last_tool_result = data
+            tool_ran = True
+
+        memory_evidence = data.get("memory_evidence")
+        if isinstance(memory_evidence, dict):
+            records = memory_evidence.get("records")
+            if isinstance(records, list):
+                state.last_memory_result_ids = [
+                    str(record.get("memory_id"))
+                    for record in records
+                    if isinstance(record, dict) and record.get("memory_id")
+                ]
+            else:
+                state.last_memory_result_ids = []
+            recalled_session = memory_evidence.get("session_id")
+            state.last_memory_session_ids = (
+                [str(recalled_session)] if recalled_session else []
+            )
+            state.last_memory_query = str(memory_evidence.get("query") or "")
+            state.last_memory_scope = str(
+                memory_evidence.get("workspace_id")
+                or memory_evidence.get("profile_id")
+                or memory_evidence.get("principal_id")
+                or ""
+            )
+            state.last_memory_intent = str(memory_evidence.get("intent") or "")
+            state.last_tool_result = data
+            tool_ran = True
+
         tool = metadata.get("tool")
         if isinstance(tool, str) and tool:
             state.active_tool = tool

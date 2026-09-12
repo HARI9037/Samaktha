@@ -114,6 +114,7 @@ class SystemDiagnostics:
         checks.extend(self._environment_checks())
         checks.extend(self._installation_checks())
         checks.extend(self._provider_checks())
+        checks.extend(self._search_checks())
         checks.extend(self._model_checks())
         checks.extend(self._memory_checks())
         checks.extend(self._router_checks())
@@ -292,6 +293,49 @@ class SystemDiagnostics:
                     DiagnosticCheck("Models", "Model Registry", DiagnosticStatus.WARN, "not in local registry (remote/dynamic ok)"))
         return checks
 
+    def _search_checks(self) -> list[DiagnosticCheck]:
+        """Report selected search configuration without exposing queries or secrets."""
+        internet_tool = getattr(self._orchestrator, "internet_tool", None)
+        provider = getattr(internet_tool, "provider", None)
+        if provider is None:
+            return [
+                DiagnosticCheck(
+                    "Search", "Provider", DiagnosticStatus.WARN, "not attached"
+                )
+            ]
+
+        provider_name = str(getattr(provider, "name", "unknown") or "unknown")
+        labels = {"ddgs": "DDGS", "searxng": "SearXNG", "brave": "Brave"}
+        label = labels.get(provider_name.lower(), provider_name.capitalize())
+        configured = bool(provider.is_configured())
+        endpoint = getattr(provider, "endpoint_origin", None)
+        checks = [
+            DiagnosticCheck("Search", "Provider", DiagnosticStatus.OK, label),
+            DiagnosticCheck(
+                "Search",
+                "Configured",
+                DiagnosticStatus.OK if configured else DiagnosticStatus.WARN,
+                "yes" if configured else "no",
+            ),
+            DiagnosticCheck(
+                "Search",
+                "Health",
+                DiagnosticStatus.OK if configured else DiagnosticStatus.WARN,
+                "configuration ready; live search not probed" if configured else "unavailable",
+            ),
+        ]
+        if provider_name.lower() == "searxng":
+            checks.insert(
+                2,
+                DiagnosticCheck(
+                    "Search",
+                    "Endpoint",
+                    DiagnosticStatus.OK if endpoint else DiagnosticStatus.WARN,
+                    str(endpoint) if endpoint else "not configured",
+                ),
+            )
+        return checks
+
     def _model_registered(self, provider_id: str, model_id: str) -> bool:
         manager = getattr(self._orchestrator, "model_manager", None)
         if manager is None:
@@ -374,15 +418,43 @@ class SystemDiagnostics:
             ]
         root = Path(application_settings.checkpoint_location)
         healthy = store is not None and root.is_dir() and os.access(root, os.W_OK)
-        invalid_count = len(store.list_invalid()) if healthy else 0
-        status = (
-            DiagnosticStatus.OK
-            if healthy and invalid_count == 0
-            else DiagnosticStatus.ERROR
+        if not healthy:
+            return [
+                DiagnosticCheck(
+                    "Recovery",
+                    "Checkpoint Store",
+                    DiagnosticStatus.ERROR,
+                    "missing or not writable",
+                )
+            ]
+        coordinator = getattr(self._orchestrator, "execution_coordinator", None)
+        active_ids = (
+            coordinator.active_execution_ids()
+            if coordinator is not None
+            and callable(getattr(coordinator, "active_execution_ids", None))
+            else set()
         )
-        detail = "healthy" if status == DiagnosticStatus.OK else (
-            f"{invalid_count} invalid checkpoint(s)" if healthy else "missing or not writable"
+        summary = store.reconcile(active_execution_ids=active_ids)
+        if summary.critical_rejected_count:
+            status = DiagnosticStatus.ERROR
+        elif summary.rejected_count or summary.valid_recovery_unsafe_count:
+            status = DiagnosticStatus.WARN
+        else:
+            status = DiagnosticStatus.OK
+        detail = (
+            f"valid={summary.valid_count}; "
+            f"recoverable={summary.valid_recoverable_count}; "
+            f"rejected={summary.rejected_count}; "
+            f"critical={summary.critical_rejected_count}"
         )
+        if summary.rejected_by_code:
+            categories = ",".join(
+                f"{code.value}={count}"
+                for code, count in sorted(
+                    summary.rejected_by_code.items(), key=lambda item: item[0].value
+                )
+            )
+            detail += f"; rejection_types[{categories}]"
         return [DiagnosticCheck("Recovery", "Checkpoint Store", status, detail)]
 
     def _plugin_checks(self) -> list[DiagnosticCheck]:
@@ -511,6 +583,48 @@ def render_report(report: DiagnosticReport) -> str:
     return "\n".join(lines).rstrip()
 
 
+def read_only_diagnostic_report() -> DiagnosticReport:
+    """Run the same read-only validators used by first-run setup.
+
+    Unlike the legacy runtime sweep this does not construct the orchestrator,
+    create databases, generate keys, repair ACLs, or enable capabilities.
+    """
+    from app.config.credentials import CredentialStoreError, production_credential_store
+    from app.setup.validators import SetupValidator
+    from app.setup.models import ValidationStatus
+
+    try:
+        credential_store = production_credential_store()
+    except CredentialStoreError:
+        credential_store = None
+    validator = SetupValidator(credential_store=credential_store)
+    rows = validator.run()
+    checks = []
+    critical_sections = {
+        "windows": "Environment",
+        "core_runtime": "Environment",
+        "storage": "Installation",
+        "disk": "Installation",
+        "credential_store": "Installation",
+        "installation_identity": "Installation",
+        "single_instance": "Installation",
+        "workspace": "Installation",
+        "security": "Installation",
+        "ai_provider": "Providers",
+        "memory": "Memory",
+    }
+    for row in rows:
+        status = {
+            ValidationStatus.PASS: DiagnosticStatus.OK,
+            ValidationStatus.WARN: DiagnosticStatus.WARN,
+            ValidationStatus.EXPERIMENTAL: DiagnosticStatus.WARN,
+            ValidationStatus.DISABLED: DiagnosticStatus.OK,
+            ValidationStatus.FAIL: DiagnosticStatus.ERROR if row.critical else DiagnosticStatus.WARN,
+        }[row.status]
+        checks.append(DiagnosticCheck(critical_sections.get(row.validator_id, "Setup"), row.label, status, row.detail))
+    return DiagnosticReport(checks=checks, version=get_settings().app_version)
+
+
 DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 1
 
 
@@ -589,12 +703,20 @@ def build_safe_diagnostic_bundle(
         }
 
     checkpoint_store = getattr(orchestrator, "checkpoint_store", None)
-    recovery = {
-        "status": "ready" if checkpoint_store is not None else "not_attached",
-        "invalid_checkpoints": (
-            len(checkpoint_store.list_invalid()) if checkpoint_store is not None else 0
-        ),
-    }
+    recovery = {"status": "not_attached", "rejected_checkpoints": 0}
+    if checkpoint_store is not None:
+        summary = checkpoint_store.reconcile()
+        recovery = {
+            "status": "ready",
+            "valid_checkpoints": summary.valid_count,
+            "recoverable_checkpoints": summary.valid_recoverable_count,
+            "rejected_checkpoints": summary.rejected_count,
+            "critical_rejected_checkpoints": summary.critical_rejected_count,
+            "rejection_types": {
+                code.value: count
+                for code, count in summary.rejected_by_code.items()
+            },
+        }
 
     return {
         "schema_version": DIAGNOSTIC_BUNDLE_SCHEMA_VERSION,

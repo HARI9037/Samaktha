@@ -9,6 +9,7 @@ import os
 import secrets
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,7 @@ from app.security.output_filter import OutputSecurityFilter
 from app.security.security_metrics import SecurityMetricsCollector
 from app.security.tool_guard import ToolGuard
 from app.governance import GovernanceEngine
+from app.paths import get_application_paths
 from app.voice.metrics import VoiceMetricsCollector
 
 log = logging.getLogger(__name__)
@@ -220,25 +222,31 @@ async def _app_lifespan(app: FastAPI):
             await scheduler.stop()
 
 
-def _harden_private_file_permissions(path: Path) -> None:
-    """Restrict a security-state file to this user, SYSTEM, and admins.
+@dataclass(frozen=True)
+class _SigningKeyIdentityContext:
+    """Windows identities relevant to one signing-key lifecycle."""
 
-    ``mode=0o600`` is sufficient on POSIX.  Windows ignores those creation
-    mode bits for DACL purposes, so install an explicit protected DACL rather
-    than inheriting potentially writable permissions from the parent folder.
-    """
-    if sys.platform != "win32":
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-        return
+    executing_sid: str
+    intended_sid: str
+    canonical: bool
 
+
+def _private_windows_dacl_sddl(intended_user_sid: str) -> str:
+    """Return the protected least-privilege DACL for local security state."""
+    return (
+        f"D:P(A;;FA;;;{intended_user_sid})"
+        "(A;;FA;;;SY)"
+        "(A;;FA;;;BA)"
+    )
+
+
+def _current_windows_user_sid() -> str:
+    """Return the SID attached to the current process token."""
     import ctypes
     from ctypes import wintypes
 
     token_query = 0x0008
     token_user = 1
-    dacl_security_information = 0x00000004
-    protected_dacl_security_information = 0x80000000
-    sddl_revision_1 = 1
 
     class SidAndAttributes(ctypes.Structure):
         _fields_ = [("Sid", wintypes.LPVOID), ("Attributes", wintypes.DWORD)]
@@ -250,6 +258,7 @@ def _harden_private_file_permissions(path: Path) -> None:
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
     advapi32.OpenProcessToken.argtypes = [
         wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
     ]
@@ -260,14 +269,6 @@ def _harden_private_file_permissions(path: Path) -> None:
     advapi32.ConvertSidToStringSidW.argtypes = [
         wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR),
     ]
-    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD,
-        ctypes.POINTER(wintypes.LPVOID), ctypes.POINTER(wintypes.DWORD),
-    ]
-    advapi32.SetFileSecurityW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPVOID,
-    ]
-    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
 
     token = wintypes.HANDLE()
     if not advapi32.OpenProcessToken(
@@ -291,15 +292,168 @@ def _harden_private_file_permissions(path: Path) -> None:
         ):
             raise ctypes.WinError(ctypes.get_last_error())
         try:
-            sid_text = sid_text_pointer.value
+            return str(sid_text_pointer.value)
         finally:
             kernel32.LocalFree(sid_text_pointer)
     finally:
         kernel32.CloseHandle(token)
 
-    # Protected DACL: full access for the current identity, LocalSystem, and
-    # built-in administrators.  No inherited or broad Users/Everyone ACEs.
-    sddl = f"D:P(A;;FA;;;{sid_text})(A;;FA;;;SY)(A;;FA;;;BA)"
+
+def _windows_path_owner_sid(path: Path) -> str:
+    """Read a filesystem object's owner SID without changing its security."""
+    import ctypes
+    from ctypes import wintypes
+
+    se_file_object = 1
+    owner_security_information = 0x00000001
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        ctypes.c_uint,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR),
+    ]
+
+    owner_sid = wintypes.LPVOID()
+    security_descriptor = wintypes.LPVOID()
+    status = advapi32.GetNamedSecurityInfoW(
+        str(path),
+        se_file_object,
+        owner_security_information,
+        ctypes.byref(owner_sid),
+        None,
+        None,
+        None,
+        ctypes.byref(security_descriptor),
+    )
+    if status:
+        raise ctypes.WinError(status)
+    try:
+        sid_text_pointer = wintypes.LPWSTR()
+        if not advapi32.ConvertSidToStringSidW(
+            owner_sid, ctypes.byref(sid_text_pointer)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return str(sid_text_pointer.value)
+        finally:
+            kernel32.LocalFree(sid_text_pointer)
+    finally:
+        kernel32.LocalFree(security_descriptor)
+
+
+def _windows_nearest_owner_sid(path: Path) -> str:
+    """Resolve the installation owner from the nearest inspectable ancestor."""
+    candidate = path
+    last_error: OSError | None = None
+    while True:
+        try:
+            return _windows_path_owner_sid(candidate)
+        except OSError as exc:
+            last_error = exc
+        if candidate.parent == candidate:
+            break
+        candidate = candidate.parent
+    raise PermissionError(
+        f"Could not determine the Windows owner of Samaktha state at {path}."
+    ) from last_error
+
+
+def _paths_resolve_to_same_location(path: Path, expected: Path) -> bool:
+    try:
+        candidate = path.resolve(strict=False)
+        trusted = expected.resolve(strict=False)
+    except OSError:
+        return False
+    return os.path.normcase(str(candidate)) == os.path.normcase(str(trusted))
+
+
+def _resolve_signing_key_identity(
+    path: Path,
+    trusted_repair_path: Path | None,
+) -> _SigningKeyIdentityContext | None:
+    """Separate the process token from the per-user installation identity."""
+    if sys.platform != "win32":
+        return None
+    executing_sid = _current_windows_user_sid()
+    canonical = (
+        trusted_repair_path is not None
+        and path.name.casefold() == "permit_signing.key"
+        and trusted_repair_path.name.casefold() == "permit_signing.key"
+        and _paths_resolve_to_same_location(path, trusted_repair_path)
+    )
+    owner_root = (
+        trusted_repair_path.parent
+        if canonical and trusted_repair_path is not None
+        else path.parent
+    )
+    intended_sid = _windows_nearest_owner_sid(owner_root)
+    forbidden_installation_owners = {
+        "S-1-1-0",       # Everyone
+        "S-1-5-11",      # Authenticated Users
+        "S-1-5-18",      # LocalSystem
+        "S-1-5-32-544",  # BUILTIN\\Administrators
+        "S-1-5-32-545",  # BUILTIN\\Users
+    }
+    if intended_sid in forbidden_installation_owners:
+        raise PermissionError(
+            "Samaktha could not determine a unique per-user Windows identity "
+            f"for security state at {owner_root}."
+        )
+    return _SigningKeyIdentityContext(
+        executing_sid=executing_sid,
+        intended_sid=intended_sid,
+        canonical=canonical,
+    )
+
+
+def _harden_private_file_permissions(
+    path: Path,
+    *,
+    intended_user_sid: str | None = None,
+) -> None:
+    """Restrict security state to its intended user, SYSTEM, and admins.
+
+    ``mode=0o600`` is sufficient on POSIX.  Windows ignores those creation
+    mode bits for DACL purposes, so install an explicit protected DACL rather
+    than inheriting potentially writable permissions from the parent folder.
+    """
+    if sys.platform != "win32":
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    dacl_security_information = 0x00000004
+    protected_dacl_security_information = 0x80000000
+    sddl_revision_1 = 1
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID), ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.SetFileSecurityW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPVOID,
+    ]
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+
+    # The intended installation SID is explicit. Falling back to the process
+    # token is only appropriate for non-product temporary/internal files.
+    sid_text = intended_user_sid or _current_windows_user_sid()
+    sddl = _private_windows_dacl_sddl(sid_text)
     security_descriptor = wintypes.LPVOID()
     descriptor_size = wintypes.DWORD()
     if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -318,38 +472,214 @@ def _harden_private_file_permissions(path: Path) -> None:
         kernel32.LocalFree(security_descriptor)
 
 
-def _load_or_create_signing_key(path: Path) -> bytes:
-    """Atomically create or load the per-installation authorization key."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _is_trusted_signing_key_repair_target(
+    path: Path,
+    trusted_repair_path: Path | None,
+) -> bool:
+    """Return whether a stale Windows DACL may be repaired at ``path``.
+
+    Repair is deliberately narrower than ordinary loading: the existing file
+    must be the exact canonical ``permit_signing.key`` supplied by the
+    application path resolver. Symlinks, hard links, aliases, and arbitrary
+    caller-provided locations fail closed.
+    """
+    if sys.platform != "win32" or trusted_repair_path is None:
+        return False
+    if (
+        path.name.casefold() != "permit_signing.key"
+        or trusted_repair_path.name.casefold() != "permit_signing.key"
+    ):
+        return False
     try:
-        descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-    except FileExistsError:
-        pass
-    else:
-        with os.fdopen(descriptor, "wb") as key_file:
-            key_file.write(secrets.token_bytes(32))
-            key_file.flush()
-            os.fsync(key_file.fileno())
-    key = path.read_bytes()
+        file_state = os.lstat(path)
+        if (
+            stat.S_ISLNK(file_state.st_mode)
+            or not stat.S_ISREG(file_state.st_mode)
+            or file_state.st_nlink != 1
+        ):
+            return False
+        candidate = path.resolve(strict=True)
+        trusted = trusted_repair_path.resolve(strict=False)
+    except OSError:
+        return False
+    return os.path.normcase(str(candidate)) == os.path.normcase(str(trusted))
+
+
+def _raise_signing_key_acl_repair_error(
+    path: Path,
+    cause: OSError,
+) -> None:
+    raise PermissionError(
+        "Samaktha cannot access its existing permit-signing key because its "
+        "Windows permissions do not grant the current installation user "
+        f"access at {path}. The key was preserved. Run the approved "
+        "security-state repair procedure as an administrator."
+    ) from cause
+
+
+def _raise_signing_key_identity_mismatch(path: Path, *, existing: bool) -> None:
+    state = "existing permit-signing key" if existing else "security-state location"
+    raise PermissionError(
+        f"Samaktha refused to change its {state} at {path} because the "
+        "executing Windows identity is not the current installation user. "
+        "The key was preserved and no ACL was changed."
+    )
+
+
+def _signing_key_exists(path: Path) -> bool:
+    try:
+        os.lstat(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        # An inaccessible canonical key must enter fail-closed recovery, never
+        # the create path that could replace durable authorization identity.
+        return True
+
+
+def _load_or_create_signing_key(
+    path: Path,
+    *,
+    trusted_repair_path: Path | None = None,
+    identity_context: _SigningKeyIdentityContext | None = None,
+) -> bytes:
+    """Atomically create or load the per-installation authorization key.
+
+    ``trusted_repair_path`` is used only for a bounded Windows recovery of an
+    existing unreadable canonical key. It never authorizes content replacement
+    and is intentionally omitted by ordinary/internal callers.
+    """
+    identity = (
+        identity_context
+        if identity_context is not None
+        else _resolve_signing_key_identity(path, trusted_repair_path)
+    )
+    existing = _signing_key_exists(path)
+    if (
+        identity is not None
+        and identity.canonical
+        and identity.executing_sid.casefold() != identity.intended_sid.casefold()
+    ):
+        _raise_signing_key_identity_mismatch(path, existing=existing)
+
+    intended_user_sid = identity.intended_sid if identity is not None else None
+    created = False
+    if not existing:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            existing = True
+        else:
+            created = True
+            with os.fdopen(descriptor, "wb") as key_file:
+                key_file.write(secrets.token_bytes(32))
+                key_file.flush()
+                os.fsync(key_file.fileno())
+
+            # Harden before reopening so no broad inherited DACL exists during
+            # the first read of newly created authorization state.
+            _harden_private_file_permissions(
+                path,
+                intended_user_sid=intended_user_sid,
+            )
+
+    try:
+        key = path.read_bytes()
+    except PermissionError:
+        if created:
+            raise
+        if not (
+            identity is not None
+            and identity.canonical
+            and _is_trusted_signing_key_repair_target(path, trusted_repair_path)
+        ):
+            if identity is not None and identity.canonical:
+                _raise_signing_key_acl_repair_error(
+                    path,
+                    PermissionError("Canonical signing-key target is not safely repairable."),
+                )
+            raise
+        try:
+            # SetFileSecurityW changes only the DACL. It does not open the file
+            # for data access and therefore cannot replace or rotate key bytes.
+            _harden_private_file_permissions(
+                path,
+                intended_user_sid=intended_user_sid,
+            )
+            key = path.read_bytes()
+        except OSError as repair_error:
+            _raise_signing_key_acl_repair_error(path, repair_error)
+
     if len(key) < 32:
-        raise ValueError("ExecutionPermit signing key must contain at least 32 bytes.")
-    _harden_private_file_permissions(path)
+        raise ValueError(
+            "Samaktha durable authorization key is invalid: ExecutionPermit "
+            "signing key must contain at least 32 bytes. The existing file was "
+            "preserved for recovery."
+        )
+    if not created:
+        if (
+            identity is not None
+            and identity.canonical
+            and not _is_trusted_signing_key_repair_target(
+                path, trusted_repair_path
+            )
+        ):
+            raise PermissionError(
+                "Samaktha refused to re-harden a linked or noncanonical "
+                "permit-signing key. The existing file was preserved."
+            )
+        # Readable existing keys are validated before their ACL is reasserted.
+        try:
+            _harden_private_file_permissions(
+                path,
+                intended_user_sid=intended_user_sid,
+            )
+        except OSError as hardening_error:
+            if identity is not None and identity.canonical:
+                _raise_signing_key_acl_repair_error(path, hardening_error)
+            raise
     try:
         # Installed config roots are created inside the current user's profile
         # and can be protected as a directory too. Source/test workspaces may
         # be owned by a different managed identity; the key file DACL above is
         # still mandatory and already prevents read/write access.
-        _harden_private_file_permissions(path.parent)
+        _harden_private_file_permissions(
+            path.parent,
+            intended_user_sid=intended_user_sid,
+        )
     except PermissionError:
         log.warning(
             "Could not replace inherited ACL on signing-key parent directory %s",
             path.parent,
         )
     return key
+
+
+def _bound_security_state_hardener(
+    trusted_path: Path,
+    *,
+    intended_user_sid: str | None,
+):
+    """Bind ACL changes to one composition-owned security-state file."""
+    expected = trusted_path.resolve(strict=False)
+
+    def harden(path: Path) -> None:
+        if not _paths_resolve_to_same_location(Path(path), expected):
+            raise PermissionError(
+                "Samaktha refused to change permissions on noncanonical "
+                f"security state at {path}."
+            )
+        _harden_private_file_permissions(
+            Path(path), intended_user_sid=intended_user_sid
+        )
+
+    return harden
 
 
 def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrator:
@@ -362,9 +692,23 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
     from app.core.contracts.policy import configure_permit_signing_key
 
     signing_key_path = Path(settings.permit_signing_key_path)
-    signing_key = _load_or_create_signing_key(signing_key_path)
+    canonical_signing_key_path = (
+        get_application_paths().config_root / "permit_signing.key"
+    )
+    security_identity = _resolve_signing_key_identity(
+        signing_key_path, canonical_signing_key_path
+    )
+    signing_key = _load_or_create_signing_key(
+        signing_key_path,
+        trusted_repair_path=canonical_signing_key_path,
+        identity_context=security_identity,
+    )
     configure_permit_signing_key(signing_key)
-    provider_settings = ProviderSettings()
+    from app.config.runtime_config import resolve_provider_settings
+
+    # Preserve the established composition/test injection seam while adding
+    # persistent setup as a lower-precedence source.
+    provider_settings = resolve_provider_settings(base=ProviderSettings())
 
     provider_registry = ProviderRegistry()
     health_checker = ProviderHealthChecker(provider_settings)
@@ -568,7 +912,12 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
     from app.tools.shell import ShellTool
     from app.tools.clipboard import ClipboardTool
     from app.tools.notification import NotificationTool
-    from app.internet import BraveSearchProvider, InternetTool
+    from app.internet import (
+        BraveSearchProvider,
+        DDGSSearchProvider,
+        InternetTool,
+        SearXNGSearchProvider,
+    )
     tool_registry = ToolRegistry()
     from app.tools.security import (
         FileSystemSecurityPolicy,
@@ -628,13 +977,14 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
             tool_id="resolver",
             description="Dynamically routes resource tasks to specific format tools.",
             capabilities=["read", "write", "list", "search", "move", "copy", "delete", "rename"],
-            supported_actions=["read", "write", "list", "search", "move", "copy", "delete", "rename"],
+            supported_actions=["read", "write", "list", "search", "move", "copy", "delete", "rename", "mkdir"],
             permissions=["read", "write", "delete"],
             product_domain="filesystem",
             execution_mode=CapabilityAvailability.PRODUCTION_READY,
-            side_effect_actions=["write", "move", "copy", "delete", "rename"],
+            side_effect_actions=["write", "move", "copy", "delete", "rename", "mkdir"],
             evidence_requirements={
-                "write": "positive_written_bytes",
+                "mkdir": "created_directory",
+                "write": "written_bytes_or_verified_empty_file",
                 "move": "source_and_destination",
                 "copy": "source_and_destination",
                 "delete": "deleted_target",
@@ -703,8 +1053,8 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
         info=ToolInfo(
             tool_id="memory",
             description="Search, retrieve, and delete conversation and skill memories",
-            capabilities=["search", "retrieve", "delete", "delete_type", "delete_all", "delete_session"],
-            supported_actions=["search", "retrieve", "delete", "delete_type", "delete_all", "delete_session"],
+            capabilities=["search", "retrieve", "last_session", "delete", "delete_type", "delete_all", "delete_session"],
+            supported_actions=["search", "retrieve", "last_session", "delete", "delete_type", "delete_all", "delete_session"],
             permissions=["read", "delete"],
             product_domain="memory",
             execution_mode=CapabilityAvailability.LOCAL_ONLY,
@@ -731,11 +1081,35 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
             advertised=True,
         ),
     )
-    # Phase 12 — governed internet intelligence. The provider reads
-    # SAMAKTHA_BRAVE_API_KEY from the environment; when absent the tool reports
-    # a graceful configuration error rather than crashing the pipeline.
+    # Post-P14 governed internet intelligence. Production explicitly injects
+    # one configured SearchProvider; no tool-local default or cross-provider
+    # fallback can silently change where a query is sent.
+    search_provider_name = settings.search_provider.strip().lower()
+    if search_provider_name == "ddgs":
+        search_provider = DDGSSearchProvider(
+            timeout=settings.ddgs_timeout,
+            backend=settings.ddgs_backend,
+        )
+    elif search_provider_name == "searxng":
+        search_provider = SearXNGSearchProvider(
+            base_url=settings.searxng_url,
+            timeout=settings.searxng_timeout,
+            max_retries=settings.searxng_max_retries,
+            max_response_bytes=settings.network_max_response_bytes,
+        )
+    elif search_provider_name == "brave":
+        from app.config.runtime_config import resolve_brave_api_key
+
+        search_provider = BraveSearchProvider(
+            api_key=settings.brave_api_key or resolve_brave_api_key()
+        )
+    else:
+        raise ValueError(
+            f"Unsupported search provider: {settings.search_provider!r}. "
+            "Supported providers are 'ddgs', 'searxng', and 'brave'."
+        )
     internet_tool = InternetTool(
-        provider=BraveSearchProvider(api_key=os.environ.get("SAMAKTHA_BRAVE_API_KEY")),
+        provider=search_provider,
         allow_private_addresses=settings.network_allow_private_addresses,
         allow_localhost=settings.network_allow_localhost,
         max_redirects=settings.network_max_redirects,
@@ -756,7 +1130,8 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
             product_domain="internet",
             execution_mode=CapabilityAvailability.PRODUCTION_READY,
             natural_language_intents=["search_internet"],
-            advertised=True,
+            advertised=settings.internet_search_enabled,
+            available=settings.internet_search_enabled,
         ),
     )
     # Phase 13 — native core tools. Each declares its category, permissions
@@ -782,7 +1157,8 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
             side_effect_actions=["run"],
             evidence_requirements={"run": "runtime_tool_success"},
             natural_language_intents=["run_command"],
-            advertised=True,
+            advertised=settings.shell_enabled,
+            available=settings.shell_enabled,
         ),
     )
     clipboard_tool = ClipboardTool()
@@ -814,7 +1190,8 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
         tool=notification_tool,
         info=ToolInfo(
             tool_id="notification",
-            description="Send a local desktop notification",
+            description=("Local desktop notification (backend available)" if notification_tool.backend_available()
+                         else "Local notifications unavailable: install a supported notification backend"),
             capabilities=[c.value for c in notification_tool.capabilities if hasattr(c, "value")] or ["notify", "send", "notification"],
             version="1.0.0",
             input_schema=notification_tool.input_schema,
@@ -1088,15 +1465,15 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
     email_tool = EmailTool(integration_provider=smtp_provider)
 
     email_execution_mode = (
-        CapabilityAvailability.PRODUCTION_READY
-        if smtp_provider.is_configured()
-        else CapabilityAvailability.SIMULATED
+        CapabilityAvailability.EXPERIMENTAL
+        if smtp_provider.is_ready()
+        else CapabilityAvailability.LOCAL_ONLY
     )
 
     email_description = (
-        "Send real emails via SMTP provider"
-        if smtp_provider.is_configured()
-        else "Local email drafting and simulation only; no external email delivery provider is connected"
+        "Email compose preview and experimental authenticated SMTP submission (delivery unknown)"
+        if smtp_provider.is_ready()
+        else "Email compose preview (not saved); external send requires verified Experimental SMTP setup"
     )
 
     tool_registry.register(
@@ -1105,19 +1482,25 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
         info=ToolInfo(
             tool_id="email",
             description=email_description,
-            capabilities=[c.value for c in email_tool.capabilities if hasattr(c, "value")] or ["email_compose", "email_draft", "email_send", "email_reply", "email_forward", "email_read", "email_search", "email_list_folders", "email_attachments"],
+            capabilities=email_tool.capabilities,
             version="1.0.0",
             input_schema=email_tool.input_schema,
             category="communication",
             permissions=["read", "write", "network"],
             approval_required=True,
-            supported_actions=["compose", "draft", "send", "reply", "forward", "read", "search", "list_folders"],
+            supported_actions=(
+                # SEND remains a recognized request even when SMTP is absent
+                # so Runtime can return a truthful setup-required result. It
+                # is never replaced by DRAFT. Mailbox reply/forward are not
+                # advertised because no mailbox API is integrated.
+                ["compose", "draft", "send"]
+            ),
             policy=email_tool.policy,
             product_domain="email",
             execution_mode=email_execution_mode,
-            side_effect_actions=["send", "reply", "forward"],
-            evidence_requirements={"compose": "draft_state", "draft": "draft_state", "send": "simulation_state" if not smtp_provider.is_configured() else "provider_accepted", "reply": "simulation_state", "forward": "simulation_state"},
-            natural_language_intents=["send_email", "read_email", "reply_email", "forward_email"],
+            side_effect_actions=["send"],
+            evidence_requirements={"compose": "draft_state", "draft": "draft_state", "send": "provider_accepted"},
+            natural_language_intents=["send_email"],
             advertised=True,
         ),
     )
@@ -1319,6 +1702,7 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
     orchestrator = SamakthaOrchestrator(
         context_engine=ContextEngine(memory_reader=memory_manager),
         planner=Planner(
+            filesystem_policy=filesystem_policy,
             memory_manager=memory_manager,
             capability_registry=product_capability_registry,
         ),
@@ -1348,6 +1732,7 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
     orchestrator.tool_registry = tool_registry
     orchestrator.product_capability_registry = product_capability_registry
     orchestrator.internet_tool = internet_tool
+    orchestrator.search_provider = search_provider
     orchestrator.memory_manager = memory_manager
     orchestrator.memory_controller = memory_controller
     orchestrator.session_manager = session_manager
@@ -1374,7 +1759,14 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
             integrity_index_path=signing_key_path.with_name(
                 "checkpoint_integrity.json"
             ),
-            secure_file=_harden_private_file_permissions,
+            secure_file=_bound_security_state_hardener(
+                signing_key_path.with_name("checkpoint_integrity.json"),
+                intended_user_sid=(
+                    security_identity.intended_sid
+                    if security_identity is not None
+                    else None
+                ),
+            ),
         )
         if settings.checkpoint_enabled else None
     )

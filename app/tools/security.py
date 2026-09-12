@@ -602,7 +602,10 @@ class ToolSecurityEnforcer:
         target = _canonical(candidate)
         scope = next((root for root in self.filesystem.allowed_roots if _inside(target, root)), None)
         if scope is None:
-            return _deny(ToolSecurityReason.OUTSIDE_ALLOWED_ROOT, "Filesystem target is outside the permitted workspace.")
+            return _deny(ToolSecurityReason.OUTSIDE_ALLOWED_ROOT,
+                         f"Requested destination {target} is outside Samaktha's configured filesystem access. "
+                         f"Workspace: {self.filesystem.default_root}. Choose that workspace or change the workspace in setup. "
+                         "Nothing was redirected or written.")
         return target, scope
 
     def _protected(self, target: Path) -> bool:

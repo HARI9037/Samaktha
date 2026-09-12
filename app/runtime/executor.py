@@ -310,6 +310,33 @@ class ToolExecutor:
     ) -> RuntimeResult:
         log.debug("ToolExecutor.execute() starts for task_id=%s with action_type=%s", task.task_id, task.action_type)
         tool_id = task.metadata.get("tool") if task.action_type == "tool" else task.action_type
+        permit = getattr(task, "permit", None)
+
+        # A signed permit may bind network_allowed=False for an otherwise
+        # valid operation. Runtime has already verified its integrity and
+        # operation digest; enforce the typed constraint before any internet
+        # tool/provider code can run, including configured localhost services.
+        if (
+            tool_id == "internet"
+            and permit is not None
+            and not permit.constraints.network_allowed
+        ):
+            return RuntimeResult(
+                task_id=task.task_id,
+                status=TaskStatus.FAILED,
+                routing=routing,
+                error="Runtime execution blocked: Network access is disabled by CAP constraints.",
+                metadata={
+                    "diagnostic": "network_constraint_denied",
+                    "security_blocked": True,
+                    "failure_type": "network_constraint_denied",
+                    "operation_outcome": "failed_before_effect",
+                    "tool": tool_id,
+                    "permit_id": permit.permit_id,
+                    "operation_digest": permit.operation_digest,
+                    "authorization_decision": permit.decision.value,
+                },
+            )
 
         # Security gate — the tool boundary rejects blocked tools, tools the
         # context may not use, and arguments flagged by the input scanner.
@@ -337,7 +364,6 @@ class ToolExecutor:
         # Governance gate — policy-as-code enforcement for the tool boundary.
         governance_decision = None
         governance_info = None
-        permit = getattr(task, "permit", None)
         subject_id = permit.subject_id if permit is not None else authorization_subject_id(
             user_id=context.user_id if context else None,
             session_id=context.session_id if context else None,

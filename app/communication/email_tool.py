@@ -1,6 +1,6 @@
 """Phase 15 — EmailTool.
 
-Email communication with compose, draft, send, reply, forward, read, search, attachments.
+Local compose previews and experimental SMTP submission. No mailbox backend.
 """
 
 from __future__ import annotations
@@ -34,12 +34,6 @@ class EmailTool(Tool):
             "email_compose",
             "email_draft",
             "email_send",
-            "email_reply",
-            "email_forward",
-            "email_read",
-            "email_search",
-            "email_list_folders",
-            "email_attachments",
         ]
 
     @property
@@ -56,7 +50,7 @@ class EmailTool(Tool):
 
     @property
     def supported_actions(self):
-        return ["compose", "draft", "send", "reply", "forward", "read", "search", "list_folders"]
+        return ["compose", "draft", "send"]
 
     @property
     def policy(self):
@@ -73,7 +67,7 @@ class EmailTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["compose", "draft", "send", "reply", "forward", "read", "search", "list_folders"]},
+                "action": {"type": "string", "enum": ["compose", "draft", "send"]},
                 "recipient": {"type": "string"},
                 "subject": {"type": "string"},
                 "body": {"type": "string"},
@@ -86,6 +80,11 @@ class EmailTool(Tool):
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
         action = arguments.get("action", "compose")
+        if action in {"read", "search", "list_folders", "reply", "forward"}:
+            return ToolResult(ok=False, error=f"Email {action} is unavailable: no mailbox integration is implemented.",
+                              data={"action": action, "status": "unavailable", "externally_delivered": False})
+        if arguments.get("attachments"):
+            return ToolResult(ok=False, error="Email attachments are not implemented; no message was submitted.")
 
         if action == "compose":
             return self._compose(arguments)
@@ -119,6 +118,9 @@ class EmailTool(Tool):
         )
 
     async def _send(self, args: dict) -> ToolResult:
+        if self._provider and hasattr(self._provider, "is_ready") and not self._provider.is_ready():
+            return ToolResult(ok=False, error="Experimental SMTP requires enabled, complete and authentication-verified setup.",
+                              data={"action": "send", "status": "unavailable", "externally_delivered": False, "setup_required": True})
         if self._provider and self._provider.is_configured():
             request = IntegrationRequest(
                 provider_id="smtp",
@@ -179,44 +181,47 @@ class EmailTool(Tool):
                     error=f"Email delivery failed: {', '.join(integration_result.errors)}"
                 )
 
-        # Fallback to simulated if no provider or provider not configured
-        entry = {
-            "recipient": args.get("recipient", ""),
-            "subject": args.get("subject", ""),
-            "timestamp": "now",
-            "status": "simulated",
-        }
-        self._sent_history.append(entry)
+        # A requested external SEND must never be silently downgraded to a
+        # local draft/simulation. Setup can enable the canonical SMTP adapter.
         return ToolResult(
-            ok=True,
-            data={"action": "send", "recipient": args.get("recipient", ""), "subject": args.get("subject", ""), "status": "simulated", "externally_delivered": False},
+            ok=False,
+            error=(
+                "Email sending is unavailable. Configure and verify "
+                "Experimental SMTP Sending with 'samaktha setup'."
+            ),
+            data={
+                "action": "send",
+                "status": "unavailable",
+                "externally_delivered": False,
+                "setup_required": True,
+            },
         )
 
     def _reply(self, args: dict) -> ToolResult:
         return ToolResult(
-            ok=True,
-            data={"action": "reply", "message_id": args.get("message_id", ""), "body": args.get("body", ""), "status": "simulated", "externally_delivered": False},
+            ok=False,
+            error="Email reply is unavailable because no mailbox integration is configured.",
+            data={"action": "reply", "status": "unavailable", "externally_delivered": False, "setup_required": True},
         )
 
     def _forward(self, args: dict) -> ToolResult:
         return ToolResult(
-            ok=True,
-            data={"action": "forward", "message_id": args.get("message_id", ""), "recipient": args.get("recipient", ""), "status": "simulated", "externally_delivered": False},
+            ok=False,
+            error="Email forwarding is unavailable because no mailbox integration is configured.",
+            data={"action": "forward", "status": "unavailable", "externally_delivered": False, "setup_required": True},
         )
 
     def _read(self, args: dict) -> ToolResult:
         return ToolResult(
-            ok=True,
-            data={"action": "read", "message_id": args.get("message_id", "")},
+            ok=False, error="Mailbox read is unavailable; no message was retrieved.",
+            data={"action": "read", "status": "unavailable"},
         )
 
     def _search(self, args: dict) -> ToolResult:
-        query = args.get("query", "")
-        results = [e for e in self._sent_history if query.lower() in e.get("subject", "").lower() or query.lower() in e.get("recipient", "").lower()]
-        return ToolResult(ok=True, data={"action": "search", "query": query, "results": results, "count": len(results)})
+        return ToolResult(ok=False, error="Mailbox search is unavailable.", data={"action": "search", "status": "unavailable"})
 
     def _list_folders(self, args: dict) -> ToolResult:
         return ToolResult(
-            ok=True,
-            data={"action": "list_folders", "folders": ["inbox", "sent", "drafts", "trash", "spam"]},
+            ok=False, error="Mailbox folders are unavailable; no mailbox backend is implemented.",
+            data={"action": "list_folders", "status": "unavailable"},
         )

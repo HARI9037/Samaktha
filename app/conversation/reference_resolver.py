@@ -99,6 +99,28 @@ _SEARCH_PHRASES = (
     "these files",
 )
 
+# Follow-up references to previously extracted search entities
+# "give me the names", "the names", "the models", "the llms", "the agents", etc.
+# These are patterns that should match the whole request or be at the start
+_ENTITY_REFERENCE_PATTERNS = (
+    re.compile(r"^(give me the names?)[!?.]*$", re.IGNORECASE),
+    re.compile(r"^(give me the (models?|llms?|agents?|results?))[!?.]*$", re.IGNORECASE),
+    re.compile(r"^(show me the (names?|models?|llms?|agents?|results?))[!?.]*$", re.IGNORECASE),
+    re.compile(r"^(list the (names?|models?|llms?|agents?|results?))[!?.]*$", re.IGNORECASE),
+    re.compile(r"^(the (names?|models?|llms?|agents?|entities?))[!?.]*$", re.IGNORECASE),
+    re.compile(r"^(just the (names?|models?))[!?.]*$", re.IGNORECASE),
+    re.compile(r"^(only the (names?|models?))[!?.]*$", re.IGNORECASE),
+    re.compile(r"^(what are the (names?|models?|llms?|agents?))[!?.]*$", re.IGNORECASE),
+)
+
+_ABOVE_CONTENT_PHRASES = (
+    "the above content",
+    "above content",
+    "the content above",
+    "those findings",
+    "the findings above",
+)
+
 _DOCUMENT_PHRASES = (
     "the previous document",
     "the same document",
@@ -175,7 +197,7 @@ class ReferenceResolver:
         request: str,
         state: ConversationState,
     ) -> ReferenceResolution:
-        original = " ".join((request or "").strip().split())
+        original = (request or "").lstrip()
         unresolved = ReferenceResolution(
             resolved=False,
             original_request=original,
@@ -183,6 +205,16 @@ class ReferenceResolver:
         )
         if not original:
             return unresolved
+
+        # User-authored file payloads are literals, including pronouns and newlines.
+        from app.core.gambit.resource_parser import parse_resource_write
+        resource_write = parse_resource_write(original)
+        if resource_write is not None and resource_write.content is not None:
+            return unresolved
+        if (resource_write is not None and resource_write.paths and state.last_generated_text
+                and re.match(r"^\s*save\s+(?:this|it|that)\s+as\b", original, re.I)):
+            rewritten = original + " with content:\n" + state.last_generated_text
+            return self._resolved(original, rewritten, ReferenceKind.GENERATED_TEXT, state.last_generated_text)
 
         lowered = original.lower()
         for phrase in _SELF_REFERENCE_PHRASES + _ANSWER_REFERENCE_PHRASES:
@@ -233,6 +265,36 @@ class ReferenceResolver:
             target = state.last_search_results[0]
             rewritten = _replace_first(original, phrase, target)
             return self._resolved(original, rewritten, ReferenceKind.SEARCH_RESULT, target)
+
+        # 2b. Entity references from previous search — "give me the names", "the models", etc.
+        for pattern in _ENTITY_REFERENCE_PATTERNS:
+            if pattern.match(original):
+                if state.last_search_entities:
+                    # Format the entities according to the stored format intent
+                    entities = state.last_search_entities
+                    requested_count = state.last_search_requested_count or len(entities)
+                    entities = entities[:requested_count]
+                    
+                    format_intent = state.last_search_format_intent
+                    if format_intent == "names_only":
+                        target = "\n".join(f"{i+1}. {e}" for i, e in enumerate(entities))
+                    else:
+                        target = "\n".join(f"{i+1}. {e}" for i, e in enumerate(entities))
+                    
+                    # For these references, replace the whole request with the entity list
+                    return self._resolved(original, target, ReferenceKind.SEARCH_RESULT, target)
+                break
+
+        # Follow-ups over the prior grounded answer stay in the same session
+        # context. This substitutes only bounded, runtime-observed provider
+        # text; it never elevates search snippets to instructions.
+        phrase = _phrase_match(lowered, _ABOVE_CONTENT_PHRASES)
+        if phrase and state.last_generated_text:
+            target = state.last_generated_text[:_MAX_FOLLOWUP_TEXT_LENGTH]
+            rewritten = _replace_first(original, phrase, target)
+            return self._resolved(
+                original, rewritten, ReferenceKind.GENERATED_TEXT, target
+            )
 
         # 3. Named document / file references — "the previous file", "same file"
         phrase = _phrase_match(lowered, _DOCUMENT_PHRASES)

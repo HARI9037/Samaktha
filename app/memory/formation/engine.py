@@ -210,6 +210,11 @@ class MemoryFormationEngine:
                     base_turn_number=base_turn,
                     logical_id=logical_id,
                     timestamp=timestamp,
+                    assistant_provenance=(
+                        "generated_summary"
+                        if metadata.get("memory_retrieval")
+                        else "assistant_message"
+                    ),
                 )
 
                 # update_metadata mutates a copy of session.metadata in-place
@@ -234,11 +239,16 @@ class MemoryFormationEngine:
                 log.warning("MemoryFormationEngine: SessionBuilder failed", exc_info=True)
 
         # 2. Classify the interaction into typed memories.
-        try:
-            classification = self._classifier.classify(user_message, assistant_response)
-        except Exception:
-            log.warning("MemoryFormationEngine: classification failed", exc_info=True)
+        if metadata.get("memory_retrieval"):
+            # The grounded answer remains part of durable conversation
+            # history, but must not be promoted as a new profile/workflow fact.
             classification = None
+        else:
+            try:
+                classification = self._classifier.classify(user_message, assistant_response)
+            except Exception:
+                log.warning("MemoryFormationEngine: classification failed", exc_info=True)
+                classification = None
 
         # 3. Write the typed memory (dedup-aware).
         if classification is not None:
@@ -277,6 +287,19 @@ class MemoryFormationEngine:
                 conversation_id=conversation_id,
                 tags=tags,
                 importance_kind="conversation",
+                extra_metadata={
+                    **metadata,
+                    "provenance": (
+                        "generated_summary"
+                        if metadata.get("memory_retrieval")
+                        else "conversation_turn"
+                    ),
+                    "source_authority": (
+                        "derived_from_memory_evidence"
+                        if metadata.get("memory_retrieval")
+                        else "user_assistant_exchange"
+                    ),
+                },
                 access_context=access_context,
             )
             return MemoryFormationResult(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from pathlib import Path
 
 from app.runtime.report import ExecutionReport, ExecutionTruthState
 
@@ -17,13 +18,31 @@ _COMPLETION_RE = re.compile(
     rf"|\b(?:did\s+it|is\s+(?:now\s+)?(?:running|deployed)|is\s+done)\b",
     re.IGNORECASE,
 )
+_ARTIFACT_CLAIM_RE = re.compile(
+    r"\b(?:pdf|attachment)\b.{0,80}\b(?:created|generated|saved|available|attached)\b"
+    r"|\b(?:created|generated|saved|attached)\b.{0,80}\b(?:pdf|attachment)\b"
+    r"|\bdata:application/pdf;base64,",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def enforce_execution_truth(text: str, report: ExecutionReport | dict[str, Any] | None) -> str:
     """Gate user-facing completion language on runtime execution evidence."""
-    if not text or not _COMPLETION_RE.search(text):
+    if not text:
         return text
     parsed = _coerce_report(report)
+    if (
+        _ARTIFACT_CLAIM_RE.search(text)
+        and parsed is not None
+        and parsed.execution_state == ExecutionTruthState.SUCCEEDED
+        and not _has_existing_artifact_evidence(parsed)
+    ):
+        return (
+            "No artifact is available. Samaktha has no runtime evidence for a "
+            "completed file or PDF at the requested destination."
+        )
+    if not _COMPLETION_RE.search(text):
+        return text
     if parsed is None:
         return "I have prepared a plan. No execution evidence exists yet, so I cannot claim the action completed."
     if parsed.execution_state == ExecutionTruthState.WAITING_APPROVAL:
@@ -43,6 +62,25 @@ def enforce_execution_truth(text: str, report: ExecutionReport | dict[str, Any] 
     if parsed.execution_state == ExecutionTruthState.SUCCEEDED and _has_runtime_success(parsed):
         return text
     return "The runtime has not reported a completed action, so I cannot claim it succeeded."
+
+
+def _has_existing_artifact_evidence(report: ExecutionReport | None) -> bool:
+    if report is None or not report.success:
+        return False
+    for result in report.tool_results:
+        if not isinstance(result, dict) or result.get("status") != "completed":
+            continue
+        output = result.get("output")
+        if not isinstance(output, dict):
+            continue
+        metadata = result.get("metadata") or {}
+        action = str(metadata.get("action") or output.get("action") or "")
+        if action not in {"write", "copy", "move", "rename", "create"}:
+            continue
+        candidate = output.get("path") or output.get("destination")
+        if candidate and Path(str(candidate)).is_file():
+            return True
+    return False
 
 
 def explain_execution_truth(report: ExecutionReport | dict[str, Any] | None) -> str:
@@ -108,7 +146,7 @@ def _tool_result_has_effect(result: dict) -> bool:
     if isinstance(written, bool):
         return written
     if isinstance(output.get("written_bytes"), (int, float)):
-        return output["written_bytes"] > 0
+        return output["written_bytes"] > 0 or (output["written_bytes"] == 0 and output.get("created") is True and bool(output.get("path")))
     count = output.get("count")
     if isinstance(count, (int, float)):
         return count > 0
@@ -137,7 +175,7 @@ def _capability_evidence(
     if tool_id in {"resolver", "filesystem"}:
         if action == "write":
             written = output.get("written_bytes", output.get("written"))
-            return written is True or isinstance(written, (int, float)) and written > 0
+            return written is True or isinstance(written, (int, float)) and (written > 0 or (written == 0 and output.get("created") is True and bool(output.get("path"))))
         if action in {"move", "copy", "rename"}:
             return bool(output.get("source") and output.get("destination"))
         if action == "delete":
