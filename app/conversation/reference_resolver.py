@@ -116,6 +116,8 @@ _ENTITY_REFERENCE_PATTERNS = (
 _ABOVE_CONTENT_PHRASES = (
     "the above content",
     "above content",
+    "the above text",
+    "above text",
     "the content above",
     "those findings",
     "the findings above",
@@ -198,6 +200,9 @@ class ReferenceResolver:
         state: ConversationState,
     ) -> ReferenceResolution:
         original = (request or "").lstrip()
+        from app.core.gambit.memory_syntax import store_payload, ambiguous_store
+        if store_payload(original) is not None or ambiguous_store(original):
+            return ReferenceResolution(request=original)
         unresolved = ReferenceResolution(
             resolved=False,
             original_request=original,
@@ -289,9 +294,25 @@ class ReferenceResolver:
         # context. This substitutes only bounded, runtime-observed provider
         # text; it never elevates search snippets to instructions.
         phrase = _phrase_match(lowered, _ABOVE_CONTENT_PHRASES)
-        if phrase and state.last_generated_text:
-            target = state.last_generated_text[:_MAX_FOLLOWUP_TEXT_LENGTH]
-            rewritten = _replace_first(original, phrase, target)
+        search_text = self._search_text(state)
+        reference_text = search_text or state.last_tool_result_text or state.last_generated_text
+        if phrase and reference_text:
+            target = reference_text
+            # A write request needs literal content and a concrete path before
+            # GAMBIT parses it. Generate a deterministic workspace-relative
+            # filename when the user only specifies the format.
+            if re.match(r"^\s*(?:now\s+)?(?:create|make|write|save)\b", original, re.I):
+                from app.core.gambit.resource_parser import parse_resource_write
+                parsed_write = parse_resource_write(original)
+                if parsed_write is None or not parsed_write.paths:
+                    slug = re.sub(r"[^a-z0-9]+", "-", (state.last_search_query or "search-results").lower()).strip("-")
+                    slug = (slug or "search-results")[:60].rstrip("-")
+                    rewritten = f"create file {slug}.txt with content:\n{target}"
+                else:
+                    rewritten = _replace_first(original, phrase, target)
+            else:
+                target = target[:_MAX_FOLLOWUP_TEXT_LENGTH]
+                rewritten = _replace_first(original, phrase, target)
             return self._resolved(
                 original, rewritten, ReferenceKind.GENERATED_TEXT, target
             )
@@ -330,6 +351,29 @@ class ReferenceResolver:
                 return self._resolved(original, rewritten, kind, resource)
 
         return unresolved
+
+    @staticmethod
+    def _search_text(state: ConversationState) -> str | None:
+        """Render the latest structured search result for conversational references."""
+        result = state.last_search_result
+        if not isinstance(result, dict):
+            return None
+        lines: list[str] = []
+        for item in result.get("results", []):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            description = str(item.get("description") or "").strip()
+            if not title:
+                continue
+            line = f"{len(lines) + 1}. {title}"
+            if url:
+                line += f" — {url}"
+            if description:
+                line += f"\n{description}"
+            lines.append(line)
+        return "\n\n".join(lines) if lines else None
 
     @staticmethod
     def _resolved(

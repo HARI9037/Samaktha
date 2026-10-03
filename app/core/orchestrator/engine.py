@@ -481,10 +481,24 @@ class SamakthaOrchestrator:
         # context retrieval: previous-session resolution must use the exact
         # durable session store, and explicit searches must have one auditable
         # scoped lookup rather than a hidden preliminary lookup.
+        # Targeted memory-backed answers use the same scoped controller read
+        # as ordinary context retrieval. The later memory-tool task is kept
+        # for browse/session/evidence workflows, but must not replace the
+        # provider context for a targeted question.
+        provider_memory_intents = {
+            MemoryRecallIntent.TARGETED_RECALL,
+            MemoryRecallIntent.PROFILE_RECALL,
+            MemoryRecallIntent.PREFERENCE_RECALL,
+            MemoryRecallIntent.WORKFLOW_RECALL,
+        }
         retrieved_items = (
-            []
-            if goal.memory_intent is not None
-            else self._retrieve_memory_items(request, memory_access)
+            self._retrieve_memory_items(request, memory_access)
+            if goal.intent != GoalIntent.MEMORY_STORE
+            and (
+                goal.memory_intent is None
+                or goal.memory_intent in provider_memory_intents
+            )
+            else []
         )
         evaluation = self._personality_engine.evaluate(
             request, retrieved_memories=retrieved_items)
@@ -513,7 +527,7 @@ class SamakthaOrchestrator:
         
         # 4. GAMBIT Planner — with Capability Registry gate
         planning_context = None
-        if self._intelligence_manager is not None and goal.memory_intent is None:
+        if self._intelligence_manager is not None and goal.memory_intent is None and goal.intent != GoalIntent.MEMORY_STORE:
             planning_context = self._intelligence_manager.build_planning_context(
                 effective_request,
                 session_id=runtime_context.session_id,
@@ -808,6 +822,7 @@ class SamakthaOrchestrator:
                         else None
                     ),
                     memory_intent=goal.memory_intent,
+                    memory_store_requested=goal.intent == GoalIntent.MEMORY_STORE,
                     memory_evidence=self._memory_evidence(
                         workflow_result.outputs
                     ),
@@ -1120,6 +1135,7 @@ class SamakthaOrchestrator:
                         state.execution_plan.goal.memory_intent
                         if state.execution_plan is not None else None
                     ),
+                    memory_store_requested=(state.execution_plan is not None and state.execution_plan.goal.intent == GoalIntent.MEMORY_STORE),
                     memory_evidence=self._memory_evidence(
                         workflow_result.outputs
                     ),
@@ -1361,6 +1377,8 @@ class SamakthaOrchestrator:
         if not self._memory_controller:
             return
         formation_metadata = dict(metadata or {})
+        from app.core.gambit.memory_syntax import store_payload
+        formation_metadata["memory_write"] = store_payload(request) is not None
         if self._memory_formation is not None:
             try:
                 self._memory_formation.ingest(
@@ -1449,6 +1467,8 @@ class SamakthaOrchestrator:
         if not ids:
             return []
         lowered = " ".join(request.casefold().split())
+        if re.fullmatch(r"(?:when did I tell you that|show me the memory ID)[?.!]*", lowered, re.I):
+            return ids
         if re.search(r"\b(?:those|these|the)\s+memories\b", lowered) or re.search(
             r"\b(?:ids?|timestamps?)\b.*\bmemories\b", lowered
         ):

@@ -13,3 +13,7 @@ class ProviderModelRegistration(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     execution_location: ExecutionLocation = ExecutionLocation.CLOUD
     metadata: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def provider_kind(self) -> str:
+        return self.metadata.get("provider_kind", "cloud")

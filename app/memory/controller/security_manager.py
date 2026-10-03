@@ -120,6 +120,8 @@ class SecurityManager:
         except (TypeError, ValueError):
             return False
         owner_id = str(getattr(item, "owner_id", "") or "")
+        if getattr(item, "profile_id", None) is not None and item.profile_id != access_context.profile_id:
+            return False
         if scope is MemoryScope.SYSTEM:
             return False
         if owner_id != access_context.principal_id:

@@ -299,6 +299,7 @@ class MemoryController:
         importance_kind: str = "successful_workflow",
         security_level: SecurityLevel = SecurityLevel.LOW,
         access_context: MemoryAccessContext | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> MemoryItem:
         access_context = self._access_context(access_context, None, security_level)
         self._check_write_access("knowledge", security_level)
@@ -309,8 +310,15 @@ class MemoryController:
             importance_kind=importance_kind,
             security_level=security_level,
             access_context=access_context,
+            extra_metadata=extra_metadata,
         )
         self._cache.clear_retrievals()
+        return item
+
+    def read_persisted_memory(self, item_id: str, access_context: MemoryAccessContext) -> MemoryItem | None:
+        item = self._memory_manager.read_persisted_memory(item_id)
+        if item is None or not self._security.can_read_item(item, access_context).allowed:
+            return None
         return item
 
     def write_system(

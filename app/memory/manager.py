@@ -243,7 +243,6 @@ class MemoryManager(Memory):
 
     def store_memory(self, item: MemoryItem) -> None:
         """Store a typed MemoryItem in the semantic context store."""
-        self._context_store.save_context(item)
         entry = MemoryEntry(
             id=item.id,
             key=f"mem:{item.id}",
@@ -254,6 +253,15 @@ class MemoryManager(Memory):
             metadata={"_memory_item": item.model_dump_json()},
         )
         self._repo.save(entry)
+
+        self._context_store.save_context(item)
+
+    def read_persisted_memory(self, item_id: str) -> MemoryItem | None:
+        """Read acknowledged durable state, not the in-memory semantic cache."""
+        entry = self._repo.get(f"mem:{item_id}")
+        if entry is None:
+            return None
+        return MemoryItem.model_validate_json(entry.metadata["_memory_item"])
 
     def search_memory(
         self,

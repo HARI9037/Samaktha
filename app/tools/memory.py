@@ -1,4 +1,5 @@
 import logging
+import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -10,6 +11,7 @@ from app.core.contracts.memory import (
     MemoryRecallIntent,
     MemorySearchEvidence,
     MemoryScope,
+    MemoryWriteEvidence,
     SessionRecallEvidence,
     SessionRecallMessage,
 )
@@ -52,6 +54,8 @@ class MemoryTool(Tool):
         )
 
         try:
+            if action == "store":
+                return await self._store(arguments, access)
             if action == "search":
                 return await self._search(query, access, arguments)
             if action == "retrieve":
@@ -70,6 +74,25 @@ class MemoryTool(Tool):
         except Exception as e:
             return ToolResult(ok=False, error=f"Memory {action} failed: {str(e)}")
 
+    async def _store(self, arguments: dict, access: MemoryAccessContext) -> ToolResult:
+        content = arguments.get("content")
+        if not isinstance(content, str) or not content.strip() or len(content) > 20000:
+            return ToolResult(ok=False, error="Memory store requires nonempty content of at most 20000 characters")
+        if self._controller is None or not arguments.get("_memory_access_context"):
+            return ToolResult(ok=False, error="Scoped memory store backend unavailable")
+        item = self._controller.write_knowledge(content, source="user_message",
+            importance_kind="explicit_user_fact", access_context=access,
+            security_level=access.security_level,
+            extra_metadata={"provenance": "user_message", "source_authority": "user_supplied",
+                            "source_session_id": access.session_id,
+                            "source_utterance": str(arguments.get("source_utterance") or "")})
+        persisted = self._controller.read_persisted_memory(item.id, access)
+        if persisted is None or persisted.content != content:
+            return ToolResult(ok=False, error="Memory store persistence could not be confirmed")
+        evidence = MemoryWriteEvidence(persisted=True, record=self._evidence_record(persisted),
+            content_digest=hashlib.sha256(content.encode("utf-8")).hexdigest(), source_session_id=access.session_id)
+        return ToolResult(ok=True, data={"action": "store", "memory_write_evidence": evidence.model_dump(mode="json")})
+
     async def _search(
         self,
         query: str,
@@ -79,13 +102,20 @@ class MemoryTool(Tool):
         query = self._normalize_search_query(query)
         if self._controller is not None:
             limit = int(arguments.get("limit", 15))
+            targeted = self._recall_intent(arguments) == MemoryRecallIntent.TARGETED_RECALL
+            relevance = {}
             if query:
                 res = self._controller.retrieve(
                     query,
-                    top_k=limit,
+                    top_k=100 if targeted else limit,
                     access_context=access,
                 )
                 items = [item for item, _score in res]
+                if targeted:
+                    from app.tools.memory_relevance import strong_fact_matches
+                    matches = strong_fact_matches(query, res)
+                    items = [item for item, _score in matches][:limit]
+                    relevance = {str(item.id): score for item, score in matches}
             else:
                 # An explicit unqualified memory search means "show the
                 # visible durable records", not a semantic search for the
@@ -113,7 +143,10 @@ class MemoryTool(Tool):
                 session_id=access.session_id,
                 workspace_id=access.workspace_id,
                 profile_id=access.profile_id,
-                records=[self._evidence_record(item) for item in items],
+                records=[self._evidence_record(item).model_copy(update={
+                    "relevance_score": relevance.get(str(item.id)),
+                    "match_type": "all_target_tokens" if str(item.id) in relevance else None,
+                }) for item in items],
             )
             serialized = [record.content for record in evidence.records]
         elif self._memory is not None and hasattr(self._memory, "search"):
@@ -296,7 +329,7 @@ class MemoryTool(Tool):
 
         normalized = " ".join(str(query or "").strip().split())
         patterns = (
-            r"^(?:please\s+)?search\s+(?:through\s+)?(?:your|my|the)?\s*memories?\s*(?:for|about)?\s*",
+            r"^(?:please\s+)?search\s+(?:through\s+)?(?:your|my|the)?\s*(?:memory|memories)\b\s*(?:for|about)?\s*",
             r"^(?:please\s+)?(?:show|list)\s+(?:me\s+)?(?:everything|all)(?:\s+that)?\s+(?:you\s+)?(?:have\s+)?(?:saved|stored|remembered)?\s*",
         )
         for pattern in patterns:

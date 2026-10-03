@@ -311,7 +311,12 @@ class SessionManager:
 
         if session_id:
             if not self.session_exists(session_id):
-                raise KeyError(f"session not found: {session_id}")
+                if not create_if_missing:
+                    raise KeyError(f"session not found: {session_id}")
+                return self.create_session(
+                    session_id=session_id,
+                    principal_id=principal_id,
+                )
             return self.load_session(session_id, principal_id=principal_id)
         if not create_if_missing:
             raise KeyError("session id is required")

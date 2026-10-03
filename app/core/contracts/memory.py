@@ -50,6 +50,8 @@ class MemoryRecallIntent(StrEnum):
     PROFILE_RECALL = "profile_recall"
     WORKFLOW_RECALL = "workflow_recall"
     PREFERENCE_RECALL = "preference_recall"
+    TARGETED_RECALL = "targeted_recall"
+    MEMORY_BROWSE = "memory_browse"
 
 
 class MemoryEvidenceSource(StrEnum):
@@ -75,6 +77,27 @@ class MemoryEvidenceRecord(BaseModel):
     updated_at: datetime | None = None
     provenance: str | None = None
     source_authority: str | None = None
+    relevance_score: float | None = None
+    match_type: str | None = None
+
+
+class MemoryWriteEvidence(BaseModel):
+    """Acknowledgment read back from owned durable storage, not provider prose."""
+    operation: str = "store"
+    persisted: bool
+    record: MemoryEvidenceRecord
+    content_digest: str
+    source_session_id: str | None = None
+
+    @model_validator(mode="after")
+    def _persisted_user_record(self):
+        import hashlib
+        if (self.operation != "store" or self.persisted is not True or not self.record.memory_id
+            or self.record.created_at is None or self.record.provenance != "user_message"
+            or self.record.source_authority != "user_supplied"
+            or self.content_digest != hashlib.sha256(self.record.content.encode("utf-8")).hexdigest()):
+            raise ValueError("Memory store requires acknowledged user-record evidence")
+        return self
 
 
 class MemorySearchEvidence(BaseModel):

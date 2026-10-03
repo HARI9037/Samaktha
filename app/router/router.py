@@ -70,6 +70,7 @@ class ModelRouter(Router):
                 candidate
                 for candidate in candidates
                 if candidate.execution_location == ExecutionLocation.LOCAL
+                and candidate.provider_kind != "mock"
             ]
 
         # ModelRegistry is authoritative for model capabilities. A model with
@@ -85,7 +86,10 @@ class ModelRouter(Router):
                     and model.coding_score > 0
                     and (
                         not requires_local
-                        or candidate.execution_location == ExecutionLocation.LOCAL
+                        or (
+                            candidate.execution_location == ExecutionLocation.LOCAL
+                            and candidate.provider_kind != "mock"
+                        )
                     )
                 )
             ]

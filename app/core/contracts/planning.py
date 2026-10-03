@@ -65,6 +65,7 @@ class GoalIntent(StrEnum):
     COPY_RESOURCE = "copy_resource"
     RENAME_RESOURCE = "rename_resource"
     SEARCH_MEMORY = "search_memory"
+    MEMORY_STORE = "memory_store"
     GENERATE_CODE = "generate_code"
     ANSWER_QUESTION = "answer_question"
     OPERATE_WINDOWS = "operate_windows"

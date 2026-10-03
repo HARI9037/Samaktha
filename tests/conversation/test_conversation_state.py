@@ -119,6 +119,32 @@ def test_record_outputs_captures_search_candidates() -> None:
     assert state.last_search_results == ["a.txt", "b.txt"]
 
 
+def test_record_outputs_preserves_search_text_for_next_turn() -> None:
+    state = ConversationState()
+    record_outputs(state, [_runtime_result(output={
+        "internet": True,
+        "query": "GPT 6 Astra",
+        "results": [{"title": "Astra", "url": "https://example.test", "description": "result"}],
+    })])
+    assert state.last_search_query == "GPT 6 Astra"
+    assert "Astra" in (state.last_generated_text or "")
+    assert "result" in (state.last_generated_text or "")
+
+
+def test_later_assistant_response_does_not_replace_structured_search_result() -> None:
+    state = ConversationState()
+    record_outputs(state, [_runtime_result(output={
+        "internet": True,
+        "query": "GPT 6 Astra",
+        "results": [{"title": "Astra", "url": "https://example.test", "description": "search evidence"}],
+    })])
+    record_outputs(state, [_runtime_result(output={"response": "Samaktha persona text"})])
+
+    assert state.last_search_result is not None
+    assert state.last_search_result["query"] == "GPT 6 Astra"
+    assert state.last_generated_response == "Samaktha persona text"
+
+
 def test_record_outputs_captures_active_tool() -> None:
     state = ConversationState()
     record_outputs(

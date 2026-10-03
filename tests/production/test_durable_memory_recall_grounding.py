@@ -194,7 +194,7 @@ async def test_last_session_uses_previous_durable_session_evidence(
     manager.create_session(session_id="session-b", principal_id="user-a")
     semantic_calls = 0
     semantic_queries: list[str] = []
-    original_retrieve = orchestrator.memory_controller.retrieve
+    original_retrieve = orchestrator.memory_controller.retrieve_recent
 
     def counting_retrieve(*args, **kwargs):
         nonlocal semantic_calls
@@ -243,15 +243,15 @@ async def test_search_your_memory_reports_exact_records_and_resists_fabrication(
         )
     retrieval_calls = 0
     retrieval_queries: list[str] = []
-    original_retrieve = orchestrator.memory_controller.retrieve
+    original_retrieve = orchestrator.memory_controller.retrieve_recent
 
     def counting_retrieve(*args, **kwargs):
         nonlocal retrieval_calls
         retrieval_calls += 1
-        retrieval_queries.append(str(kwargs.get("query") or (args[0] if args else "")))
+        retrieval_queries.append("recent")
         return original_retrieve(*args, **kwargs)
 
-    monkeypatch.setattr(orchestrator.memory_controller, "retrieve", counting_retrieve)
+    monkeypatch.setattr(orchestrator.memory_controller, "retrieve_recent", counting_retrieve)
 
     result = await _approved_execution(
         orchestrator,

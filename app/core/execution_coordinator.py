@@ -225,7 +225,7 @@ class ExecutionCoordinator:
             manager.resolve_session(
                 session_id,
                 principal_id=principal_id,
-                create_if_missing=False,
+                create_if_missing=True,
             )
             return session_id
         default_id = "default"

@@ -239,7 +239,7 @@ class MemoryFormationEngine:
                 log.warning("MemoryFormationEngine: SessionBuilder failed", exc_info=True)
 
         # 2. Classify the interaction into typed memories.
-        if metadata.get("memory_retrieval"):
+        if metadata.get("memory_retrieval") or metadata.get("memory_write"):
             # The grounded answer remains part of durable conversation
             # history, but must not be promoted as a new profile/workflow fact.
             classification = None
@@ -290,13 +290,13 @@ class MemoryFormationEngine:
                 extra_metadata={
                     **metadata,
                     "provenance": (
-                        "generated_summary"
+                        "generated_response" if metadata.get("memory_write") else "generated_summary"
                         if metadata.get("memory_retrieval")
                         else "conversation_turn"
                     ),
                     "source_authority": (
                         "derived_from_memory_evidence"
-                        if metadata.get("memory_retrieval")
+                        if metadata.get("memory_retrieval") or metadata.get("memory_write")
                         else "user_assistant_exchange"
                     ),
                 },

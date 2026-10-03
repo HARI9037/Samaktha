@@ -31,6 +31,9 @@ def enforce_execution_truth(text: str, report: ExecutionReport | dict[str, Any] 
     if not text:
         return text
     parsed = _coerce_report(report)
+    if re.search(r"\b(?:I'll remember|I will remember|I've remembered|saved to memory|stored)\b", text, re.I):
+        if memory_write_from_report(report) is None and re.search(r"\b(?:I'll remember|I will remember|I've remembered|saved to memory)\b|^Stored\.", text, re.I):
+            return "No durable memory-write evidence exists, so I cannot confirm storage."
     if (
         _ARTIFACT_CLAIM_RE.search(text)
         and parsed is not None
@@ -159,6 +162,13 @@ def _capability_evidence(
     """Evaluate known tool/action evidence without treating prose as proof."""
     if output.get("partial") is True or output.get("status") in {"partial", "failed"}:
         return False
+    if tool_id == "memory" and action == "store":
+        from app.core.contracts.memory import MemoryWriteEvidence
+        try:
+            MemoryWriteEvidence.model_validate(output.get("memory_write_evidence"))
+            return True
+        except (ValueError, TypeError):
+            return False
     if tool_id == "notification" and action == "send":
         return output.get("sent") is True
     if tool_id in {"email", "message"}:
@@ -196,6 +206,22 @@ def _capability_evidence(
     if tool_id == "memory" and action.startswith("delete"):
         deleted = output.get("deleted", output.get("count"))
         return deleted is True or isinstance(deleted, (int, float)) and deleted > 0
+    return None
+
+
+def memory_write_from_report(report):
+    from app.core.contracts.memory import MemoryWriteEvidence
+    parsed = _coerce_report(report)
+    if parsed is None or not parsed.success:
+        return None
+    for result in parsed.tool_results:
+        metadata = result.get("metadata") or {}
+        output = result.get("output") or {}
+        if result.get("status") == "completed" and metadata.get("tool") == "memory" and metadata.get("action") == "store":
+            try:
+                return MemoryWriteEvidence.model_validate(output.get("memory_write_evidence"))
+            except (ValueError, TypeError):
+                pass
     return None
 
 

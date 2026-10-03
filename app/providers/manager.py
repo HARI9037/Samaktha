@@ -186,6 +186,9 @@ class ProviderManager:
         Cooldown is applied by the shared health checker, so providers in
         cooldown are reported unavailable to both selection and execution.
         """
+        cached = self._health_checker.get_status(provider_id)
+        if cached is not None:
+            return cached
         return self._health_checker.check(
             provider_id=provider_id,
             provider=self._registry.get_provider(provider_id),

@@ -169,6 +169,9 @@ class GoalParser:
     @staticmethod
     def detect_intent(request: str) -> tuple[GoalIntent, str | None, str | None]:
         lowered = request.lower()
+        from app.core.gambit.memory_syntax import store_payload, ambiguous_store
+        if store_payload(request) is not None or ambiguous_store(request):
+            return GoalIntent.MEMORY_STORE, None, None
         # An explicit file payload is data, even when it mentions other tools.
         from app.core.gambit.resource_parser import parse_resource_write
         resource = parse_resource_write(request)
@@ -327,6 +330,18 @@ class GoalParser:
     def detect_memory_intent(request: str) -> MemoryRecallIntent | None:
         """Classify read-only memory requests without consulting a model."""
 
+        from app.core.gambit.memory_syntax import store_payload, ambiguous_store, recall_target
+        if store_payload(request) is not None or ambiguous_store(request):
+            return None
+        target = recall_target(request)
+        if target is not None:
+            lowered_request = " ".join(request.casefold().split())
+            if lowered_request.startswith(("search your memory for ", "search memory for ")):
+                return MemoryRecallIntent.MEMORY_SEARCH
+            return MemoryRecallIntent.TARGETED_RECALL if target else MemoryRecallIntent.MEMORY_BROWSE
+        if re.match(r"^\s*remember\s+(?:when|our)\b", request, re.I):
+            return MemoryRecallIntent.SESSION_RECALL
+
         lowered = " ".join(request.casefold().split())
         if re.search(r"\b(?:last|previous)\s+(?:stored\s+)?(?:session|conversation)\b", lowered):
             if "workflow" in lowered or "continue" in lowered:
@@ -375,6 +390,11 @@ class GoalParser:
         lowered = request.lower()
         args: dict = {}
         missing: list[str] = []
+
+        if intent == GoalIntent.MEMORY_STORE:
+            from app.core.gambit.memory_syntax import store_payload
+            payload = store_payload(request)
+            return "store", {"content": payload or "", "source_utterance": request}, ([] if payload and payload.strip() else ["content (state explicitly what to store)"])
 
         def _match(pattern: str, group: str = "value") -> str | None:
             found = re.search(pattern, request, re.IGNORECASE | re.DOTALL)
@@ -836,6 +856,7 @@ class GoalParser:
         GoalIntent.COPY_RESOURCE:    "filesystem",
         GoalIntent.RENAME_RESOURCE:  "filesystem",
         GoalIntent.SEARCH_MEMORY:    "memory",
+        GoalIntent.MEMORY_STORE:     "memory",
         GoalIntent.SEARCH_INTERNET:  "internet",
         GoalIntent.OPERATE_WINDOWS:  "windows",
         GoalIntent.RUN_COMMAND:      "shell",

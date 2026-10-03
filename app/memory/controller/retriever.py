@@ -353,10 +353,24 @@ class MemoryRetriever:
         cached = [m for m in self._cache.list_cached_memories() if m is not None]
         if cached:
             # Cache is insertion-ordered (oldest first); take the newest N.
-            return list(reversed(cached[-self._top_k_recent:]))
+            recent = cached[-self._top_k_recent:]
+            # Explicit contract: newest first; equal timestamps use stable ID
+            # order so repeated browse results are deterministic.
+            by_id = sorted(recent, key=lambda item: str(getattr(item, "id", "")))
+            return sorted(
+                by_id,
+                key=lambda item: str(getattr(item, "created_at", "")),
+                reverse=True,
+            )
 
         # Fall back to MemoryManager
         items = self._memory_manager.get_recent_context(n=self._top_k_recent)
+        by_id = sorted(items, key=lambda item: str(getattr(item, "id", "")))
+        items = sorted(
+            by_id,
+            key=lambda item: str(getattr(item, "created_at", "")),
+            reverse=True,
+        )
         for it in items:
             self._cache.store_recent_memory(it.id, it)
         return items

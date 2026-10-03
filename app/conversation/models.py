@@ -86,7 +86,11 @@ class ConversationState(BaseModel):
     active_tool: str | None = None
     last_tool_result: dict[str, Any] | None = None
     last_generated_text: str | None = None
+    last_generated_response: str | None = None
+    last_search_result: dict[str, Any] | None = None
+    last_tool_result_text: str | None = None
     last_search_results: list[str] = Field(default_factory=list)
+    last_search_query: str | None = None
     last_search_entities: list[str] = Field(default_factory=list)
     last_search_format_intent: str | None = None
     last_search_domain_hint: str | None = None

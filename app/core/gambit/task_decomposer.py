@@ -148,6 +148,12 @@ class TaskDecomposer:
             tasks.append(llm_task)
             prev_id = llm_task.task_id
 
+        elif intent == GoalIntent.MEMORY_STORE:
+            task = self._tool_task("Store user-supplied knowledge", "memory", "store",
+                                   dict(goal.intent_arguments), goal, [prev_id], policy_action="write")
+            tasks.append(task)
+            prev_id = task.task_id
+
         elif intent == GoalIntent.SEARCH_MEMORY:
             recall_intent = goal.memory_intent or MemoryRecallIntent.MEMORY_SEARCH
             result_ids = list(goal.intent_arguments.get("memory_result_ids", []))
@@ -170,21 +176,50 @@ class TaskDecomposer:
                 }
             else:
                 action = "search"
+                from app.core.gambit.memory_syntax import recall_target
+                target = recall_target(goal.raw_request)
                 args = {
-                    "query": goal.query or goal.raw_request,
+                    "query": target if target is not None else goal.query or goal.raw_request,
                     "memory_intent": recall_intent.value,
                 }
-            mem_task = self._tool_task(
-                title="Retrieve scoped durable memory evidence",
-                tool="memory",
-                action=action,
-                args=args,
-                goal=goal,
-                dependencies=[prev_id],
-                policy_action="search",
+            provider_synthesis = (
+                recall_intent in {
+                MemoryRecallIntent.TARGETED_RECALL,
+                MemoryRecallIntent.PROFILE_RECALL,
+                MemoryRecallIntent.PREFERENCE_RECALL,
+                MemoryRecallIntent.WORKFLOW_RECALL,
+                }
+                and not goal.raw_request.lower().lstrip().startswith(("search memory", "search your memory"))
+                and not result_ids
             )
-            tasks.append(mem_task)
-            prev_id = mem_task.task_id
+            if not provider_synthesis:
+                mem_task = self._tool_task(
+                    title="Retrieve scoped durable memory evidence",
+                    tool="memory",
+                    action=action,
+                    args=args,
+                    goal=goal,
+                    dependencies=[prev_id],
+                    policy_action="search",
+                )
+                tasks.append(mem_task)
+                prev_id = mem_task.task_id
+
+            if provider_synthesis:
+                llm_task = self._task(
+                    title="Synthesize scoped memory evidence",
+                    kind=TaskKind.EXECUTE_VIA_RUNTIME,
+                    description=(
+                        "Answer using only the scoped memory evidence produced "
+                        "by the governed memory task."
+                    ),
+                    goal=goal,
+                    skills=skill_matches,
+                    dependencies=[prev_id],
+                )
+                llm_task.execution_action_type = "text_generation"
+                tasks.append(llm_task)
+                prev_id = llm_task.task_id
 
         elif intent == GoalIntent.DELETE_MEMORY:
             action, args = self._detect_memory_delete(goal)

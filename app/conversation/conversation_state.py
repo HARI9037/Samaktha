@@ -117,10 +117,14 @@ def record_outputs(
         content = data.get("content")
         response = data.get("response")
         if isinstance(content, str) and content.strip():
-            state.last_generated_text = content
+            state.last_generated_response = content
+            if state.last_search_result is None:
+                state.last_generated_text = content
             _record_response(state, content)
         elif isinstance(response, str) and response.strip():
-            state.last_generated_text = response
+            state.last_generated_response = response
+            if state.last_search_result is None:
+                state.last_generated_text = response
             _record_response(state, response)
 
         path = data.get("path")
@@ -135,6 +139,9 @@ def record_outputs(
         result = data.get("result")
         if isinstance(result, dict):
             state.last_tool_result = data
+            result_text = result.get("text") or result.get("content")
+            if isinstance(result_text, str) and result_text.strip():
+                state.last_tool_result_text = result_text
 
         candidates = data.get("candidates")
         if isinstance(candidates, list) and candidates:
@@ -142,6 +149,28 @@ def record_outputs(
 
         internet_results = data.get("results") if data.get("internet") is True else None
         if isinstance(internet_results, list) and internet_results:
+            state.last_search_query = str(data.get("query") or "") or None
+            state.last_search_result = dict(data)
+            # Preserve the same bounded, user-facing evidence shape available
+            # to the presenter.  TUI suppression must not erase the source
+            # needed by a later "above text" file operation.
+            lines: list[str] = []
+            for item in internet_results:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                url = str(item.get("url") or "").strip()
+                description = str(item.get("description") or "").strip()
+                if title:
+                    line = f"{len(lines) + 1}. {title}"
+                    if url:
+                        line += f" — {url}"
+                    if description:
+                        line += f"\n{description}"
+                    lines.append(line)
+            if lines:
+                state.last_generated_text = "\n\n".join(lines)
+                _record_response(state, state.last_generated_text)
             state.last_search_results = [
                 str(item.get("url") or item.get("title"))
                 for item in internet_results[:10]
@@ -183,6 +212,7 @@ def record_outputs(
                     for record in records
                     if isinstance(record, dict) and record.get("memory_id")
                 ]
+                state.last_memory_result_ids.sort()
             else:
                 state.last_memory_result_ids = []
             recalled_session = memory_evidence.get("session_id")

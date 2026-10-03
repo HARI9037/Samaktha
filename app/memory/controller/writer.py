@@ -253,6 +253,7 @@ class MemoryWriter:
         importance_kind: str = "successful_workflow",
         security_level: SecurityLevel = SecurityLevel.LOW,
         access_context: MemoryAccessContext | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> MemoryItem:
         """Store a knowledge memory (fact, definition, learned pattern)."""
         meta = build_metadata(
@@ -261,6 +262,7 @@ class MemoryWriter:
             importance_kind=importance_kind,
             tags=(tags or []) + ["knowledge"],
             security_level=security_level,
+            extra=extra_metadata,
         )
         access_context = access_context or MemoryAccessContext.local_default()
         item = self._ownership(MemoryItem(

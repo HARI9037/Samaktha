@@ -278,6 +278,7 @@ class ResponseFormatter:
         sources: list[dict] | None = None,
         execution_report: dict | None = None,
         memory_intent: MemoryRecallIntent | str | None = None,
+        memory_store_requested: bool = False,
         memory_evidence: dict | MemorySearchEvidence | SessionRecallEvidence | None = None,
     ) -> str:
         """Format the raw provider response for the user.
@@ -299,6 +300,11 @@ class ResponseFormatter:
         """
         intent = _coerce_intent(conversation_intent)
         evaluation = _coerce_evaluation(evaluation)
+
+        if memory_store_requested:
+            from app.runtime.execution_truth import memory_write_from_report
+            evidence = memory_write_from_report(execution_report)
+            return f"Stored. {evidence.record.content}" if evidence else "Memory store was not confirmed by durable execution evidence."
 
         if memory_intent is not None:
             return self._grounded_memory_response(

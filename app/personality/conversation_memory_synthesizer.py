@@ -53,6 +53,11 @@ class ConversationMemorySynthesizer:
         count = evidence.record_count
         if count == 0:
             return "I couldn't find a stored memory matching that request."
+        if evidence.intent.value == "targeted_recall":
+            unique = list(dict.fromkeys(record.content for record in evidence.records))
+            if len(unique) == 1:
+                return f"Stored user-provided fact: {unique[0]}"
+            return "I found multiple matching stored facts; I cannot determine which is current.\n" + "\n".join(f"- {content}" for content in unique)
         noun = "record" if count == 1 else "records"
         lines = [
             f"A scoped durable-memory search returned {count} matching {noun}."

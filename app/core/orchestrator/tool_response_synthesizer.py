@@ -37,6 +37,14 @@ def synthesize_tool_response(output: Any) -> str:
     if not isinstance(output, dict):
         return ""
 
+    if output.get("action") == "store" and "memory_write_evidence" in output:
+        from app.core.contracts.memory import MemoryWriteEvidence
+        try:
+            evidence = MemoryWriteEvidence.model_validate(output["memory_write_evidence"])
+            return f"Stored. {evidence.record.content}"
+        except (ValueError, TypeError):
+            return "Memory store was not confirmed."
+
     # If the output already has textual content, nothing to synthesize.
     if output.get("content") or output.get("response"):
         return ""

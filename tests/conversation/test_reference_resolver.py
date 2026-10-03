@@ -46,6 +46,62 @@ def test_above_content_without_observed_output_remains_unresolved() -> None:
     assert result.resolved is False
 
 
+def test_above_text_preserves_search_output_and_generates_safe_filename() -> None:
+    state = _state(
+        last_search_query="GPT 6 Astra",
+        last_generated_text="1. GPT 6 Astra — https://example.test\nA search description",
+    )
+    result = ReferenceResolver().resolve(
+        "now create a txt file with the above text and give the file a name too",
+        state,
+    )
+    assert result.resolved is True
+    assert result.request.startswith("create file gpt-6-astra.txt with content:")
+    assert "A search description" in result.request
+
+
+def test_above_text_prefers_latest_search_over_later_assistant_response() -> None:
+    state = _state(
+        last_search_query="GPT 6 Astra",
+        last_search_result={
+            "query": "GPT 6 Astra",
+            "results": [{
+                "title": "Astra result",
+                "url": "https://example.test/astra",
+                "description": "GPT 6 Astra evidence",
+            }],
+        },
+        last_generated_response="Samaktha specification/persona text",
+        last_generated_text="Samaktha specification/persona text",
+    )
+
+    result = ReferenceResolver().resolve(
+        "now create a txt file with the above text", state
+    )
+
+    assert result.resolved is True
+    assert "GPT 6 Astra evidence" in result.request
+    assert "Samaktha specification/persona text" not in result.request
+
+
+def test_above_text_uses_second_search_not_first_search() -> None:
+    state = _state(
+        last_search_query="Python 3.14",
+        last_search_result={
+            "query": "Python 3.14",
+            "results": [{"title": "Python", "url": "https://example.test/python", "description": "Python 3.14 evidence"}],
+        },
+        last_generated_text="Python 3.14 evidence",
+    )
+
+    result = ReferenceResolver().resolve(
+        "now create a txt file with the above text", state
+    )
+
+    assert "Python 3.14 evidence" in result.request
+    assert "GPT 6 Astra" not in result.request
+
+
 def test_summarize_it_resolves_active_document() -> None:
     resolver = ReferenceResolver()
     result = resolver.resolve("Summarize it", _state(active_document="profile.pdf"))

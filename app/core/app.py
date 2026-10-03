@@ -1052,15 +1052,15 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
         tool=memory_tool,
         info=ToolInfo(
             tool_id="memory",
-            description="Search, retrieve, and delete conversation and skill memories",
-            capabilities=["search", "retrieve", "last_session", "delete", "delete_type", "delete_all", "delete_session"],
-            supported_actions=["search", "retrieve", "last_session", "delete", "delete_type", "delete_all", "delete_session"],
-            permissions=["read", "delete"],
+            description="Store user-supplied knowledge; retrieve and delete scoped memories",
+            capabilities=["store", "search", "retrieve", "last_session", "delete", "delete_type", "delete_all", "delete_session"],
+            supported_actions=["store", "search", "retrieve", "last_session", "delete", "delete_type", "delete_all", "delete_session"],
+            permissions=["read", "write", "delete"],
             product_domain="memory",
             execution_mode=CapabilityAvailability.LOCAL_ONLY,
-            side_effect_actions=["delete", "delete_type", "delete_all", "delete_session"],
-            evidence_requirements={"delete": "positive_deleted_count", "delete_type": "positive_deleted_count", "delete_all": "positive_deleted_count", "delete_session": "deleted_session"},
-            natural_language_intents=["search_memory", "delete_memory"],
+            side_effect_actions=["store", "delete", "delete_type", "delete_all", "delete_session"],
+            evidence_requirements={"store": "persisted_memory_record", "delete": "positive_deleted_count", "delete_type": "positive_deleted_count", "delete_all": "positive_deleted_count", "delete_session": "deleted_session"},
+            natural_language_intents=["memory_store", "search_memory", "delete_memory"],
             advertised=True,
         ),
     )
@@ -1586,7 +1586,7 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
     if provider_settings.mock_allowed():
         router_registrations.append(
             ProviderModelRegistration(
-                provider_id="mock", model_id="mock-model", capabilities=["text_generation"], execution_location=ExecutionLocation.LOCAL),
+                provider_id="mock", model_id="mock-model", capabilities=["text_generation"], execution_location=ExecutionLocation.LOCAL, metadata={"provider_kind": "mock"}),
         )
     router_registrations.extend([
         ProviderModelRegistration(
@@ -1596,7 +1596,7 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
         ProviderModelRegistration(
             provider_id="openrouter", model_id=provider_settings.openrouter_model, capabilities=["text_generation"], execution_location=ExecutionLocation.CLOUD),
         ProviderModelRegistration(
-            provider_id="local", model_id=provider_settings.local_model or "unknown", capabilities=["text_generation"], execution_location=ExecutionLocation.LOCAL),
+                provider_id="local", model_id=provider_settings.local_model or "unknown", capabilities=["text_generation"], execution_location=ExecutionLocation.LOCAL, metadata={"provider_kind": "real_local"}),
     ])
     router_registry = RouterRegistry(router_registrations)
     capability_registry = CapabilityRegistry()
