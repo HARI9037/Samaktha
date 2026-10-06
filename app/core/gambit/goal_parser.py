@@ -337,6 +337,12 @@ class GoalParser:
         if target is not None:
             lowered_request = " ".join(request.casefold().split())
             if lowered_request.startswith(("search your memory for ", "search memory for ")):
+                # A search asks for evidence about a topic.  A targeted
+                # recall names a singular remembered referent (for example
+                # a codeword or identifier).  This is semantic grammar, not
+                # a database lookup or fixture-specific keyword.
+                if re.search(r"\b(?:codeword|identifier|validation\s+code|favorite\s+(?:editor|tool|language))\b", target, re.I):
+                    return MemoryRecallIntent.TARGETED_RECALL
                 return MemoryRecallIntent.MEMORY_SEARCH
             return MemoryRecallIntent.TARGETED_RECALL if target else MemoryRecallIntent.MEMORY_BROWSE
         if re.match(r"^\s*remember\s+(?:when|our)\b", request, re.I):

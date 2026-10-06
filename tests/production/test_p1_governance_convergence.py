@@ -44,6 +44,7 @@ def production_orchestrator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         groq_api_key="production-regression-key",
         local_base_url="http://127.0.0.1:11434",
         local_model="local-test-model",
+        local_enabled=True,
         mock_agent=True,
     )
     monkeypatch.setattr(core_app, "ProviderSettings", lambda: provider_settings)

@@ -111,6 +111,15 @@ from app.core.contracts.security import (
     SecurityPolicy,
 )
 from app.core.contracts.state import ExecutionStatus, TaskExecutionState, ExecutionState
+from app.core.contracts.agent_loop import (
+    AgentState,
+    FailureRecord,
+    Observation,
+    ObservationStatus,
+    StateTransition,
+    TerminationState,
+    VerificationRecord,
+)
 
 __all__ = [
     "ActionRisk",
@@ -133,6 +142,13 @@ __all__ = [
     "ExecutionConstraints",
     "ExecutionLocation",
     "ExecutionState",
+    "AgentState",
+    "FailureRecord",
+    "Observation",
+    "ObservationStatus",
+    "StateTransition",
+    "TerminationState",
+    "VerificationRecord",
     "ExecutionStatus",
     "ExecutionTrace",
     "FailureCause",

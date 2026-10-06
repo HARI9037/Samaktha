@@ -187,7 +187,7 @@ class ProviderManager:
         cooldown are reported unavailable to both selection and execution.
         """
         cached = self._health_checker.get_status(provider_id)
-        if cached is not None:
+        if cached is not None and cached.cooldown_until is None:
             return cached
         return self._health_checker.check(
             provider_id=provider_id,

@@ -225,7 +225,7 @@ class ExecutionCoordinator:
             manager.resolve_session(
                 session_id,
                 principal_id=principal_id,
-                create_if_missing=True,
+                create_if_missing=False,
             )
             return session_id
         default_id = "default"
@@ -237,6 +237,28 @@ class ExecutionCoordinator:
         else:
             manager.load_session(default_id, principal_id=principal_id)
         return default_id
+
+    def resolve_or_create_session(
+        self,
+        principal_id: str,
+        session_id: str | None,
+    ) -> str:
+        """Resolve a session for a new execution, creating an explicit one.
+
+        ``resolve_session`` is intentionally existing-only.  New execution
+        callers may opt into creation through this explicit operation.
+        """
+        manager = self._session_manager
+        if manager is None:
+            return session_id or f"session-{uuid4().hex}"
+        if session_id:
+            manager.resolve_session(
+                session_id,
+                principal_id=principal_id,
+                create_if_missing=True,
+            )
+            return session_id
+        return self.resolve_session(principal_id, None)
 
     def _session_conversation(
         self,
@@ -282,7 +304,7 @@ class ExecutionCoordinator:
         execution_id: str | None = None,
         event_bus: RuntimeEventBus | None = None,
     ) -> ExecutionState:
-        resolved_session = self.resolve_session(principal_id, session_id)
+        resolved_session = self.resolve_or_create_session(principal_id, session_id)
         if conversation is None:
             conversation = self._session_conversation(
                 principal_id, resolved_session

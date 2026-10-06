@@ -57,6 +57,15 @@ class ProviderHealthChecker:
         """
         status = self.get_status(provider_id)
         if status is not None:
+            if status.cooldown_until is not None and status.cooldown_until <= datetime.now(timezone.utc):
+                with self._lock:
+                    self._cooldowns.pop(provider_id, None)
+                    status.available = status.enabled and status.configured
+                    status.rate_limited = False
+                    status.cooldown_until = None
+                    status.last_checked = datetime.now(timezone.utc)
+                    if status.available:
+                        status.last_error = None
             return status.available
         return (
             self._is_enabled(provider_id)
@@ -67,10 +76,16 @@ class ProviderHealthChecker:
     def mark_cooldown(self, provider_id: str, seconds: Optional[int] = None) -> None:
         """Put a provider into cooldown so selection skips it."""
         seconds = seconds if seconds is not None else self._settings.cooldown_seconds
+        until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
         with self._lock:
-            self._cooldowns[provider_id] = datetime.now(timezone.utc) + timedelta(
-                seconds=seconds,
-            )
+            self._cooldowns[provider_id] = until
+            status = self._status_cache.get(provider_id)
+            if status is not None:
+                status.available = False
+                status.rate_limited = True
+                status.cooldown_until = until
+                status.last_checked = datetime.now(timezone.utc)
+                status.last_error = "Provider is in cooldown"
 
     def clear_cooldown(self, provider_id: str) -> None:
         with self._lock:

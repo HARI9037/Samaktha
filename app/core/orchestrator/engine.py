@@ -35,6 +35,8 @@ from app.runtime.base import Runtime
 from app.core.contracts.trace import ExecutionTrace
 from app.workflow import WorkflowEngine
 from app.core.orchestrator.pipeline import PipelineEvent
+from app.core.agent_loop import AgentLoop
+from app.core.contracts.agent_loop import AgentState, Observation, StateTransition
 from app.agent.prompts import CAPABILITY_NEEDS_INPUT_MESSAGE, CAPABILITY_UNAVAILABLE_MESSAGE
 from app.conversation import ConversationStateManager
 from app.conversation.models import PendingClarification
@@ -227,6 +229,49 @@ class SamakthaOrchestrator:
             raise RuntimeError(
                 "Orchestrator pipeline finished without a runtime result.")
         return state.runtime_result
+
+    async def run_agent_step(
+        self,
+        state: AgentState,
+        runtime_context: RuntimeContext,
+    ) -> tuple[AgentState, Observation, StateTransition]:
+        """Run the reversible AgentLoop v1 adapter for one planned action.
+
+        The established pipeline remains the default.  This explicit entry
+        point reuses this orchestrator's CAP engines and Runtime without
+        introducing a second execution path or enabling adaptive replanning.
+        """
+        from app.core.contracts.policy import ApprovalRequest, ApprovalDecision, PlannedAction
+
+        async def evaluate(task):
+            action_id = task.metadata.get("action_id") or task.task_id
+            planned = PlannedAction(
+                action_id=action_id,
+                action_type=task.action_type,
+                description=task.description,
+                target=task.metadata.get("target"),
+                payload=task.inputs,
+                metadata=task.metadata,
+            )
+            policy = self._policy_engine.evaluate(planned)
+            subject = authorization_subject_id(
+                user_id=runtime_context.user_id,
+                session_id=runtime_context.session_id,
+                request_id=runtime_context.request_id,
+            )
+            permit = await self._approval_engine.authorize(
+                ApprovalRequest(action=planned, operation=planned, policy=policy),
+                subject_id=subject,
+                session_id=runtime_context.session_id,
+                workspace_id=runtime_context.workspace_id,
+            )
+            return permit if permit.decision == ApprovalDecision.ALLOW else None
+
+        return await AgentLoop(
+            runtime=self._runtime,
+            permit_evaluator=evaluate,
+            max_steps=1,
+        ).run(state, runtime_context)
 
     def _ensure_provider_available(self) -> None:
         """Raise a clean execution-time error when no provider can serve work.
