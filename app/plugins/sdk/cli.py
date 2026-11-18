@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import site
 import subprocess
 import sys
 from pathlib import Path
@@ -50,14 +51,18 @@ def _run_tests(path: str, plugins_dir: str | None) -> int:
     pythonpath_bits = [str(plugin_dir)]
     if plugins_dir:
         pythonpath_bits.append(str(resolve_plugins_dir(plugins_dir)))
+    # Include current interpreter's site-packages so the subprocess can find
+    # the `app` package and other dependencies installed in the venv.
+    for p in site.getsitepackages():
+        pythonpath_bits.append(p)
+    # Also include user site-packages if not disabled
+    user_site = site.getusersitepackages()
+    if user_site:
+        pythonpath_bits.append(user_site)
     existing = env.get("PYTHONPATH", "")
     if existing:
         pythonpath_bits.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_bits)
-    # Run with the SDK's interpreter and keep pytest discovery inside the
-    # plugin root.  In particular, do not inherit an unrelated user-site
-    # pytest or let rootdir discovery climb through a shared temp hierarchy.
-    env["PYTHONNOUSERSITE"] = "1"
     command = [
         sys.executable,
         "-m",

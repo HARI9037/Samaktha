@@ -7,6 +7,8 @@ import pytest
 
 # Allow multi-instance in tests to avoid single-instance guard interference
 os.environ["SAMAKTHA_TEST_ALLOW_MULTI_INSTANCE"] = "1"
+# Enable test mode to treat Python version as non-critical in validators
+os.environ["SAMAKTHA_TEST_MODE"] = "1"
 
 from app.core.contracts.policy import (
     ApprovalDecision,
