@@ -153,7 +153,7 @@ def test_create_orchestrator_selects_configured_ddgs_by_default(
     provider = production_search.internet_tool.provider
     assert isinstance(provider, DDGSSearchProvider)
     assert provider.is_configured() is True
-    assert provider._backend == "duckduckgo"
+    assert provider._backend == "lite"
     assert production_search.search_provider is provider
 
     registry_tool = production_search.tool_registry.get_tool("internet")
