@@ -145,7 +145,7 @@ class Settings(BaseSettings):
     search_provider: str = Field(default="ddgs")
     internet_search_enabled: bool = Field(default=True)
     ddgs_timeout: float = Field(default=10.0, gt=0, le=60)
-    ddgs_backend: str = Field(default="duckduckgo")
+    ddgs_backend: str = Field(default="lite")
     searxng_url: str = Field(default="")
     searxng_timeout: float = Field(default=15.0, gt=0, le=60)
     searxng_max_retries: int = Field(default=2, ge=0, le=5)
