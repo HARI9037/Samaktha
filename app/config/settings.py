@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     process_allow_clipboard_write: bool = Field(default=True)
     process_allow_terminal: bool = Field(default=False)
 
+    # P5.8.1 — TUI tool output visibility. Default False to hide internal tool output.
+    # Can be enabled via SAMAKTHA_SHOW_TOOL_OUTPUT=true or in settings UI.
+    show_tool_output: bool = Field(default=False)
+
     # P7B — Network/SSRF security
     network_allowed_schemes: list[str] = Field(default_factory=lambda: ["http", "https"])
     network_allowed_hosts: list[str] = Field(default_factory=list)
