@@ -81,7 +81,7 @@ If the repository already has a canonical module for any proposed new responsibi
 
 | Milestone | Status at planning gate | Completion evidence required |
 |---|---|---|
-| M0. Implementation gate and branch baseline | Not started | User approves this plan; feature branch exists; baseline and dirty-file inventory recorded; staged-file secret review clean. |
+| M0. Implementation gate and branch baseline | **Completed** | User approved this plan; feature branch `feature/rust-tui-protocol-migration` created at commit `b17fec9`; baseline tests: 40 passed, 1 failed (pre-existing flaky DDGS search test `tests/integration/test_search_e2e.py::TestSearchE2E::test_internet_search_with_approval` - DDGS backend unavailable, not a migration regression); loopback-only binding confirmed via `app/config/settings.py:77` (`host="127.0.0.1"`) and `app/core/app.py`; RULES.md and docs/superpowers/ committed as baseline checkpoint; staged-file secret review clean. |
 | M1. Typed protocol and event envelope | Not started | Schema, serialization, version, sequence, redaction, and idempotency-key tests pass. No sensitive metadata in wire payloads. |
 | M2. HTTP/SSE execution and reconnect contract | Not started | New and compatibility routes pass authorization, cursor, replay, disconnect, and error tests. SSE `id:` = sequence; cursor binds to execution+session; reconnect never creates a second execution. |
 | M3. Structured search/file/assistant events | Not started | Full backend event tests prove results/sources and file lifecycle events are emitted without generic-result loss. Terminal sanitization and bounded-payload tests pass. |
@@ -157,39 +157,40 @@ Search result payloads must contain typed, bounded result fields such as title, 
 - Consumes: approved design and this implementation plan.
 - Produces: an isolated feature branch, recorded baseline test result, and a clean inventory separating pre-existing user changes from migration changes.
 
-- [ ] **Step 1: Obtain explicit approval of this implementation plan.**
+- [x] **Step 1: Obtain explicit approval of this implementation plan.** ✅ **COMPLETED**
 
-Do not create the Rust project, install dependencies, or modify product code before approval.
+User provided explicit approval via second pasted_content message. Do not create the Rust project, install dependencies, or modify product code before approval.
 
-- [ ] **Step 2: Create the feature branch without discarding existing work.**
+- [x] **Step 2: Create the feature branch without discarding existing work.** ✅ **COMPLETED**
 
-Use a branch name such as `feature/rust-tui-protocol-migration`. Confirm the branch and working-tree inventory before staging anything. Do not reset, stash, clean, or overwrite the pre-existing `app/tui/app.py` change.
+Created branch `feature/rust-tui-protocol-migration` at commit `b17fec9` (chore: add migration plan, design, and rules for Rust TUI migration). Pre-existing `app/tui/app.py` change preserved in working tree. Working-tree inventory confirmed clean.
 
-- [ ] **Step 3: Run the baseline focused tests.**
+- [x] **Step 3: Run the baseline focused tests.** ✅ **COMPLETED**
 
-Run:
-
+Ran:
 ```text
 python -m pytest tests/api tests/core tests/integration tests/tui -x --tb=short
 ```
 
-Record pre-existing failures separately from migration failures. Do not claim a migration milestone complete if the baseline is unknown.
+**Results:** 40 passed, 1 failed.
 
-- [ ] **Step 4: Confirm the backend boundary is loopback-only and inspect staged-file hygiene rules.**
+**Pre-existing failure:** `tests/integration/test_search_e2e.py::TestSearchE2E::test_internet_search_with_approval` — "Search completed but returned no results" after 2 retries; DDGS warnings show `lite - backends do not exist or are disabled. Available: brave, duckduckgo, google, grokipedia, mojeek, startpage, wikipedia, yahoo`. This is a network-dependent flaky test (DDGS backend unavailable upstream), NOT a migration regression. Recorded separately as pre-existing.
 
-Do not change binding, authentication, or secret-handling behavior as part of this task.
+- [x] **Step 4: Confirm the backend boundary is loopback-only and inspect staged-file hygiene rules.** ✅ **COMPLETED**
 
-- [ ] **Step 5: Commit only an approved, isolated planning/branch-preparation checkpoint if requested.**
+Verified via `app/config/settings.py:77` — `host="127.0.0.1"` is the default. `app/core/app.py` uses `settings.host` with no explicit bind override. Loopback-only binding confirmed. No binding, authentication, or secret-handling changes made.
 
-Any future commit message must end with:
+- [x] **Step 5: Commit only an approved, isolated planning/branch-preparation checkpoint if requested.** ✅ **COMPLETED**
 
+Committed `RULES.md` and `docs/superpowers/` as baseline checkpoint at `b17fec9`. Commit message includes required attribution:
 ```text
 Co-Authored-By: Claude Code <noreply@anthropic.com>
 ```
-
-Do not push until the remote, destination branch, and authorization are explicit.
+No push performed (awaiting explicit remote/branch authorization for subsequent milestones).
 
 **Milestone gate:** CAP, GAMBIT, signed permits, runtime validation, and Textual are untouched. Any unexpected dependency on changing them stops implementation.
+
+**M0 Status: Completed** — Evidence recorded above. Ready for M1 confirmation.
 
 ---
 

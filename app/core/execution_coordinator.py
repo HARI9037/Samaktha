@@ -303,12 +303,28 @@ class ExecutionCoordinator:
         wait: bool = True,
         execution_id: str | None = None,
         event_bus: RuntimeEventBus | None = None,
+        idempotency_key: str | None = None,
     ) -> ExecutionState:
+        """Start execution with optional idempotency key (M1).
+
+        If idempotency_key is provided and an execution with the same key exists
+        for this principal, return the existing execution instead of creating a new one.
+        """
         resolved_session = self.resolve_or_create_session(principal_id, session_id)
         if conversation is None:
             conversation = self._session_conversation(
                 principal_id, resolved_session
             )
+
+        # M1: Idempotency key support
+        if idempotency_key:
+            idempotency_key_full = f"{principal_id}:{idempotency_key}"
+            async with self._lock:
+                for existing_id, record in self._executions.items():
+                    if record.state.metadata.get("idempotency_key") == idempotency_key_full:
+                        # Return existing execution state
+                        return record.state
+
         execution_id = execution_id or uuid4().hex
         event_bus = event_bus or RuntimeEventBus(resolved_session, execution_id)
         context = RuntimeContext(
@@ -329,6 +345,10 @@ class ExecutionCoordinator:
             request=request,
             metadata={"source": source, "streaming": streaming},
         )
+        # M1: Store idempotency key in metadata for lookup
+        if idempotency_key:
+            state.metadata["idempotency_key"] = f"{principal_id}:{idempotency_key}"
+
         record = _ActiveExecution(
             state=state,
             runtime_context=context,
@@ -796,11 +816,9 @@ class ExecutionCoordinator:
         after: int = 0,
     ) -> list[RuntimeEvent]:
         record = self._owned(execution_id, principal_id)
-        scoped = [
-            event for event in record.event_bus.history()
-            if event.data.execution_id == execution_id
-        ]
-        return scoped[max(0, after):]
+        # M1: Use sequence-based filtering via event_bus.events_after()
+        # The 'after' parameter is an exclusive cursor (sequence number)
+        return record.event_bus.events_after(execution_id, after)
 
     def _owned(self, execution_id: str, principal_id: str) -> _ActiveExecution:
         record = self._executions.get(execution_id)
