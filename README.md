@@ -231,6 +231,40 @@ hash supplied in [PILOT_RELEASE_NOTES.md](docs/pilot/PILOT_RELEASE_NOTES.md).
 Version-specific phase documents remain historical engineering records; they do
 not override the current architecture state or pilot capability contract.
 
+## How Samaktha differs from other agent tools
+
+Most agent tools fall into three categories:
+
+| Category | Examples | Primary job |
+|---|---|---|
+| Coding harnesses | Claude Code, Codex, opencode, Cursor | A model wrapped in chat, file tools, and an approval gate, living in a terminal or editor |
+| Cloud coworkers | Dots, Muse | A managed cloud computer with connected accounts that keeps working while your machine is off |
+| Runtimes | Hermes | Build-your-own always-on agent; you choose the model and operate the infrastructure |
+
+On the visible surface, Samaktha today converges with the coding harnesses: a
+model helps you work through a terminal interface with approvals before
+execution. The differences are architectural:
+
+- **Protocol-first.** Samaktha is built around a wire protocol (stdio NDJSON
+  JSON-RPC) rather than around one vendor's model. Any agent or model that
+  speaks the protocol can drive the harness; the interface, planner, and
+  executors do not care which provider is attached.
+- **Permissioning as a protocol citizen.** Approvals are not a UI popup over an
+  otherwise trusted agent. CAP issues an exact, signed ExecutionPermit per
+  action; GAMBIT checkpoints and MCP-style elicitation are part of the wire
+  protocol itself. The planner holds zero execution rights by construction.
+- **Memory as a system component.** Memory is scoped, persistent, and governed
+  like every other subsystem, not per-session chat context. Retrieval (RAG) is
+  on the roadmap and not yet landed; no retrieval claim is made for 0.5.0.
+
+The closest analogues to the governance model are research layers such as
+Google DeepMind's CaMeL, Progent, and Tenuo, not shipping harnesses. What those
+layers explore as policy research, Samaktha integrates as the execution path
+of a local-first, Windows-first runtime.
+
+In short: other tools are a model with a harness. Samaktha is a harness for any
+model, with permissioning and memory built into the protocol itself.
+
 ## License
 
 Samaktha is proprietary software. This public repository is provided for
