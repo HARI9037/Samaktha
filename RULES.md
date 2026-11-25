@@ -72,3 +72,4 @@ Every session must begin by checking the plan and rules, then update the active 
 ## 8. Change approval boundary
 
 Before implementation of a new project-sized phase, maintain a design/plan document with goals, non-goals, acceptance criteria, alternatives, and rollback criteria. If a proposed change would alter CAP, GAMBIT, signed permits, or runtime authorization, stop and request an explicit architecture review.
+

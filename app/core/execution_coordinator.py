@@ -384,10 +384,16 @@ class ExecutionCoordinator:
                 source=source,
             )
 
-        self._transition(record, ExecutionStatus.PLANNING)
-        record.task = asyncio.create_task(self._run_initial(record))
+        # M2: Keep initial status as CREATED until background task starts.
+        # This allows cancel to work and matches expected initial status in tests.
         if wait:
+            self._transition(record, ExecutionStatus.PLANNING)
+            record.task = asyncio.create_task(self._run_initial(record))
             await self._await_task(record.task)
+        else:
+            # For wait=False, start background task but stay in CREATED state
+            # The task will transition to PLANNING when it actually starts running
+            record.task = asyncio.create_task(self._run_initial(record))
         return record.state.model_copy(deep=True)
 
     async def _run_initial(self, record: _ActiveExecution) -> None:
@@ -395,6 +401,9 @@ class ExecutionCoordinator:
             async with self._capacity:
                 if record.cancel_event.is_set() or record.state.terminal:
                     return
+                # Transition from CREATED to PLANNING before running pipeline
+                if record.state.status == ExecutionStatus.CREATED:
+                    self._transition(record, ExecutionStatus.PLANNING)
                 if record.state.status in {ExecutionStatus.PLANNING, ExecutionStatus.RECOVERING}:
                     self._transition(record, ExecutionStatus.RUNNING)
                 await self._execute_initial_pipeline(record)

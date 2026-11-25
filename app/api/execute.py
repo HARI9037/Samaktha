@@ -628,11 +628,16 @@ async def execute_stream(
     start = time.perf_counter()
 
     async def event_source():
-        yield _sse("pipeline.started", {
-            "request_id": request_id,
-            "execution_id": request_id,
-            "session_id": session_id,
-        })
+        # Use serialize_sse_event for proper SSE format with id: field
+        yield serialize_sse_event(
+            sequence=1,
+            event_type="pipeline.started",
+            data={
+                "request_id": request_id,
+                "execution_id": request_id,
+                "session_id": session_id,
+            },
+        )
         await coordinator.start_execution(
             payload.message,
             principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
@@ -645,6 +650,7 @@ async def execute_stream(
         )
         cursor = 0
         deadline = asyncio.get_running_loop().time() + timeout_s
+        sse_sequence = 1  # Track SSE sequence for id: field
         while True:
             if await request.is_disconnected():
                 await coordinator.cancel_execution(
@@ -664,9 +670,11 @@ async def execute_stream(
             )
             for event in events:
                 cursor += 1
-                yield _sse(
-                    event.data.event_type.value,
-                    event.model_dump(mode="json"),
+                sse_sequence += 1
+                yield serialize_sse_event(
+                    sequence=sse_sequence,
+                    event_type=event.data.event_type.value,
+                    data=event.model_dump(mode="json"),
                 )
             state = coordinator.inspect_execution(
                 request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
@@ -678,25 +686,35 @@ async def execute_stream(
                     request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
                 )
                 if state.status == ExecutionStatus.COMPLETED and result is not None:
-                    yield _sse("pipeline.completed", {
-                        "execution_id": request_id,
-                        "status": result.status.value,
-                        "task_id": result.task_id,
-                        "response": _extract_response(result),
-                        "error": result.error,
-                    })
+                    sse_sequence += 1
+                    yield serialize_sse_event(
+                        sequence=sse_sequence,
+                        event_type="pipeline.completed",
+                        data={
+                            "execution_id": request_id,
+                            "status": result.status.value,
+                            "task_id": result.task_id,
+                            "response": _extract_response(result),
+                            "error": result.error,
+                        },
+                    )
                 elif state.status in {
                     ExecutionStatus.FAILED,
                     ExecutionStatus.CANCELLED,
                     ExecutionStatus.TIMED_OUT,
                 }:
-                    yield _sse("pipeline.failed", {
-                        "execution_id": request_id,
-                        "error": {
-                            "code": state.status.value,
-                            "message": state.error or state.status.value,
+                    sse_sequence += 1
+                    yield serialize_sse_event(
+                        sequence=sse_sequence,
+                        event_type="pipeline.failed",
+                        data={
+                            "execution_id": request_id,
+                            "error": {
+                                "code": state.status.value,
+                                "message": state.error or state.status.value,
+                            },
                         },
-                    })
+                    )
                 return
             await asyncio.sleep(0.01)
 
