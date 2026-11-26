@@ -228,6 +228,7 @@ class FileWriteStartedPayload(BaseModel):
     content_length: int = Field(..., ge=0, description="Length of content to write")
     mode: Literal["write", "append"] = Field("write", description="Write mode")
     request_id: str = Field(..., description="Unique request ID for tracing")
+    resource_id: str | None = Field(None, description="Opaque server-issued resource ID for TUI correlation")
 
 
 class FileWriteCompletedPayload(BaseModel):
@@ -237,6 +238,7 @@ class FileWriteCompletedPayload(BaseModel):
     path: str = Field(..., description="File path that was written")
     bytes_written: int = Field(..., ge=0, description="Number of bytes written")
     request_id: str = Field(..., description="Unique request ID for tracing")
+    resource_id: str | None = Field(None, description="Opaque server-issued resource ID for TUI correlation")
 
 
 class FileListStartedPayload(BaseModel):

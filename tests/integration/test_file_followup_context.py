@@ -24,6 +24,8 @@ from app.core.resource_context import (
 )
 from app.api.protocol import EventEnvelope
 from app.core.events import RuntimeEventType as EventType
+from app.core.app import create_orchestrator
+from app.core.execution_coordinator import ExecutionCoordinator
 
 
 class TestM4FileFollowUpContextIntegration:
@@ -170,13 +172,12 @@ class TestM4FileFollowUpContextIntegration:
         Verify ResourceContextStore is accessible via execution_coordinator.
 
         This ensures the store is properly integrated into the execution pipeline.
+        Uses create_orchestrator() factory like production.py does.
         """
-        from app.core.execution_coordinator import ExecutionCoordinator
-        from app.core.orchestrator import SamakthaOrchestrator
-
-        # Create orchestrator and coordinator
-        orchestrator = SamakthaOrchestrator()
-        coordinator = ExecutionCoordinator(orchestrator)
+        # Create orchestrator using factory (like app/agent/production.py:59)
+        orchestrator = create_orchestrator()
+        # Use the execution_coordinator wired by the factory (app/core/app.py:1810-1818)
+        coordinator = orchestrator.execution_coordinator
 
         # Verify coordinator has access to resource context store
         # The coordinator should have a resource_context attribute or similar
@@ -192,6 +193,8 @@ class TestM4FileFollowUpContextIntegration:
         This ensures the protocol includes the opaque server-issued resource ID
         in file-related SSE events for TUI correlation.
         """
+        from datetime import datetime, timezone
+
         # File events should exist (using RuntimeEventType from app.core.events)
         file_event_types = [
             EventType.FILE_READ_STARTED,
@@ -205,21 +208,47 @@ class TestM4FileFollowUpContextIntegration:
         for event_type in file_event_types:
             assert event_type is not None, f"EventType.{event_type.name} must exist"
 
-        # Verify EventEnvelope can carry resource_id in data
+        # Verify EventEnvelope can carry resource_id in payload
+        # Using FileWriteStartedPayload structure which has resource_id field
+        timestamp = datetime.now(timezone.utc).isoformat()
         envelope = EventEnvelope(
             sequence=1,
+            execution_id="exec-123",
+            session_id="sess-123",
             event_type=EventType.FILE_WRITE_STARTED,
-            data={
-                "resource_id": "res-abc123",
+            payload={
                 "path": "/home/user/project/file.txt",
-                "operation": "write",
-            }
+                "content_length": 100,
+                "mode": "write",
+                "request_id": "req-123",
+                "resource_id": "res-abc123",
+            },
+            timestamp=timestamp,
         )
 
-        # The envelope should serialize with resource_id
+        # The envelope should serialize with resource_id in payload
         serialized = envelope.model_dump(mode="json")
-        assert "resource_id" in serialized.get("data", {})
-        assert serialized["data"]["resource_id"] == "res-abc123"
+        assert "resource_id" in serialized.get("payload", {})
+        assert serialized["payload"]["resource_id"] == "res-abc123"
+
+        # Also verify FILE.WRITE_COMPLETED payload structure
+        envelope_completed = EventEnvelope(
+            sequence=2,
+            execution_id="exec-123",
+            session_id="sess-123",
+            event_type=EventType.FILE_WRITE_COMPLETED,
+            payload={
+                "path": "/home/user/project/file.txt",
+                "bytes_written": 100,
+                "request_id": "req-123",
+                "resource_id": "res-abc123",
+            },
+            timestamp=timestamp,
+        )
+
+        serialized_completed = envelope_completed.model_dump(mode="json")
+        assert "resource_id" in serialized_completed.get("payload", {})
+        assert serialized_completed["payload"]["resource_id"] == "res-abc123"
 
     def test_workspace_isolation_in_integration(self):
         """Context must be isolated per workspace even within same session."""

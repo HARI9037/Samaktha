@@ -25,6 +25,7 @@ from app.core.contracts import ExecutionLocation
 from app.conversation import ConversationStateManager
 from app.core.gambit import Planner
 from app.core.orchestrator import SamakthaOrchestrator
+from app.core.resource_context import ResourceContextStore
 from app.core.telemetry import TelemetryRegistry
 from app.providers import (
     GroqProvider,
@@ -1807,10 +1808,15 @@ def create_orchestrator(settings: Settings | None = None) -> SamakthaOrchestrato
     orchestrator.plugin_manager = plugin_manager
     orchestrator.plugin_activity = plugin_activity
 
+    # M4 — Backend-owned resource context store for file follow-up resolution
+    resource_context_store = ResourceContextStore()
+    orchestrator._resource_context_store = resource_context_store
+
     orchestrator.execution_coordinator = ExecutionCoordinator(
         orchestrator,
         checkpoint_store=checkpoint_store,
         evidence_instrumentation=evidence_instrumentation,
+        resource_context_store=resource_context_store,
         execution_timeout_s=settings.execution_timeout_seconds,
         max_active_executions=settings.max_active_executions,
         max_pending_executions=settings.max_pending_executions,

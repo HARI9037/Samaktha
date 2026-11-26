@@ -23,6 +23,7 @@ from app.workflow.state import WorkflowState
 from app.runtime.report import ExecutionReport, ExecutionTruthState
 from app.runtime.checkpoint import CheckpointError, CheckpointStore, RecoveryCheckpoint
 from app.evidence.instrumentation import EvidenceInstrumentation
+from app.core.resource_context import ResourceContextStore
 
 
 class ExecutionNotFoundError(KeyError):
@@ -68,6 +69,7 @@ class ExecutionCoordinator:
         *,
         checkpoint_store: CheckpointStore | None = None,
         evidence_instrumentation: EvidenceInstrumentation | None = None,
+        resource_context_store: ResourceContextStore | None = None,
         execution_timeout_s: float | None = None,
         max_active_executions: int = 32,
         max_pending_executions: int = 64,
@@ -79,6 +81,7 @@ class ExecutionCoordinator:
         self._lock = asyncio.Lock()
         self._checkpoint_store = checkpoint_store
         self._evidence = evidence_instrumentation
+        self._resource_context_store = resource_context_store
         self._execution_timeout_s = execution_timeout_s
         self._max_retained_executions = max(1, max_retained_executions)
         self._max_active_executions = max(1, max_active_executions)
@@ -86,6 +89,11 @@ class ExecutionCoordinator:
         self._capacity = asyncio.Semaphore(self._max_active_executions)
         self._restore_checkpoints()
         self._prune_terminal_records()
+
+    @property
+    def resource_context(self) -> ResourceContextStore | None:
+        """Access the backend-owned resource context store."""
+        return self._resource_context_store
 
     def _prune_terminal_records(self, *, preserve: _ActiveExecution | None = None) -> None:
         """Bound process-local terminal history; durable evidence remains authoritative."""
