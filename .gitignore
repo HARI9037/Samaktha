@@ -139,3 +139,15 @@ scratch/
 docs/PROJECT_AUDIT.md
 docs/TECHNICAL_AUDIT.md
 docs/Samaktha_Implementation_Maturity_Checklist.md
+
+
+# --- Rust TUI client ---------------------------------------------------------
+# Cargo build output. Reproducible from source. Cargo.lock stays tracked
+# because the client is a binary.
+clients/rust-tui/target/
+**/target/debug/
+**/target/release/
+
+# --- Local test output -------------------------------------------------------
+baseline-test-results.txt
+*-test-results.txt
