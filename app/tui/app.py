@@ -29,6 +29,7 @@ from app.tui.theme import SAMAKTHA_CSS
 from app.tui.timeline import TimelinePanel
 from app.tui.feedback import AgentEventLog
 from app.tui.attachments import Attachment
+from app.tui.models import ConversationMessage
 
 from app.tui.commands import CommandRegistry
 from app.tui.command_palette import CommandPalette
@@ -457,9 +458,10 @@ class MainScreen(Screen):
     async def _consume_runtime_stream(self, stream, error_prefix: str) -> None:
         """Canonical consumer for runtime item streams.
 
-        Handles provider/tool/error items from both ``handle_message`` and
-        ``resume``, applies the tool-output visibility gate once, and always
-        restores the input bar when the stream ends or fails.
+        Handles structured protocol events (M3/M5) and legacy provider/tool/error items.
+        Structured events have an 'event_type' field (e.g., 'SEARCH.STARTED', 'FILE.READ_COMPLETED',
+        'ASSISTANT.MESSAGE_STARTED', 'RESYNC', 'CANCELLATION') with content as a dict containing
+        'event_type' and 'payload' keys for the renderer factory.
         """
         conv = self.query_one("#conversation", ConversationPanel)
         started = False
@@ -467,6 +469,27 @@ class MainScreen(Screen):
             async for item in stream:
                 if not isinstance(item, dict):
                     continue
+
+                # Check for structured protocol events (M3/M5)
+                event_type = item.get("event_type")
+                if event_type:
+                    # Structured protocol event - create ConversationMessage with proper content structure
+                    content = item.get("content", {})
+                    if isinstance(content, dict) and "event_type" in content:
+                        # Already properly structured for renderer
+                        msg = ConversationMessage(role="tool", content=content, markdown=False)
+                    else:
+                        # Wrap payload in expected structure
+                        msg = ConversationMessage(
+                            role="tool",
+                            content={"event_type": event_type, "payload": content},
+                            markdown=False
+                        )
+                    conv._append_message(msg)
+                    conv.scroll_end(animate=False)
+                    continue
+
+                # Legacy event types (provider/tool/error)
                 etype = item.get("type")
                 content = item.get("content", "")
                 if etype == "provider":

@@ -131,16 +131,39 @@ class RenderedSystemMessage(RenderedMessage):
 class RenderedErrorMessage(RenderedMessage):
     def compose(self) -> ComposeResult:
         content = self.message.content
-        if isinstance(content, str):
-            # Sanitize for Rich markup
-            content = content.replace("[", "\\[").replace("]", "\\]")
+
+        def sanitize(text: str) -> str:
+            if not isinstance(text, str):
+                text = str(text)
+            text = text.replace("[", "\\[").replace("]", "\\]")
             import re
-            content = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', content)
+            text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
             try:
-                content.encode('utf-8')
+                text.encode('utf-8')
             except UnicodeEncodeError:
-                content = content.encode('utf-8', errors='replace').decode('utf-8')
-        yield Label(content, classes="msg-system", shrink=True)
+                text = text.encode('utf-8', errors='replace').decode('utf-8')
+            return text
+
+        # Handle structured ERROR event (event_type: "ERROR" with payload)
+        if isinstance(content, dict) and content.get("event_type") == "ERROR":
+            error_payload = content.get("payload", {})
+            error_code = sanitize(error_payload.get("error_code", "UNKNOWN_ERROR"))
+            error_message = sanitize(error_payload.get("error_message", ""))
+            details = error_payload.get("details")
+
+            yield Label(f"Event: ERROR", classes="msg-system", shrink=True)
+            yield Label(f"Error Code: {error_code}", classes="msg-error", shrink=True)
+            yield Label(f"Message: {error_message}", classes="msg-system", shrink=True)
+            if details:
+                import json
+                yield Label(f"Details: {json.dumps(details, ensure_ascii=False)}", classes="msg-system", shrink=True)
+        elif isinstance(content, str):
+            # Sanitize for Rich markup
+            content = sanitize(content)
+            yield Label(content, classes="msg-system", shrink=True)
+        else:
+            # Fallback: stringify
+            yield Label(sanitize(str(content)), classes="msg-system", shrink=True)
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +343,350 @@ def _approval_summary_lines(pause_data: dict | None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Structured Protocol Event Message Types (M5)
+# ---------------------------------------------------------------------------
+
+class RenderedSearchResultsMessage(RenderedMessage):
+    """Structured rendering for SEARCH events (STARTED, COMPLETED, FAILED)."""
+
+    def compose(self) -> ComposeResult:
+        content = self.message.content
+        event_type = ""
+
+        # Extract event_type from content
+        if isinstance(content, dict):
+            event_type = content.get("event_type", "")
+            payload = content.get("payload", {})
+        else:
+            payload = {}
+
+        # Sanitize helper
+        def sanitize(text: str) -> str:
+            if not isinstance(text, str):
+                text = str(text)
+            text = text.replace("[", "\\[").replace("]", "\\]")
+            import re
+            text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+            try:
+                text.encode('utf-8')
+            except UnicodeEncodeError:
+                text = text.encode('utf-8', errors='replace').decode('utf-8')
+            return text
+
+        with Vertical(classes="msg-tool-container"):
+            # Header
+            header_text = "🔍 Search"
+            if event_type == "SEARCH.STARTED":
+                header_text += " Started"
+            elif event_type == "SEARCH.COMPLETED":
+                header_text += " Completed"
+            elif event_type == "SEARCH.FAILED":
+                header_text += " Failed"
+
+            yield Label(header_text, classes="msg-tool-label")
+            yield Label("────────────────────────────", classes="msg-separator")
+
+            if event_type == "SEARCH.STARTED":
+                query = sanitize(payload.get("query", ""))
+                backend = sanitize(payload.get("backend", ""))
+                filters = payload.get("filters")
+                req_id = sanitize(payload.get("request_id", ""))
+
+                yield Label(f"Event: {event_type}", classes="msg-system", shrink=True)
+                yield Label(f"Query: {query}", classes="msg-system", shrink=True)
+                yield Label(f"Backend: {backend}", classes="msg-system", shrink=True)
+                if filters:
+                    import json
+                    yield Label(f"Filters: {json.dumps(filters, ensure_ascii=False)}", classes="msg-system", shrink=True)
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "SEARCH.COMPLETED":
+                query = sanitize(payload.get("query", ""))
+                backend = sanitize(payload.get("backend", ""))
+                results = payload.get("results", [])
+                result_count = payload.get("result_count", 0)
+                req_id = sanitize(payload.get("request_id", ""))
+
+                yield Label(f"Event: {event_type}", classes="msg-system", shrink=True)
+                yield Label(f"Query: {query}", classes="msg-system", shrink=True)
+                yield Label(f"Backend: {backend} • {result_count} results", classes="msg-system", shrink=True)
+                yield Label("────────────────────────────", classes="msg-separator")
+
+                # Defensive: ensure results is a list
+                if not isinstance(results, list):
+                    yield Label(f"Invalid results format: expected list, got {type(results).__name__}", classes="msg-error", shrink=True)
+                    results = []
+
+                for i, result in enumerate(results):
+                    # Defensive: ensure each result is a dict
+                    if not isinstance(result, dict):
+                        yield Label(f"Invalid result item {i}: expected dict, got {type(result).__name__}", classes="msg-error", shrink=True)
+                        continue
+                    title = sanitize(result.get("title", f"Result {i+1}"))
+                    url = sanitize(result.get("url", ""))
+                    snippet = sanitize(result.get("snippet", ""))
+                    source = sanitize(result.get("source", "web"))
+
+                    with Vertical(classes="msg-search-result"):
+                        yield Label(f"📄 {title}", classes="msg-search-title", shrink=True)
+                        if url:
+                            yield Label(f"🔗 {url}", classes="msg-search-url", shrink=True)
+                        if snippet:
+                            yield Label(f"💬 {snippet[:200]}{'...' if len(snippet) > 200 else ''}", classes="msg-search-snippet", shrink=True)
+                        yield Label(f"Source: {source}", classes="msg-system", shrink=True)
+
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "SEARCH.FAILED":
+                query = sanitize(payload.get("query", ""))
+                backend = sanitize(payload.get("backend", ""))
+                error_code = sanitize(payload.get("error_code", "UNKNOWN_ERROR"))
+                error_message = sanitize(payload.get("error_message", ""))
+                req_id = sanitize(payload.get("request_id", ""))
+
+                yield Label(f"Query: {query}", classes="msg-system", shrink=True)
+                yield Label(f"Backend: {backend}", classes="msg-system", shrink=True)
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(f"❌ Error: {error_code}", classes="msg-error", shrink=True)
+                yield Label(f"Message: {error_message}", classes="msg-system", shrink=True)
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            else:
+                # Fallback for unknown search event
+                yield Label(sanitize(str(payload)), classes="msg-system", shrink=True)
+
+
+class RenderedFileEventMessage(RenderedMessage):
+    """Structured rendering for FILE events (READ, WRITE, LIST)."""
+
+    def compose(self) -> ComposeResult:
+        content = self.message.content
+        event_type = ""
+
+        if isinstance(content, dict):
+            event_type = content.get("event_type", "")
+            payload = content.get("payload", {})
+        else:
+            payload = {}
+
+        def sanitize(text: str) -> str:
+            if not isinstance(text, str):
+                text = str(text)
+            text = text.replace("[", "\\[").replace("]", "\\]")
+            import re
+            text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+            try:
+                text.encode('utf-8')
+            except UnicodeEncodeError:
+                text = text.encode('utf-8', errors='replace').decode('utf-8')
+            return text
+
+        def safe_path(path: str) -> str:
+            """Extract filename or last few path components for display."""
+            if not path:
+                return "unknown"
+            parts = path.replace("\\", "/").split("/")
+            if len(parts) > 2:
+                return f".../{'/'.join(parts[-2:])}"
+            return path
+
+        with Vertical(classes="msg-tool-container"):
+            # Header
+            header_text = "📁 File"
+            action = ""
+            if event_type == "FILE.READ_STARTED":
+                action = "Reading"
+            elif event_type == "FILE.READ_COMPLETED":
+                action = "Read Complete"
+            elif event_type == "FILE.WRITE_STARTED":
+                action = "Writing"
+            elif event_type == "FILE.WRITE_COMPLETED":
+                action = "Write Complete"
+            elif event_type == "FILE.LIST_STARTED":
+                action = "Listing Directory"
+            elif event_type == "FILE.LIST_COMPLETED":
+                action = "Directory Listed"
+
+            yield Label(f"{header_text} {action}", classes="msg-tool-label")
+            yield Label("────────────────────────────", classes="msg-separator")
+
+            path = sanitize(payload.get("path", ""))
+            req_id = sanitize(payload.get("request_id", ""))
+
+            yield Label(f"Path: {safe_path(path)}", classes="msg-system", shrink=True)
+            yield Label(f"Full: {path}", classes="msg-system", shrink=True)
+
+            if event_type == "FILE.READ_STARTED":
+                offset = payload.get("offset", 0)
+                limit = payload.get("limit")
+                yield Label(f"Event: {event_type}", classes="msg-system", shrink=True)
+                yield Label(f"Status: Read started", classes="msg-system", shrink=True)
+                yield Label(f"Offset: {offset}", classes="msg-system", shrink=True)
+                if limit:
+                    yield Label(f"Limit: {limit} bytes", classes="msg-system", shrink=True)
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "FILE.READ_COMPLETED":
+                content_text = sanitize(payload.get("content", ""))
+                size = payload.get("size", 0)
+                encoding = sanitize(payload.get("encoding", "utf-8"))
+
+                yield Label(f"Size: {size} bytes", classes="msg-system", shrink=True)
+                yield Label(f"Encoding: {encoding}", classes="msg-system", shrink=True)
+                yield Label("────────────────────────────", classes="msg-separator")
+                # Preview first 500 chars
+                preview = content_text[:500] + ("..." if len(content_text) > 500 else "")
+                yield Label(preview, classes="msg-file-content", shrink=True, markup=False)
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "FILE.WRITE_STARTED":
+                content_length = payload.get("content_length", 0)
+                mode = sanitize(payload.get("mode", "write"))
+
+                yield Label(f"Content Length: {content_length} bytes", classes="msg-system", shrink=True)
+                yield Label(f"Mode: {mode}", classes="msg-system", shrink=True)
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "FILE.WRITE_COMPLETED":
+                bytes_written = payload.get("bytes_written", 0)
+
+                yield Label(f"Bytes Written: {bytes_written}", classes="msg-system", shrink=True)
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "FILE.LIST_STARTED":
+                recursive = payload.get("recursive", False)
+
+                yield Label(f"Recursive: {recursive}", classes="msg-system", shrink=True)
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "FILE.LIST_COMPLETED":
+                entries = payload.get("entries", [])
+                entry_count = payload.get("entry_count", 0)
+
+                yield Label(f"Entries: {entry_count}", classes="msg-system", shrink=True)
+                yield Label("────────────────────────────", classes="msg-separator")
+
+                for entry in entries:
+                    name = sanitize(entry.get("name", ""))
+                    entry_type = sanitize(entry.get("type", "file"))
+                    size = entry.get("size", 0)
+
+                    icon = "📁" if entry_type == "folder" else "📄"
+                    if entry_type == "folder":
+                        yield Label(f"{icon} {name}/", classes="msg-system", shrink=True)
+                    else:
+                        size_str = f"{size} B" if size < 1024 else f"{size/1024:.0f} KB"
+                        yield Label(f"{icon} {name:<30} {size_str:>10}", classes="msg-system", shrink=True)
+
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+
+            else:
+                yield Label(sanitize(str(payload)), classes="msg-system", shrink=True)
+
+
+class RenderedAssistantEventMessage(RenderedMessage):
+    """Structured rendering for ASSISTANT events (MESSAGE_STARTED, MESSAGE_COMPLETED, TOKEN, ERROR)."""
+
+    def compose(self) -> ComposeResult:
+        content = self.message.content
+        event_type = ""
+
+        if isinstance(content, dict):
+            event_type = content.get("event_type", "")
+            payload = content.get("payload", {})
+        else:
+            payload = {}
+
+        def sanitize(text: str) -> str:
+            if not isinstance(text, str):
+                text = str(text)
+            text = text.replace("[", "\\[").replace("]", "\\]")
+            import re
+            text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+            try:
+                text.encode('utf-8')
+            except UnicodeEncodeError:
+                text = text.encode('utf-8', errors='replace').decode('utf-8')
+            return text
+
+        with Vertical(classes="msg-tool-container"):
+            # Header
+            header_text = "🤖 Assistant"
+            if event_type == "ASSISTANT.MESSAGE_STARTED":
+                header_text += " Started"
+            elif event_type == "ASSISTANT.MESSAGE_COMPLETED":
+                header_text += " Completed"
+            elif event_type == "ASSISTANT.TOKEN":
+                header_text += " Token"
+            elif event_type == "ASSISTANT.ERROR":
+                header_text += " Error"
+
+            yield Label(header_text, classes="msg-tool-label")
+            yield Label("────────────────────────────", classes="msg-separator")
+
+            model_id = sanitize(payload.get("model_id", ""))
+            provider_id = sanitize(payload.get("provider_id", ""))
+            req_id = sanitize(payload.get("request_id", ""))
+            trace_id = sanitize(payload.get("trace_id", ""))
+
+            if model_id:
+                yield Label(f"Model: {model_id}", classes="msg-system", shrink=True)
+            if provider_id:
+                yield Label(f"Provider: {provider_id}", classes="msg-system", shrink=True)
+
+            if event_type == "ASSISTANT.MESSAGE_STARTED":
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+                if trace_id:
+                    yield Label(f"Trace ID: {trace_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "ASSISTANT.MESSAGE_COMPLETED":
+                content_text = sanitize(payload.get("content", ""))
+                finish_reason = sanitize(payload.get("finish_reason", ""))
+                usage = payload.get("usage", {})
+
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(content_text, classes="msg-assistant-content", shrink=True, markup=True)
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(f"Finish Reason: {finish_reason}", classes="msg-system", shrink=True)
+                if usage:
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get("total_tokens", 0)
+                    yield Label(f"Tokens: {prompt_tokens} prompt + {completion_tokens} completion = {total_tokens} total", classes="msg-system", shrink=True)
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+                if trace_id:
+                    yield Label(f"Trace ID: {trace_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "ASSISTANT.TOKEN":
+                token = sanitize(payload.get("token", ""))
+                seq = payload.get("sequence_number", 0)
+
+                yield Label(f"Token #{seq}: {token}", classes="msg-system", shrink=True)
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+                if trace_id:
+                    yield Label(f"Trace ID: {trace_id}", classes="msg-system", shrink=True)
+
+            elif event_type == "ASSISTANT.ERROR":
+                error_code = sanitize(payload.get("error_code", "UNKNOWN_ERROR"))
+                error_message = sanitize(payload.get("error_message", ""))
+
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(f"❌ Error: {error_code}", classes="msg-error", shrink=True)
+                yield Label(f"Message: {error_message}", classes="msg-system", shrink=True)
+                yield Label("────────────────────────────", classes="msg-separator")
+                yield Label(f"Request ID: {req_id}", classes="msg-system", shrink=True)
+                if trace_id:
+                    yield Label(f"Trace ID: {trace_id}", classes="msg-system", shrink=True)
+
+            else:
+                yield Label(sanitize(str(payload)), classes="msg-system", shrink=True)
+
+
+# ---------------------------------------------------------------------------
 # Attachment message types
 # ---------------------------------------------------------------------------
 
@@ -380,6 +747,22 @@ class ConversationRenderer:
         elif message.role == "assistant":
             return RenderedAssistantMessage(message)
         elif message.role == "tool":
+            # Check for structured protocol events (M5)
+            content = message.content
+            if isinstance(content, dict) and "event_type" in content:
+                event_type = content.get("event_type", "")
+                # Search events
+                if event_type.startswith("SEARCH."):
+                    return RenderedSearchResultsMessage(message)
+                # File events
+                elif event_type.startswith("FILE."):
+                    return RenderedFileEventMessage(message)
+                # Assistant events
+                elif event_type.startswith("ASSISTANT."):
+                    return RenderedAssistantEventMessage(message)
+                # Resync/Cancellation events
+                elif event_type in ("RESYNC", "CANCELLATION"):
+                    return RenderedSystemMessage(message)
             return RenderedToolMessage(message)
         elif message.role == "attachment":
             return RenderedAttachmentMessage(message)
