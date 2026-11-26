@@ -99,12 +99,43 @@ class ProductionAgentRuntime:
 
         def on_event(event: RuntimeEvent) -> None:
             nonlocal token_seen
-            if (
-                event.data.execution_id == execution_id
-                and event.data.event_type == RuntimeEventType.TOKEN
+            if event.data.execution_id != execution_id:
+                return
+
+            event_type = event.data.event_type
+            payload = event.data.payload
+
+            # Handle structured protocol events (M3/M5)
+            if event_type in (
+                RuntimeEventType.SEARCH_STARTED,
+                RuntimeEventType.SEARCH_COMPLETED,
+                RuntimeEventType.SEARCH_FAILED,
+                RuntimeEventType.FILE_READ_STARTED,
+                RuntimeEventType.FILE_READ_COMPLETED,
+                RuntimeEventType.FILE_WRITE_STARTED,
+                RuntimeEventType.FILE_WRITE_COMPLETED,
+                RuntimeEventType.FILE_LIST_STARTED,
+                RuntimeEventType.FILE_LIST_COMPLETED,
+                RuntimeEventType.ASSISTANT_MESSAGE_STARTED,
+                RuntimeEventType.ASSISTANT_MESSAGE_COMPLETED,
+                RuntimeEventType.ASSISTANT_TOKEN,
+                RuntimeEventType.ASSISTANT_ERROR,
+                RuntimeEventType.RESYNC,
+                RuntimeEventType.CANCELLATION,
             ):
+                output_queue.put_nowait({
+                    "event_type": event_type.value,
+                    "content": {
+                        "event_type": event_type.value,
+                        "payload": payload
+                    }
+                })
+                return
+
+            # Legacy TOKEN event -> provider token
+            if event_type == RuntimeEventType.TOKEN:
                 token_seen = True
-                content = event.data.payload.get("content", "")
+                content = payload.get("content", "")
                 if content:
                     output_queue.put_nowait({"type": "provider", "content": content})
 
@@ -173,12 +204,43 @@ class ProductionAgentRuntime:
 
         def on_event(event: RuntimeEvent) -> None:
             nonlocal token_seen
-            if (
-                event.data.execution_id == execution_id
-                and event.data.event_type == RuntimeEventType.TOKEN
+            if event.data.execution_id != execution_id:
+                return
+
+            event_type = event.data.event_type
+            payload = event.data.payload
+
+            # Handle structured protocol events (M3/M5)
+            if event_type in (
+                RuntimeEventType.SEARCH_STARTED,
+                RuntimeEventType.SEARCH_COMPLETED,
+                RuntimeEventType.SEARCH_FAILED,
+                RuntimeEventType.FILE_READ_STARTED,
+                RuntimeEventType.FILE_READ_COMPLETED,
+                RuntimeEventType.FILE_WRITE_STARTED,
+                RuntimeEventType.FILE_WRITE_COMPLETED,
+                RuntimeEventType.FILE_LIST_STARTED,
+                RuntimeEventType.FILE_LIST_COMPLETED,
+                RuntimeEventType.ASSISTANT_MESSAGE_STARTED,
+                RuntimeEventType.ASSISTANT_MESSAGE_COMPLETED,
+                RuntimeEventType.ASSISTANT_TOKEN,
+                RuntimeEventType.ASSISTANT_ERROR,
+                RuntimeEventType.RESYNC,
+                RuntimeEventType.CANCELLATION,
             ):
+                output_queue.put_nowait({
+                    "event_type": event_type.value,
+                    "content": {
+                        "event_type": event_type.value,
+                        "payload": payload
+                    }
+                })
+                return
+
+            # Legacy TOKEN event -> provider token
+            if event_type == RuntimeEventType.TOKEN:
                 token_seen = True
-                content = event.data.payload.get("content", "")
+                content = payload.get("content", "")
                 if content:
                     output_queue.put_nowait({"type": "provider", "content": content})
 

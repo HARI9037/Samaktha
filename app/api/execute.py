@@ -9,6 +9,8 @@
 
 ``/execute/stream`` is a Server-Sent-Events endpoint over the same canonical
 ``run_pipeline`` path, streaming lifecycle events and the final result.
+
+M1: Protocol version negotiation, idempotency keys, SSE sequences, cursor binding.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ import logging
 import time
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
 
 from app.api.schemas import (
@@ -29,6 +31,18 @@ from app.api.schemas import (
     ExecutionStateResponse,
     SessionCreateRequest,
     SessionCreateResponse,
+)
+from app.api.protocol import (
+    PROTOCOL_VERSION,
+    PROTOCOL_VERSION_UNSUPPORTED_ERROR,
+    VersionNegotiationRequest,
+    VersionNegotiationResponse,
+    ExecutionCreateRequest,
+    ExecutionCreateResponse,
+    EventEnvelope,
+    EventsCursorRequest,
+    CursorExpiredResponse,
+    serialize_sse_event,
 )
 from app.core.contracts import RuntimeContext
 from app.core.contracts.memory import DEFAULT_LOCAL_PRINCIPAL_ID
@@ -226,8 +240,73 @@ def _coordinator_http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/executions", response_model=ExecutionStateResponse)
-async def start_execution(
+# =============================================================================
+# M1: Protocol Version Negotiation (fail-closed)
+# =============================================================================
+
+@router.post("/protocol/negotiate", response_model=VersionNegotiationResponse)
+async def negotiate_protocol_version(
+    payload: VersionNegotiationRequest,
+) -> VersionNegotiationResponse:
+    """Negotiate protocol version — fail closed on unsupported major."""
+    # Parse major version
+    try:
+        client_major = int(payload.client_version.split(".")[0])
+        server_major = int(PROTOCOL_VERSION.split(".")[0])
+    except (ValueError, IndexError):
+        return VersionNegotiationResponse(
+            supported=False,
+            server_version=PROTOCOL_VERSION,
+            error=PROTOCOL_VERSION_UNSUPPORTED_ERROR,
+        )
+
+    if client_major != server_major:
+        return VersionNegotiationResponse(
+            supported=False,
+            server_version=PROTOCOL_VERSION,
+            error=PROTOCOL_VERSION_UNSUPPORTED_ERROR,
+        )
+
+    return VersionNegotiationResponse(
+        supported=True,
+        server_version=PROTOCOL_VERSION,
+        error=None,
+    )
+
+
+# =============================================================================
+# M1: Execution Creation with Idempotency Key
+# =============================================================================
+
+@router.post("/executions", response_model=ExecutionCreateResponse)
+async def create_execution(
+    payload: ExecutionCreateRequest,
+    coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
+) -> ExecutionCreateResponse:
+    """Create execution with optional idempotency key (M1)."""
+    # The coordinator handles idempotency key internally
+    try:
+        state = await coordinator.start_execution(
+            payload.message,
+            principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
+            session_id=payload.session_id,
+            conversation=payload.conversation,
+            source="api",
+            wait=False,
+            idempotency_key=payload.idempotency_key,
+        )
+    except Exception as exc:
+        raise _coordinator_http_error(exc) from exc
+    return ExecutionCreateResponse(
+        execution_id=state.execution_id,
+        session_id=state.session_id,
+        status=state.status.value,
+    )
+
+
+# Legacy endpoint for backward compatibility
+@router.post("/executions/legacy", response_model=ExecutionStateResponse)
+async def start_execution_legacy(
     payload: ExecuteRequest,
     wait: bool = False,
     coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
@@ -317,10 +396,34 @@ async def cancel_execution(
 @router.get("/executions/{execution_id}/events")
 async def execution_events(
     execution_id: str,
-    after: int = 0,
+    after: int = Query(0, ge=0, description="Exclusive cursor: return events with sequence > after"),
     coordinator: ExecutionCoordinator = Depends(get_execution_coordinator),
 ):
     try:
+        # Validate cursor bounds first
+        record = coordinator._executions.get(execution_id)
+        if record is None:
+            raise ExecutionNotFoundError(execution_id)
+        if record.state.principal_id != DEFAULT_LOCAL_PRINCIPAL_ID:
+            raise ExecutionAccessError("Execution access denied.")
+
+        # Check cursor bounds using sequence-based bounds
+        bounds = record.event_bus.get_sequence_bounds(execution_id)
+        if bounds is not None and after > 0:
+            earliest, latest = bounds
+            if after < earliest:
+                # Cursor predates retained history - return CURSOR_EXPIRED
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=410,
+                    content={
+                        "error": "CURSOR_EXPIRED",
+                        "message": f"Cursor {after} predates retained history (earliest: {earliest}, latest: {latest})",
+                        "earliest_sequence": earliest,
+                        "latest_sequence": latest,
+                    },
+                )
+
         events = coordinator.events(
             execution_id,
             principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
@@ -328,7 +431,15 @@ async def execution_events(
         )
     except Exception as exc:
         raise _coordinator_http_error(exc) from exc
-    return {"execution_id": execution_id, "events": [e.model_dump(mode="json") for e in events]}
+    # M1: Serialize with sequence for SSE id: field
+    serialized_events = []
+    for event in events:
+        event_dict = event.model_dump(mode="json")
+        # Add sequence to top level for SSE id: field
+        if event.data.sequence is not None:
+            event_dict["sequence"] = event.data.sequence
+        serialized_events.append(event_dict)
+    return {"execution_id": execution_id, "events": serialized_events}
 
 
 @router.get("/executions/{execution_id}/result")
@@ -517,11 +628,16 @@ async def execute_stream(
     start = time.perf_counter()
 
     async def event_source():
-        yield _sse("pipeline.started", {
-            "request_id": request_id,
-            "execution_id": request_id,
-            "session_id": session_id,
-        })
+        # Use serialize_sse_event for proper SSE format with id: field
+        yield serialize_sse_event(
+            sequence=1,
+            event_type="pipeline.started",
+            data={
+                "request_id": request_id,
+                "execution_id": request_id,
+                "session_id": session_id,
+            },
+        )
         await coordinator.start_execution(
             payload.message,
             principal_id=DEFAULT_LOCAL_PRINCIPAL_ID,
@@ -534,6 +650,7 @@ async def execute_stream(
         )
         cursor = 0
         deadline = asyncio.get_running_loop().time() + timeout_s
+        sse_sequence = 1  # Track SSE sequence for id: field
         while True:
             if await request.is_disconnected():
                 await coordinator.cancel_execution(
@@ -553,9 +670,11 @@ async def execute_stream(
             )
             for event in events:
                 cursor += 1
-                yield _sse(
-                    event.data.event_type.value,
-                    event.model_dump(mode="json"),
+                sse_sequence += 1
+                yield serialize_sse_event(
+                    sequence=sse_sequence,
+                    event_type=event.data.event_type.value,
+                    data=event.model_dump(mode="json"),
                 )
             state = coordinator.inspect_execution(
                 request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
@@ -567,25 +686,35 @@ async def execute_stream(
                     request_id, principal_id=DEFAULT_LOCAL_PRINCIPAL_ID
                 )
                 if state.status == ExecutionStatus.COMPLETED and result is not None:
-                    yield _sse("pipeline.completed", {
-                        "execution_id": request_id,
-                        "status": result.status.value,
-                        "task_id": result.task_id,
-                        "response": _extract_response(result),
-                        "error": result.error,
-                    })
+                    sse_sequence += 1
+                    yield serialize_sse_event(
+                        sequence=sse_sequence,
+                        event_type="pipeline.completed",
+                        data={
+                            "execution_id": request_id,
+                            "status": result.status.value,
+                            "task_id": result.task_id,
+                            "response": _extract_response(result),
+                            "error": result.error,
+                        },
+                    )
                 elif state.status in {
                     ExecutionStatus.FAILED,
                     ExecutionStatus.CANCELLED,
                     ExecutionStatus.TIMED_OUT,
                 }:
-                    yield _sse("pipeline.failed", {
-                        "execution_id": request_id,
-                        "error": {
-                            "code": state.status.value,
-                            "message": state.error or state.status.value,
+                    sse_sequence += 1
+                    yield serialize_sse_event(
+                        sequence=sse_sequence,
+                        event_type="pipeline.failed",
+                        data={
+                            "execution_id": request_id,
+                            "error": {
+                                "code": state.status.value,
+                                "message": state.error or state.status.value,
+                            },
                         },
-                    })
+                    )
                 return
             await asyncio.sleep(0.01)
 

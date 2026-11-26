@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from app.core.contracts.conversation import ConversationMessage
 from app.runtime.report import ExecutionReport
@@ -11,14 +11,18 @@ class ExecuteRequest(BaseModel):
     and session memory are scoped to that session (conversation continuity,
     P1.5); when omitted, execution uses the default session.
     """
+    model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=100_000)
     session_id: str | None = None
     conversation: list[ConversationMessage] | None = None
+    # M1: Idempotency key for execution creation (client-supplied, scoped to principal)
+    idempotency_key: str | None = Field(None, description="Optional idempotency key for execution creation")
 
 
 class ExecuteResponse(BaseModel):
     """HTTP response body returned by the execute endpoint."""
+    model_config = ConfigDict(extra="forbid")
 
     status: str
     execution_id: str | None = None
@@ -31,6 +35,9 @@ class ExecuteResponse(BaseModel):
 
 
 class ExecutionStateResponse(BaseModel):
+    """Public execution state — no permit, secrets, or raw metadata."""
+    model_config = ConfigDict(extra="forbid")
+
     execution_id: str
     status: str
     principal_id: str
@@ -44,14 +51,19 @@ class ExecutionStateResponse(BaseModel):
 
 
 class ApprovalDecisionRequest(BaseModel):
+    """Opaque approval decision — only allow/deny + bounded reason."""
+    model_config = ConfigDict(extra="forbid")
+
     approval_id: str
     decision: str = Field(pattern="^(allow|deny)$")
     reasons: list[str] = Field(default_factory=list)
 
 
 class SessionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     session_id: str | None = None
 
 
 class SessionCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     session_id: str
