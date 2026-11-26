@@ -178,44 +178,48 @@ impl ExecutionStateMachine {
         let validation_result = self.validate_sequence(envelope.sequence);
 
         // Handle duplicate sequence (idempotent replay) - silently ignore
-        if let Err(StateMachineError::SequenceRegression { expected, actual })
-            = &validation_result
-        {
-            let state = self.state.as_ref().context("State machine not initialized")?;
-            if actual == &state.last_sequence {
-                // Duplicate sequence - idempotent, no transition, no state change
-                return Ok(Vec::new());
+        if let Err(ref e) = validation_result {
+            if let Some(StateMachineError::SequenceRegression { expected, actual }) =
+                e.downcast_ref::<StateMachineError>()
+            {
+                let state = self.state.as_ref().context("State machine not initialized")?;
+                if *actual == state.last_sequence {
+                    // Duplicate sequence - idempotent, no transition, no state change
+                    return Ok(Vec::new());
+                }
+                // Otherwise it's a real regression, return the error
+                return Err(validation_result.unwrap_err().into());
             }
-            // Otherwise it's a real regression, return the error
-            return Err(validation_result.unwrap_err().into());
-        }
 
-        // Handle gap - should trigger resync transition instead of error
-        if let Err(StateMachineError::SequenceGap { expected, actual }) = &validation_result {
-            // Convert gap to resync transition
-            let state = self
-                .state
-                .as_mut()
-                .context("State machine not initialized")?;
+            // Handle gap - should trigger resync transition instead of error
+            if let Some(StateMachineError::SequenceGap { expected, actual }) =
+                e.downcast_ref::<StateMachineError>()
+            {
+                // Convert gap to resync transition
+                let state = self
+                    .state
+                    .as_mut()
+                    .context("State machine not initialized")?;
 
-            warn!(
-                "Sequence gap detected: expected {}, got {} - triggering resynchronization",
-                expected, actual
-            );
+                warn!(
+                    "Sequence gap detected: expected {}, got {} - triggering resynchronization",
+                    expected, actual
+                );
 
-            // Update expected sequence to actual + 1
-            self.expected_sequence = actual + 1;
-            state.last_sequence = *actual;
+                // Update expected sequence to actual + 1
+                self.expected_sequence = *actual + 1;
+                state.last_sequence = *actual;
 
-            // Update bounds
-            state.earliest_sequence = state.earliest_sequence.min(*actual);
-            state.latest_sequence = state.latest_sequence.max(*actual);
+                // Update bounds
+                state.earliest_sequence = state.earliest_sequence.min(*actual);
+                state.latest_sequence = state.latest_sequence.max(*actual);
 
-            return Ok(vec![StateTransition::Resynchronized {
-                expected: *expected,
-                actual: *actual,
-                message: format!("Sequence gap: expected {}, got {}", expected, actual),
-            }]);
+                return Ok(vec![StateTransition::Resynchronized {
+                    expected: *expected,
+                    actual: *actual,
+                    message: format!("Sequence gap: expected {}, got {}", expected, actual),
+                }]);
+            }
         }
 
         // For other errors (including real regression), propagate
@@ -289,11 +293,9 @@ impl ExecutionStateMachine {
     }
 
     /// Validate sequence monotonicity
-    /// Returns error only for true regression (sequence < expected AND sequence != last_sequence).
-    /// Gaps (sequence > expected) and duplicates (sequence == last_sequence) are handled in process_event.
+    /// Returns SequenceGap for gaps (sequence > expected), SequenceRegression for regression (sequence < expected).
+    /// Both are handled in process_event with access to state for duplicate detection.
     fn validate_sequence(&self, sequence: u64) -> Result<()> {
-        // Only error on true regression (going backwards past last_sequence)
-        // Gaps and duplicates are handled at the call site with state access
         if sequence < self.expected_sequence {
             return Err(StateMachineError::SequenceRegression {
                 expected: self.expected_sequence,
@@ -302,7 +304,15 @@ impl ExecutionStateMachine {
             .into());
         }
 
-        // sequence >= expected_sequence is valid here (gaps and normal handled in process_event)
+        if sequence > self.expected_sequence {
+            return Err(StateMachineError::SequenceGap {
+                expected: self.expected_sequence,
+                actual: sequence,
+            }
+            .into());
+        }
+
+        // sequence == expected_sequence is valid
         Ok(())
     }
 
@@ -981,7 +991,7 @@ mod tests {
         };
         sm.initialize_from_response(response).unwrap();
 
-        // Skip to sequence 3 (gap)
+        // Skip to sequence 3 (gap) - should trigger Resynchronized transition, not error
         let envelope = EventEnvelope {
             sequence: 3,
             execution_id: "exec-123".to_string(),
@@ -991,10 +1001,13 @@ mod tests {
             timestamp: Utc::now(),
         };
         let result = sm.process_event(envelope);
-        assert!(result.is_err());
+        // Gap should produce Resynchronized transition, not error
+        assert!(result.is_ok());
+        let transitions = result.unwrap();
+        assert_eq!(transitions.len(), 1);
         assert!(matches!(
-            result.unwrap_err().downcast_ref::<StateMachineError>(),
-            Some(StateMachineError::SequenceGap { expected: 1, actual: 3 })
+            &transitions[0],
+            StateTransition::Resynchronized { expected: 1, actual: 3, .. }
         ));
     }
 
@@ -1026,7 +1039,7 @@ mod tests {
         };
         sm.process_event(envelope1).unwrap();
 
-        // Try to process sequence 1 again (regression)
+        // Try to process sequence 1 again (duplicate) - should be idempotently ignored, not error
         let envelope2 = EventEnvelope {
             sequence: 1,
             execution_id: "exec-123".to_string(),
@@ -1036,11 +1049,10 @@ mod tests {
             timestamp: Utc::now(),
         };
         let result = sm.process_event(envelope2);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err().downcast_ref::<StateMachineError>(),
-            Some(StateMachineError::SequenceRegression { expected: 2, actual: 1 })
-        ));
+        // Duplicate sequence should be idempotently ignored (empty transitions), not error
+        assert!(result.is_ok());
+        let transitions = result.unwrap();
+        assert!(transitions.is_empty());
     }
 
     #[test]
