@@ -8,6 +8,14 @@ pub mod transport;
 pub mod state;
 pub mod ui;
 
+// Re-export ExecutionStateResponse for test access
+pub use crate::protocol::ExecutionStateResponse;
+
+// Test helper modules (public for integration tests)
+pub mod test_helpers {
+    pub mod parity_fixtures;
+}
+
 #[cfg(test)]
 mod tests {
     use crate::protocol::{parse_sse_event, serialize_sse_event};

@@ -302,6 +302,7 @@ impl Ui {
             crate::state::ExecutionStatus::Completed => Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
             crate::state::ExecutionStatus::Failed => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             crate::state::ExecutionStatus::Cancelled => Style::default().fg(Color::Magenta),
+            crate::state::ExecutionStatus::Paused => Style::default().fg(Color::Cyan),
         };
 
         let status_text = format!("{:?}", state.status);

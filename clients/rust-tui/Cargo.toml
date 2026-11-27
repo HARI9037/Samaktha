@@ -67,3 +67,7 @@ path = "tests/state_machine.rs"
 [[test]]
 name = "sse_reconnect"
 path = "tests/sse_reconnect.rs"
+
+[[test]]
+name = "parity_tests"
+path = "tests/parity_tests.rs"

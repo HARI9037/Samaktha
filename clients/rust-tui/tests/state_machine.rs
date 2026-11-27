@@ -574,19 +574,19 @@ fn test_assistant_token_accumulates_in_buffer() {
     let response = create_test_response("exec-1", "running");
     machine.initialize_from_response(response).unwrap();
 
-    // First token
+    // First token (sequence_number: 1)
     let event = create_envelope(
         1,
         "ASSISTANT.TOKEN",
-        json!({"token": "Hello", "request_id": "req-1"}),
+        json!({"token": "Hello", "request_id": "req-1", "sequence_number": 1}),
     );
     machine.process_event(event).unwrap();
 
-    // Second token
+    // Second token (sequence_number: 2)
     let event = create_envelope(
         2,
         "ASSISTANT.TOKEN",
-        json!({"token": " world", "request_id": "req-1"}),
+        json!({"token": " world", "request_id": "req-1", "sequence_number": 2}),
     );
     machine.process_event(event).unwrap();
 

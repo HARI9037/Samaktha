@@ -1,0 +1,138 @@
+{
+  "scenario": "search_results_sources",
+  "description": "Search operation with STARTED, COMPLETED events containing results and sources",
+  "execution_id": "exec-parity-02",
+  "session_id": "sess-parity-02",
+  "events": [
+    {
+      "sequence": 1,
+      "event_type": "EXECUTION.CREATED",
+      "payload": {
+        "execution_id": "exec-parity-02",
+        "session_id": "sess-parity-02",
+        "status": "created",
+        "protocol_version": "1.0"
+      },
+      "timestamp": "2024-01-01T00:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "EXECUTION.STATE_CHANGED",
+      "payload": {
+        "execution_id": "exec-parity-02",
+        "session_id": "sess-parity-02",
+        "status": "running",
+        "protocol_version": "1.0"
+      },
+      "timestamp": "2024-01-01T00:00:01Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "SEARCH.STARTED",
+      "payload": {
+        "query": "rust async programming tutorial",
+        "backend": "duckduckgo",
+        "filters": {
+          "region": "us",
+          "safe_search": "moderate"
+        },
+        "request_id": "req-02-1"
+      },
+      "timestamp": "2024-01-01T00:00:02Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "SEARCH.COMPLETED",
+      "payload": {
+        "query": "rust async programming tutorial",
+        "backend": "duckduckgo",
+        "results": [
+          {
+            "title": "Asynchronous Programming in Rust - Official Tutorial",
+            "url": "https://rust-lang.github.io/async-book/",
+            "snippet": "Learn async/await in Rust with the official async book. Covers futures, executors, and async patterns.",
+            "source": "web"
+          },
+          {
+            "title": "Rust Async Patterns - Tokio Tutorial",
+            "url": "https://tokio.rs/tokio/tutorial",
+            "snippet": "Hands-on tutorial for async Rust using Tokio runtime. Covers tasks, channels, and synchronization.",
+            "source": "web"
+          },
+          {
+            "title": "Async Rust in Production - Blog Post",
+            "url": "https://blog.rust-lang.org/2023/10/12/async-rust.html",
+            "snippet": "Real-world patterns for using async Rust in production systems.",
+            "source": "web"
+          }
+        ],
+        "result_count": 3,
+        "request_id": "req-02-1"
+      },
+      "timestamp": "2024-01-01T00:00:05Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "ASSISTANT.MESSAGE_STARTED",
+      "payload": {
+        "model_id": "gpt-4o",
+        "provider_id": "openai",
+        "request_id": "req-02-2",
+        "trace_id": "trace-02"
+      },
+      "timestamp": "2024-01-01T00:00:06Z"
+    },
+    {
+      "sequence": 6,
+      "event_type": "ASSISTANT.TOKEN",
+      "payload": {
+        "model_id": "gpt-4o",
+        "provider_id": "openai",
+        "token": "Here are the search results for Rust async programming:",
+        "sequence_number": 1,
+        "request_id": "req-02-2",
+        "trace_id": "trace-02"
+      },
+      "timestamp": "2024-01-01T00:00:07Z"
+    },
+    {
+      "sequence": 7,
+      "event_type": "ASSISTANT.MESSAGE_COMPLETED",
+      "payload": {
+        "model_id": "gpt-4o",
+        "provider_id": "openai",
+        "content": "Here are the search results for Rust async programming:\n\n1. **Asynchronous Programming in Rust - Official Tutorial** (https://rust-lang.github.io/async-book/)\n   Learn async/await in Rust with the official async book. Covers futures, executors, and async patterns.\n\n2. **Rust Async Patterns - Tokio Tutorial** (https://tokio.rs/tokio/tutorial)\n   Hands-on tutorial for async Rust using Tokio runtime. Covers tasks, channels, and synchronization.\n\n3. **Async Rust in Production - Blog Post** (https://blog.rust-lang.org/2023/10/12/async-rust.html)\n   Real-world patterns for using async Rust in production systems.",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 50,
+          "completion_tokens": 80,
+          "total_tokens": 130
+        },
+        "request_id": "req-02-2",
+        "trace_id": "trace-02"
+      },
+      "timestamp": "2024-01-01T00:00:10Z"
+    },
+    {
+      "sequence": 8,
+      "event_type": "EXECUTION.STATE_CHANGED",
+      "payload": {
+        "execution_id": "exec-parity-02",
+        "session_id": "sess-parity-02",
+        "status": "completed",
+        "protocol_version": "1.0"
+      },
+      "timestamp": "2024-01-01T00:00:11Z"
+    }
+  ],
+  "expected_outcomes": {
+    "terminal_text": "Here are the search results for Rust async programming",
+    "search_performed": true,
+    "search_results_count": 3,
+    "search_query": "rust async programming tutorial",
+    "search_backend": "duckduckgo",
+    "assistant_mentions_sources": true,
+    "final_status": "completed",
+    "event_count": 8
+  }
+}

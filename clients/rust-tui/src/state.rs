@@ -5,9 +5,12 @@
 /// Zero governance logic - pure presentation layer state tracking.
 
 use crate::protocol::{
-    EventEnvelope, ExecutionStateResponse, ProtocolError, ResynchronizationSignal,
+    EventEnvelope, ProtocolError, ResynchronizationSignal,
     PROTOCOL_VERSION,
 };
+
+/// Re-export ExecutionStateResponse for test access
+pub use crate::protocol::ExecutionStateResponse;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -22,6 +25,7 @@ pub enum ExecutionStatus {
     Created,
     Running,
     WaitingApproval,
+    Paused,
     Completed,
     Failed,
     Cancelled,
@@ -35,7 +39,7 @@ impl ExecutionStatus {
 
     /// Check if execution is active
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Running | Self::WaitingApproval)
+        matches!(self, Self::Running | Self::WaitingApproval | Self::Paused)
     }
 }
 
@@ -47,6 +51,7 @@ impl std::str::FromStr for ExecutionStatus {
             "created" => Ok(Self::Created),
             "running" => Ok(Self::Running),
             "waiting_approval" => Ok(Self::WaitingApproval),
+            "paused" => Ok(Self::Paused),
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             "cancelled" => Ok(Self::Cancelled),
@@ -108,6 +113,14 @@ pub struct ExecutionState {
     pub assistant_model: Option<String>,
     #[serde(skip)]
     pub assistant_provider: Option<String>,
+
+    // Token buffering for out-of-order delivery
+    #[serde(skip)]
+    pub token_buffer: std::collections::HashMap<u64, String>,
+    #[serde(skip)]
+    pub next_token_sequence: u64,
+    #[serde(skip)]
+    pub processed_token_sequences: std::collections::HashSet<u64>,
 }
 
 /// Event log entry for display
@@ -164,6 +177,9 @@ impl ExecutionStateMachine {
             assistant_buffer: String::new(),
             assistant_model: None,
             assistant_provider: None,
+            token_buffer: std::collections::HashMap::new(),
+            next_token_sequence: 1,
+            processed_token_sequences: std::collections::HashSet::new(),
         };
 
         self.state = Some(state);
@@ -174,10 +190,26 @@ impl ExecutionStateMachine {
 
     /// Process an event envelope, validating sequence and updating state
     pub fn process_event(&mut self, envelope: EventEnvelope) -> Result<Vec<StateTransition>> {
-        // Validate sequence (needs &self)
-        let validation_result = self.validate_sequence(envelope.sequence);
+        // Check if this is an ASSISTANT.TOKEN event - these use payload.sequence_number for ordering
+        // and can arrive with out-of-order envelope sequences. Allow them through sequence validation.
+        let is_token_event = envelope.event_type == "ASSISTANT.TOKEN";
+
+        // Validate sequence (needs &self) - skip strict validation for token events
+        let validation_result = if is_token_event {
+            // For token events, only check for exact duplicate envelope sequences
+            // Allow gaps and regressions since token buffering handles reordering by payload.sequence_number
+            let state = self.state.as_ref().context("State machine not initialized")?;
+            if envelope.sequence == state.last_sequence {
+                // Exact duplicate envelope sequence - idempotent
+                return Ok(Vec::new());
+            }
+            Ok(())
+        } else {
+            self.validate_sequence(envelope.sequence)
+        };
 
         // Handle duplicate sequence (idempotent replay) - silently ignore
+        let mut resync_transition = None;
         if let Err(ref e) = validation_result {
             if let Some(StateMachineError::SequenceRegression { expected, actual }) =
                 e.downcast_ref::<StateMachineError>()
@@ -191,7 +223,7 @@ impl ExecutionStateMachine {
                 return Err(validation_result.unwrap_err().into());
             }
 
-            // Handle gap - should trigger resync transition instead of error
+            // Handle gap - should trigger resync transition but continue processing the event
             if let Some(StateMachineError::SequenceGap { expected, actual }) =
                 e.downcast_ref::<StateMachineError>()
             {
@@ -214,16 +246,19 @@ impl ExecutionStateMachine {
                 state.earliest_sequence = state.earliest_sequence.min(*actual);
                 state.latest_sequence = state.latest_sequence.max(*actual);
 
-                return Ok(vec![StateTransition::Resynchronized {
+                resync_transition = Some(StateTransition::Resynchronized {
                     expected: *expected,
                     actual: *actual,
                     message: format!("Sequence gap: expected {}, got {}", expected, actual),
-                }]);
+                });
+            }
+
+            // If we have a resync transition, we'll prepend it to the transitions after apply_event
+            // For other errors (including real regression), propagate
+            if resync_transition.is_none() {
+                validation_result?;
             }
         }
-
-        // For other errors (including real regression), propagate
-        validation_result?;
 
         // Validate protocol version in payload if present (needs &self)
         // Call before getting mutable borrow
@@ -239,7 +274,12 @@ impl ExecutionStateMachine {
             .context("State machine not initialized")?;
 
         // Generate transitions based on event type
-        let transitions = ExecutionStateMachine::apply_event(state, &envelope)?;
+        let mut transitions = ExecutionStateMachine::apply_event(state, &envelope)?;
+
+        // Prepend resync transition if one was generated
+        if let Some(resync) = resync_transition {
+            transitions.insert(0, resync);
+        }
 
         // Update expected sequence
         self.expected_sequence = envelope.sequence + 1;
@@ -346,6 +386,16 @@ impl ExecutionStateMachine {
                         .parse::<ExecutionStatus>()
                         .map_err(|e| anyhow::anyhow!("Failed to parse status: {}", e))?;
 
+                    // Prevent state regression from terminal states (stale events)
+                    let is_terminal = matches!(
+                        state.status,
+                        ExecutionStatus::Completed | ExecutionStatus::Failed | ExecutionStatus::Cancelled
+                    );
+                    if is_terminal && new_status != state.status {
+                        // Ignore stale event - don't transition from terminal state
+                        return Ok(transitions);
+                    }
+
                     if new_status != state.status {
                         transitions.push(StateTransition::StatusChanged {
                             from: state.status,
@@ -410,17 +460,29 @@ impl ExecutionStateMachine {
             }
 
             "APPROVAL.RESOLVED" => {
+                let decision = envelope
+                    .payload
+                    .get("decision")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
                 state.pending_approval = false;
                 let approval_id = state.pending_approval_id.take();
                 state.pending_approval_payload = None;
+
+                // If approval was allowed and we're paused, resume execution
+                if decision == "allow" && state.status == ExecutionStatus::Paused {
+                    transitions.push(StateTransition::StatusChanged {
+                        from: state.status,
+                        to: ExecutionStatus::Running,
+                    });
+                    state.status = ExecutionStatus::Running;
+                }
+
                 transitions.push(StateTransition::ApprovalResolved {
                     approval_id: approval_id.unwrap_or_default(),
-                    decision: envelope
-                        .payload
-                        .get("decision")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
+                    decision,
                 });
             }
 
@@ -637,31 +699,45 @@ impl ExecutionStateMachine {
 
             "ASSISTANT.TOKEN" => {
                 if let Some(token) = envelope.payload.get("token").and_then(|v| v.as_str()) {
-                    state.assistant_buffer.push_str(token);
-                    transitions.push(StateTransition::AssistantToken {
-                        token: token.to_string(),
-                        sequence_number: envelope
-                            .payload
-                            .get("sequence_number")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
-                    });
+                    let token_seq = envelope
+                        .payload
+                        .get("sequence_number")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+
+                    // Check for duplicate token sequence
+                    if state.processed_token_sequences.contains(&token_seq) {
+                        // Duplicate token - ignore silently (idempotent)
+                        return Ok(transitions);
+                    }
+
+                    // Buffer the token
+                    state.token_buffer.insert(token_seq, token.to_string());
+
+                    // Process buffered tokens in order
+                    while let Some(buffered_token) = state.token_buffer.remove(&state.next_token_sequence) {
+                        state.assistant_buffer.push_str(&buffered_token);
+                        state.processed_token_sequences.insert(state.next_token_sequence);
+                        transitions.push(StateTransition::AssistantToken {
+                            token: buffered_token,
+                            sequence_number: state.next_token_sequence,
+                        });
+                        state.next_token_sequence += 1;
+                    }
                 }
             }
 
             "ASSISTANT.MESSAGE_COMPLETED" => {
-                let content = envelope
+                // Use the event's content as authoritative final content (from backend)
+                // The assistant_buffer is for streaming display during token events
+                let final_content = envelope
                     .payload
                     .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                // Use buffered content if available, otherwise use from event
-                let final_content = if state.assistant_buffer.is_empty() {
-                    content
-                } else {
-                    std::mem::take(&mut state.assistant_buffer)
-                };
+                // Clear the streaming buffer since we have the final content
+                state.assistant_buffer.clear();
                 transitions.push(StateTransition::AssistantMessageCompleted {
                     content: final_content,
                     finish_reason: envelope
