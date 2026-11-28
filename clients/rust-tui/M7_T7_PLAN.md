@@ -31,11 +31,24 @@ Add `--client textual|rust` flag to CLI, default to textual
 Run `cargo test parity` and full test suite, verify all pass
 - **Result**: 17 parity tests pass, 160 total tests pass
 
-### Task 5: Record parity evidence and review rollback
+### Task 5: Record parity evidence and review rollback ✅
 Document parity results, verify rollback path works
+- **Parity Evidence**: All 11 fixture scenarios pass validation
+  - 01_basic_execution_flow
+  - 02_approval_allow
+  - 03_approval_deny
+  - 04_provider_tool_failure
+  - 05_stale_event
+  - 06_duplicate_event
+  - 07_out_of_order_event
+  - 08_duplicate_sequences
+  - 09_no_double_counting
+  - 10_events_reordered
+  - 11_no_gaps_in_processed
+- **Rollback Path Verified**: `--client textual` (default) works as fallback
 
-### Task 6: Commit as `test: verify rust and textual tui parity`
-Final commit with evidence
+### Task 6: Commit as `test: verify rust and textual tui parity` ✅
+Final commit with evidence: `2cc0b94`
 
 ## Acceptance Criteria
 - All 11 parity tests pass
