@@ -3,17 +3,17 @@
 //! These tests verify that the Rust protocol models correctly serialize to and
 //! deserialize from JSON that matches the Python backend's wire format.
 
+use chrono::{DateTime, Utc};
 use rust_tui::protocol::{
-    parse_sse_event, serialize_sse_event, sanitize_terminal_output, is_supported_version,
+    is_supported_version, parse_sse_event, sanitize_terminal_output, serialize_sse_event,
     ApprovalDecision, ApprovalDecisionRequest, EventEnvelope, ExecutionCreateRequest,
     ExecutionCreateResponse, ExecutionStateResponse, FileEventPayload, FileEventPayloadVariant,
     FileEventType, FileListCompletedPayload, FileListStartedPayload, FileReadCompletedPayload,
-    FileReadStartedPayload, FileWriteCompletedPayload, FileWriteMode,
-    FileWriteStartedPayload, SearchCompletedPayload, SearchEventPayload, SearchEventPayloadVariant,
-    SearchEventType, SearchFailedPayload, SearchStartedPayload, VersionNegotiationRequest,
+    FileReadStartedPayload, FileWriteCompletedPayload, FileWriteMode, FileWriteStartedPayload,
+    SearchCompletedPayload, SearchEventPayload, SearchEventPayloadVariant, SearchEventType,
+    SearchFailedPayload, SearchStartedPayload, VersionNegotiationRequest,
     VersionNegotiationResponse,
 };
-use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -108,7 +108,10 @@ fn test_event_envelope_roundtrip() {
         session_id: "sess-123".to_string(),
         event_type: "EXECUTION.STATE_CHANGED".to_string(),
         payload: json!({"status": "running", "protocol_version": "1.0"}),
-        timestamp: DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z").unwrap().with_timezone(&Utc),
+        timestamp: DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+        protocol_version: "1.0".to_string(),
     };
     let json = serde_json::to_value(&envelope).unwrap();
     let decoded: EventEnvelope = serde_json::from_value(json).unwrap();
@@ -139,7 +142,10 @@ fn test_approval_decision_allow() {
     let request = ApprovalDecisionRequest {
         approval_id: "approval-123".to_string(),
         decision: ApprovalDecision::Allow,
-        reasons: Some(vec!["User approved".to_string(), "Safe operation".to_string()]),
+        reasons: Some(vec![
+            "User approved".to_string(),
+            "Safe operation".to_string(),
+        ]),
     };
     let json = serde_json::to_value(&request).unwrap();
     assert_eq!(json["approval_id"], "approval-123");
@@ -179,8 +185,14 @@ fn test_execution_state_response() {
         session_id: "sess-123".to_string(),
         pending_approval: false,
         result_available: false,
-        created_at: DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z").unwrap().with_timezone(&Utc),
-        updated_at: Some(DateTime::parse_from_rfc3339("2024-01-01T12:05:00Z").unwrap().with_timezone(&Utc)),
+        created_at: DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+        updated_at: Some(
+            DateTime::parse_from_rfc3339("2024-01-01T12:05:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        ),
         completed_at: None,
         error: None,
     };
@@ -468,7 +480,8 @@ fn test_parse_sse_event_no_id() {
 #[test]
 fn test_parse_sse_event_multiline_data() {
     // Valid multiline JSON - single JSON object split across multiple data: lines
-    let sse_data = "event: ASSISTANT.TOKEN\nid: 100\ndata: {\ndata:   \"token\": \"hello world\"\ndata: }\n\n";
+    let sse_data =
+        "event: ASSISTANT.TOKEN\nid: 100\ndata: {\ndata:   \"token\": \"hello world\"\ndata: }\n\n";
     let result = parse_sse_event(sse_data);
     assert!(result.is_some());
     let (event_type, sequence, data) = result.unwrap();
@@ -500,7 +513,10 @@ fn test_sanitize_ansi_csi_sequences() {
     // Red text
     assert_eq!(sanitize_terminal_output("\x1b[31mRed\x1b[0m"), "Red");
     // Bold + color
-    assert_eq!(sanitize_terminal_output("\x1b[1;32mGreen Bold\x1b[0m"), "Green Bold");
+    assert_eq!(
+        sanitize_terminal_output("\x1b[1;32mGreen Bold\x1b[0m"),
+        "Green Bold"
+    );
     // Cursor movement
     assert_eq!(sanitize_terminal_output("\x1b[10;20HHello"), "Hello");
     // Clear screen
@@ -518,9 +534,15 @@ fn test_sanitize_ansi_osc_sequences() {
 #[test]
 fn test_sanitize_control_characters() {
     // Null, bell, etc.
-    assert_eq!(sanitize_terminal_output("Hello\x00\x01\x07World"), "HelloWorld");
+    assert_eq!(
+        sanitize_terminal_output("Hello\x00\x01\x07World"),
+        "HelloWorld"
+    );
     // Preserve newlines, tabs, carriage returns, spaces
-    assert_eq!(sanitize_terminal_output("Line1\nLine2\tTab\rReturn"), "Line1\nLine2\tTab\rReturn");
+    assert_eq!(
+        sanitize_terminal_output("Line1\nLine2\tTab\rReturn"),
+        "Line1\nLine2\tTab\rReturn"
+    );
 }
 
 #[test]

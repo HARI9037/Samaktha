@@ -2,7 +2,6 @@
 ///
 /// Mirrors app/api/protocol.py v1.0 with extra=forbid equivalent behavior.
 /// All models use serde with deny_unknown_fields for security-relevant fields.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,6 +73,13 @@ pub struct EventEnvelope {
     #[serde(default)]
     pub payload: Value,
     pub timestamp: DateTime<Utc>,
+    /// Protocol version of this event (from backend)
+    #[serde(default = "default_protocol_version")]
+    pub protocol_version: String,
+}
+
+fn default_protocol_version() -> String {
+    "1.0".to_string()
 }
 
 /// Opaque approval decision — only allow/deny + bounded reason
@@ -415,15 +421,14 @@ pub fn serialize_sse_event(event_type: &str, data: &Value, sequence: Option<u64>
 /// Sanitize terminal output by stripping ANSI/OSC/control sequences
 pub fn sanitize_terminal_output(input: &str) -> String {
     // Strip ANSI escape sequences (CSI, OSC, etc.)
-    let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)").unwrap();
+    let ansi_regex =
+        regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)").unwrap();
     let mut result = ansi_regex.replace_all(input, "").to_string();
 
     // Strip other control characters except newlines, tabs, and carriage returns
     result = result
         .chars()
-        .filter(|c| {
-            matches!(c, '\n' | '\t' | '\r' | ' ') || !c.is_control()
-        })
+        .filter(|c| matches!(c, '\n' | '\t' | '\r' | ' ') || !c.is_control())
         .collect();
 
     result
@@ -460,13 +465,34 @@ pub fn parse_sse_event(sse_data: &str) -> Option<(String, Option<u64>, Value)> {
 }
 
 /// Decode an EventEnvelope from SSE event data
-pub fn decode_event_envelope(event_type: &str, sequence: Option<u64>, data: &Value) -> Result<EventEnvelope, ProtocolError> {
-    let mut envelope_data = data.clone();
+pub fn decode_event_envelope(
+    event_type: &str,
+    sequence: Option<u64>,
+    data: &Value,
+) -> Result<EventEnvelope, ProtocolError> {
+    // Filter data to only include fields that EventEnvelope expects
+    // Backend returns extra fields (status, subsystem, workflow_id, trace_id, task_id)
+    // which cause deny_unknown_fields to fail
+    let mut envelope_data = serde_json::Map::new();
+
+    // Extract only the fields EventEnvelope expects
+    if let Some(obj) = data.as_object() {
+        for (key, value) in obj {
+            match key.as_str() {
+                "sequence" | "execution_id" | "session_id" | "event_type" | "payload" | "timestamp" | "protocol_version" => {
+                    envelope_data.insert(key.clone(), value.clone());
+                }
+                _ => {
+                    // Ignore extra fields from backend (status, subsystem, workflow_id, trace_id, task_id)
+                }
+            }
+        }
+    }
 
     // Ensure required fields are present
     if envelope_data.get("sequence").is_none() {
         if let Some(seq) = sequence {
-            envelope_data["sequence"] = Value::Number(serde_json::Number::from(seq));
+            envelope_data.insert("sequence".to_string(), Value::Number(serde_json::Number::from(seq)));
         } else {
             return Err(ProtocolError::MissingField("sequence"));
         }
@@ -481,14 +507,14 @@ pub fn decode_event_envelope(event_type: &str, sequence: Option<u64>, data: &Val
     }
 
     if envelope_data.get("event_type").is_none() {
-        envelope_data["event_type"] = Value::String(event_type.to_string());
+        envelope_data.insert("event_type".to_string(), Value::String(event_type.to_string()));
     }
 
     if envelope_data.get("timestamp").is_none() {
-        envelope_data["timestamp"] = Value::String(Utc::now().to_rfc3339());
+        envelope_data.insert("timestamp".to_string(), Value::String(Utc::now().to_rfc3339()));
     }
 
-    let envelope: EventEnvelope = serde_json::from_value(envelope_data)
+    let envelope: EventEnvelope = serde_json::from_value(Value::Object(envelope_data))
         .map_err(|e| ProtocolError::Deserialization(e.to_string()))?;
 
     // Validate protocol version
@@ -537,7 +563,10 @@ mod tests {
     #[test]
     fn test_protocol_version_constants() {
         assert_eq!(PROTOCOL_VERSION, "1.0");
-        assert_eq!(PROTOCOL_VERSION_UNSUPPORTED_ERROR, "PROTOCOL_VERSION_UNSUPPORTED");
+        assert_eq!(
+            PROTOCOL_VERSION_UNSUPPORTED_ERROR,
+            "PROTOCOL_VERSION_UNSUPPORTED"
+        );
     }
 
     #[test]
@@ -576,7 +605,10 @@ mod tests {
         // Control characters
         assert_eq!(sanitize_terminal_output("Hello\x00\x01World"), "HelloWorld");
         // Preserve newlines and tabs
-        assert_eq!(sanitize_terminal_output("Line1\nLine2\tTab"), "Line1\nLine2\tTab");
+        assert_eq!(
+            sanitize_terminal_output("Line1\nLine2\tTab"),
+            "Line1\nLine2\tTab"
+        );
     }
 
     #[test]
@@ -602,6 +634,7 @@ mod tests {
             event_type: "EXECUTION.STATE_CHANGED".to_string(),
             payload: json!({"status": "running"}),
             timestamp: Utc::now(),
+            protocol_version: "1.0".to_string(),
         };
         let json = serde_json::to_value(&envelope).unwrap();
         let decoded: EventEnvelope = serde_json::from_value(json).unwrap();
@@ -645,7 +678,10 @@ mod tests {
             "event_type": "EXECUTION.STATE_CHANGED",
         });
         let result = decode_event_envelope("EXECUTION.STATE_CHANGED", Some(1), &data);
-        assert!(matches!(result, Err(ProtocolError::MissingField("execution_id"))));
+        assert!(matches!(
+            result,
+            Err(ProtocolError::MissingField("execution_id"))
+        ));
     }
 
     #[test]
