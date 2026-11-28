@@ -52,7 +52,7 @@ Document rendering parity results
   - 10_duplicate_event (**Rust-only robustness**)
   - 11_out_of_order_event (**Rust-only robustness**)
 - **Note**: `--client` flag in Python launcher selects between Textual (in-process) and Rust (subprocess). The Rust binary's `--client` flag is for test harness compatibility only; it always runs the Rust TUI. Textual client is a separate deployment.
-- **Fixture 08 XPASS Clarification**: Fixture 8 (reconnect) is marked as Rust-only but unexpectedly passes (XPASS) in Python tests. This indicates the Textual client has partial/incidental support for reconnect scenarios — it renders the reconnect events without error but does not implement the full auto-reconnect with sequence cursor logic that Rust does. The test passes because the renderer handles the event types, not because the full robustness feature is implemented.
+- **Fixture 08 XPASS Clarification**: Fixture 8 (reconnect) is marked as Rust-only but unexpectedly passes (XPASS) in Python tests. Fixture 08 passes the Python self-check on the fixture file only; Textual does not handle reconnect.
 
 ### Task 6: Commit as `test: verify rust and textual tui rendering parity` ✅
 Final commit with evidence: `2cc0b94`
@@ -63,7 +63,7 @@ Final commit with evidence: `2cc0b94`
 - Update acceptance criteria to reflect true completion status
 - **Done**: Fixtures 8-11 marked as Rust-only in `parity_fixtures.py` (RUST_ONLY_FIXTURES set, is_rust_only_fixture(), get_textual_supported_fixtures(), get_rust_only_fixtures())
 - **Done**: Python tests for fixtures 8-11 marked with `@pytest.mark.xfail` in `test_parity.py`
-- **Done**: Fixture 8 (reconnect) unexpectedly passes (XPASS) - Textual client may have partial support
+- **Done**: Fixture 8 (reconnect) unexpectedly passes (XPASS) - fixture passes Python self-check only; Textual does not handle reconnect
 
 ### Task 8: Make Python parity tests for fixtures 1-7 drive actual Python client code ✅
 - Ensure Python parity test runner feeds fixture events into actual Textual client code paths
@@ -141,10 +141,10 @@ test_fixture_07_renders_error_events PASSED
 
 | Criterion | Status | Evidence |
 |-----------|--------|----------|
-| All 11 parity tests pass (Rust validates all 11; Textual validates fixtures 1-7) | ✅ PASS | Rust: 17 passed. Python: 7 fixtures pass, 3 xfail (8-11), 1 xpass (8) |
+| All 11 parity tests pass (Rust validates all 11; Textual validates fixtures 1-7) | ✅ PASS | Rust: 17 passed. Python: 7 fixtures pass, 3 xfail (9-11), 1 xpass (08) |
 | `--client textual\|rust` flag in Python launcher actually launches selected client | ✅ PASS | Implemented in `app/cli.py` and `app/tui/runner.py` |
 | Fixtures 8-11 documented as "Rust-only robustness, Textual not supported" | ✅ PASS | In `parity_fixtures.py` and `test_parity.py` |
-| Fixture 08 XPASS documented and clarified | ✅ PASS | In plan doc: Textual has partial/incidental rendering support but not full robustness |
+| Fixture 08 XPASS documented and clarified | ✅ PASS | In plan doc: fixture 08 passes Python self-check only; Textual does not handle reconnect |
 | Full test suite passes (160 tests) | ✅ PASS | `cargo test -j 2`: 160 passed |
 | Raw test outputs provided for all three test commands | ✅ PASS | Documented above |
 
@@ -152,6 +152,6 @@ test_fixture_07_renders_error_events PASSED
 - All 11 parity tests pass (Rust client validates all 11; Textual client validates fixtures 1-7)
 - `--client textual|rust` flag in Python launcher actually launches selected client (Textual in-process, Rust via subprocess)
 - Fixtures 8-11 documented as "Rust-only robustness, Textual not supported" in plan and tests
-- Fixture 08 XPASS documented: Textual renders reconnect events but lacks full auto-reconnect with sequence cursor
+- Fixture 08 XPASS documented: fixture 08 passes Python self-check only; Textual does not handle reconnect
 - Full test suite passes (160 tests)
 - Raw test outputs provided for all three test commands
