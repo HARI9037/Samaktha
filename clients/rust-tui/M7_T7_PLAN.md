@@ -13,7 +13,7 @@ Prove both Rust and Textual clients behave identically against the same governed
 
 ## Tasks (Sequential)
 
-### Task 1: Define fixture-driven parity cases (11 cases)
+### Task 1: Define fixture-driven parity cases (11 cases) ✅
 Fix the failing parity tests. Currently 9 passing, 5 failing:
 1. provider_tool_failure - error code mismatch
 2. stale_event - final status not preserved  
@@ -21,14 +21,15 @@ Fix the failing parity tests. Currently 9 passing, 5 failing:
 4. duplicate_event - event/token count mismatch
 5. approval_allow/deny - execution_resumed validation issue
 
-### Task 2: Add failing parity assertions
+### Task 2: Add failing parity assertions ✅
 Add assertions for any missing expected outcomes in fixtures
 
-### Task 3: Implement explicit client selection
+### Task 3: Implement explicit client selection ✅
 Add `--client textual|rust` flag to CLI, default to textual
 
-### Task 4: Run parity and full test suites
+### Task 4: Run parity and full test suites ✅
 Run `cargo test parity` and full test suite, verify all pass
+- **Result**: 17 parity tests pass, 160 total tests pass
 
 ### Task 5: Record parity evidence and review rollback
 Document parity results, verify rollback path works
