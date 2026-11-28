@@ -449,13 +449,11 @@ async fn main() -> Result<()> {
     info!("Starting Samaktha Rust TUI client v{}", env!("CARGO_PKG_VERSION"));
     info!("Client type: {:?}", args.client);
 
-    // Client selection: default is textual (for backwards compatibility with test harness)
-    // This binary always runs the Rust TUI; the flag is for test harness compatibility
+    // --client flag is for test harness compatibility only.
+    // This binary always runs the Rust TUI (ratatui). The Textual client is a separate deployment.
     match args.client {
         ClientType::Textual => {
-            info!("Client type 'textual' selected - running Rust TUI (this binary)");
-            // For compatibility, we run the Rust TUI. In a full deployment,
-            // a wrapper script would delegate to the Textual client.
+            info!("Client type 'textual' selected - running Rust TUI (this binary; textual is separate deployment)");
         }
         ClientType::Rust => {
             info!("Client type 'rust' selected - running Rust TUI");
