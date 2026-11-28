@@ -89,6 +89,7 @@
     "approval_id": "appr-05-1",
     "approval_decision": "deny",
     "approval_reasons": ["User denied write to protected system file"],
+    "execution_resumed": false,
     "execution_failed": true,
     "error_code": "APPROVAL_DENIED",
     "final_status": "failed",

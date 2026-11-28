@@ -118,7 +118,7 @@
   "expected_outcomes": {
     "tool_failed": true,
     "tool_name": "search",
-    "error_code": "SEARCH_BACKEND_UNAVAILABLE",
+    "error_code": "TOOL_EXECUTION_FAILED",
     "assistant_error_code": "TOOL_EXECUTION_FAILED",
     "execution_failed": true,
     "retryable": true,

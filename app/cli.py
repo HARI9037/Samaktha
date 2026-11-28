@@ -37,7 +37,7 @@ from app.bootstrap import (
 from app.runtime.safety import run_with_instance_guard
 
 
-def _run_tui() -> None:
+def _run_tui(client: str = "textual", extra_args: Optional[Sequence[str]] = None) -> None:
     from app.setup.first_run import FirstRunCoordinator
 
     paths = get_application_paths()
@@ -69,7 +69,7 @@ def _run_tui() -> None:
 
     from app.tui.runner import run_tui
 
-    run_tui()
+    run_tui(client=client, extra_args=extra_args)
 
 
 def _configure_console_io() -> None:
@@ -243,7 +243,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("tui", help="launch the terminal UI")
+    tui_parser = subparsers.add_parser("tui", help="launch the terminal UI")
+    tui_parser.add_argument(
+        "--client",
+        choices=["textual", "rust"],
+        default="textual",
+        help="select TUI client (default: textual)",
+    )
+    # Add common flags that the Rust binary supports, so they're recognized by Python CLI
+    tui_parser.add_argument(
+        "--debug", action="store_true", help="enable debug logging (passed to Rust client)"
+    )
+    tui_parser.add_argument(
+        "--no-reconnect", action="store_true", help="disable auto-reconnect (passed to Rust client)"
+    )
+    tui_parser.add_argument(
+        "-u", "--url", default=None, help="backend base URL (passed to Rust client)"
+    )
+    tui_parser.add_argument(
+        "-m", "--message", default=None, help="initial message to send (passed to Rust client)"
+    )
+    tui_parser.add_argument(
+        "-s", "--session", default=None, help="session ID to resume (passed to Rust client)"
+    )
+    tui_parser.add_argument(
+        "--idempotency-key", default=None, help="idempotency key for execution creation (passed to Rust client)"
+    )
 
     backend = subparsers.add_parser("backend", help="launch the FastAPI backend")
     backend.add_argument("--host", default=None, help="bind address (default: configured)")
@@ -297,7 +322,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     namespace = build_parser().parse_args(args)
 
     if namespace.tui:
-        return run_with_instance_guard("tui", namespace, _run_tui)
+        return run_with_instance_guard("tui", namespace, _run_tui, client=getattr(namespace, "client", "textual"), extra_args=getattr(namespace, "args", []))
     if namespace.backend:
         return run_with_instance_guard(
             "backend", namespace, _run_backend,
@@ -306,9 +331,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     command = namespace.command
     if command is None:
-        return run_with_instance_guard("tui", namespace, _run_tui)
+        return run_with_instance_guard("tui", namespace, _run_tui, client=getattr(namespace, "client", "textual"), extra_args=getattr(namespace, "args", []))
     if command == "tui":
-        return run_with_instance_guard("tui", namespace, _run_tui)
+        return run_with_instance_guard("tui", namespace, _run_tui, client=getattr(namespace, "client", "textual"), extra_args=getattr(namespace, "args", []))
     if command == "backend":
         return run_with_instance_guard("backend", namespace, _run_backend, host=namespace.host, port=namespace.port)
     if command == "bootstrap":

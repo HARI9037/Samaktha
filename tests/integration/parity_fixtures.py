@@ -82,6 +82,37 @@ def get_fixture_names() -> list[str]:
     return sorted([p.stem for p in FIXTURES_DIR.glob("*.json")])
 
 
+# Fixture classification: which fixtures are supported by which client
+# Fixtures 1-7: Core protocol behavior - both Rust and Textual clients should pass
+# Fixtures 8-11: Rust-only robustness features - Textual client does not implement
+#   - 08_reconnect: Auto-reconnect with sequence cursor
+#   - 09_stale_event: Stale/duplicate sequence detection and rejection
+#   - 10_duplicate_event: Duplicate event deduplication
+#   - 11_out_of_order_event: Out-of-order event reordering
+RUST_ONLY_FIXTURES = {
+    "08_reconnect",
+    "09_stale_event",
+    "10_duplicate_event",
+    "11_out_of_order_event",
+}
+
+
+def is_rust_only_fixture(scenario_name: str) -> bool:
+    """Check if a fixture is Rust-only (not supported by Textual client)."""
+    return scenario_name in RUST_ONLY_FIXTURES
+
+
+def get_textual_supported_fixtures() -> list[str]:
+    """Get list of fixtures supported by Textual client (fixtures 1-7)."""
+    all_fixtures = get_fixture_names()
+    return [f for f in all_fixtures if not is_rust_only_fixture(f)]
+
+
+def get_rust_only_fixtures() -> list[str]:
+    """Get list of fixtures that are Rust-only robustness features."""
+    return sorted(RUST_ONLY_FIXTURES)
+
+
 # Expected outcomes validation helpers
 def validate_expected_outcomes(
     fixture: ParityFixture,
