@@ -72,6 +72,34 @@ def _run_tui(client: str = "textual", extra_args: Optional[Sequence[str]] = None
     run_tui(client=client, extra_args=extra_args)
 
 
+def _collect_rust_tui_args(namespace: argparse.Namespace) -> list[str]:
+    """Collect Rust TUI specific flags from the parsed namespace.
+
+    These are the flags defined in tui_parser that should be forwarded
+    to the Rust binary when --client rust is used.
+    """
+    args = []
+    # Boolean flags
+    if getattr(namespace, "debug", False):
+        args.append("--debug")
+    if getattr(namespace, "no_reconnect", False):
+        args.append("--no-reconnect")
+    # String flags with values
+    url = getattr(namespace, "url", None)
+    if url:
+        args.extend(["-u", url])
+    message = getattr(namespace, "message", None)
+    if message:
+        args.extend(["-m", message])
+    session = getattr(namespace, "session", None)
+    if session:
+        args.extend(["-s", session])
+    idempotency_key = getattr(namespace, "idempotency_key", None)
+    if idempotency_key:
+        args.extend(["--idempotency-key", idempotency_key])
+    return args
+
+
 def _configure_console_io() -> None:
     """Make packaged CLI output safe for ordinary Unicode Windows paths."""
     for stream in (sys.stdout, sys.stderr):
@@ -321,8 +349,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     namespace = build_parser().parse_args(args)
 
+    # Collect Rust TUI args for forwarding when --client rust is used
+    rust_tui_args = _collect_rust_tui_args(namespace)
+    client = getattr(namespace, "client", "textual")
+
     if namespace.tui:
-        return run_with_instance_guard("tui", namespace, _run_tui, client=getattr(namespace, "client", "textual"), extra_args=getattr(namespace, "args", []))
+        return run_with_instance_guard("tui", namespace, _run_tui, client=client, extra_args=rust_tui_args)
     if namespace.backend:
         return run_with_instance_guard(
             "backend", namespace, _run_backend,
@@ -331,9 +363,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     command = namespace.command
     if command is None:
-        return run_with_instance_guard("tui", namespace, _run_tui, client=getattr(namespace, "client", "textual"), extra_args=getattr(namespace, "args", []))
+        return run_with_instance_guard("tui", namespace, _run_tui, client=client, extra_args=rust_tui_args)
     if command == "tui":
-        return run_with_instance_guard("tui", namespace, _run_tui, client=getattr(namespace, "client", "textual"), extra_args=getattr(namespace, "args", []))
+        return run_with_instance_guard("tui", namespace, _run_tui, client=client, extra_args=rust_tui_args)
     if command == "backend":
         return run_with_instance_guard("backend", namespace, _run_backend, host=namespace.host, port=namespace.port)
     if command == "bootstrap":

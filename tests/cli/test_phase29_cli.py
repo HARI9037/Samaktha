@@ -14,7 +14,7 @@ import json
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -198,3 +198,127 @@ class TestCliPersonality:
         self._settings(tmp_path, monkeypatch)
         assert app.cli.main(["personality", "set", "does-not-exist"]) == 1
         assert "error:" in capsys.readouterr().err
+
+
+class TestCliRustTuiArgumentForwarding:
+    """Tests that verify Rust TUI arguments are correctly forwarded to the subprocess."""
+
+    def test_collect_rust_tui_args_boolean_flags(self):
+        """Test _collect_rust_tui_args collects --debug and --no-reconnect."""
+        namespace = SimpleNamespace(debug=True, no_reconnect=True, url=None, message=None, session=None, idempotency_key=None)
+        args = app.cli._collect_rust_tui_args(namespace)
+        assert "--debug" in args
+        assert "--no-reconnect" in args
+
+    def test_collect_rust_tui_args_string_flags(self):
+        """Test _collect_rust_tui_args collects -u, -m, -s, --idempotency-key with values."""
+        namespace = SimpleNamespace(
+            debug=False,
+            no_reconnect=False,
+            url="http://localhost:8080",
+            message="hello world",
+            session="sess-123",
+            idempotency_key="idem-456",
+        )
+        args = app.cli._collect_rust_tui_args(namespace)
+        assert "-u" in args
+        assert "http://localhost:8080" in args
+        assert "-m" in args
+        assert "hello world" in args
+        assert "-s" in args
+        assert "sess-123" in args
+        assert "--idempotency-key" in args
+        assert "idem-456" in args
+
+    def test_collect_rust_tui_args_mixed(self):
+        """Test _collect_rust_tui_args with mix of boolean and string flags."""
+        namespace = SimpleNamespace(
+            debug=True,
+            no_reconnect=False,
+            url="http://test:9000",
+            message=None,
+            session="test-session",
+            idempotency_key=None,
+        )
+        args = app.cli._collect_rust_tui_args(namespace)
+        assert args == ["--debug", "-u", "http://test:9000", "-s", "test-session"]
+
+    def test_collect_rust_tui_args_empty(self):
+        """Test _collect_rust_tui_args returns empty list when no flags set."""
+        namespace = SimpleNamespace(
+            debug=False,
+            no_reconnect=False,
+            url=None,
+            message=None,
+            session=None,
+            idempotency_key=None,
+        )
+        args = app.cli._collect_rust_tui_args(namespace)
+        assert args == []
+
+    def test_main_forwards_args_to_rust_tui(self, monkeypatch):
+        """Test that main() forwards collected args to _run_tui when --client rust."""
+        mock_run_tui = MagicMock()
+        monkeypatch.setattr(app.cli, "_run_tui", mock_run_tui)
+
+        # Mock the instance guard to just call the function
+        def mock_guard(instance_name, namespace, func, **kwargs):
+            return func(**kwargs)
+
+        monkeypatch.setattr(app.cli, "run_with_instance_guard", mock_guard)
+
+        app.cli.main(["tui", "--client", "rust", "--debug", "--no-reconnect", "-u", "http://test:8080", "-m", "test msg", "-s", "test-sess", "--idempotency-key", "key-123"])
+
+        # Verify _run_tui was called with the forwarded args
+        mock_run_tui.assert_called_once()
+        call_kwargs = mock_run_tui.call_args.kwargs
+        assert call_kwargs["client"] == "rust"
+        extra_args = call_kwargs["extra_args"]
+        assert "--debug" in extra_args
+        assert "--no-reconnect" in extra_args
+        assert "-u" in extra_args
+        assert "http://test:8080" in extra_args
+        assert "-m" in extra_args
+        assert "test msg" in extra_args
+        assert "-s" in extra_args
+        assert "test-sess" in extra_args
+        assert "--idempotency-key" in extra_args
+        assert "key-123" in extra_args
+
+    def test_main_forwards_args_via_tui_subcommand(self, monkeypatch):
+        """Test that tui subcommand forwards args when --client rust."""
+        mock_run_tui = MagicMock()
+        monkeypatch.setattr(app.cli, "_run_tui", mock_run_tui)
+
+        def mock_guard(instance_name, namespace, func, **kwargs):
+            return func(**kwargs)
+
+        monkeypatch.setattr(app.cli, "run_with_instance_guard", mock_guard)
+
+        app.cli.main(["tui", "--client", "rust", "--debug", "-u", "http://subcommand:8080"])
+
+        mock_run_tui.assert_called_once()
+        call_kwargs = mock_run_tui.call_args.kwargs
+        assert call_kwargs["client"] == "rust"
+        extra_args = call_kwargs["extra_args"]
+        assert "--debug" in extra_args
+        assert "-u" in extra_args
+        assert "http://subcommand:8080" in extra_args
+
+    def test_default_client_is_textual(self, monkeypatch):
+        """Test that default client is textual when not specified."""
+        mock_run_tui = MagicMock()
+        monkeypatch.setattr(app.cli, "_run_tui", mock_run_tui)
+
+        def mock_guard(instance_name, namespace, func, **kwargs):
+            return func(**kwargs)
+
+        monkeypatch.setattr(app.cli, "run_with_instance_guard", mock_guard)
+
+        app.cli.main(["tui"])
+
+        mock_run_tui.assert_called_once()
+        call_kwargs = mock_run_tui.call_args.kwargs
+        assert call_kwargs["client"] == "textual"
+        # No extra args should be passed for textual client
+        assert call_kwargs["extra_args"] == []

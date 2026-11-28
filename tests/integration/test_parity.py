@@ -136,19 +136,19 @@ class TestParityFixtures:
         errors = run_parity_fixture_python(fixture)
         assert not errors, f"Validation failed: {errors}"
 
-    @pytest.mark.xfail(reason="Rust-only robustness feature: stale/duplicate sequence detection and rejection")
+    @pytest.mark.xfail(reason="Rust-only robustness feature: stale/duplicate sequence detection and rejection", strict=True)
     def test_fixture_09_stale_event(self):
         fixture = load_parity_fixture("09_stale_event")
         errors = run_parity_fixture_python(fixture)
         assert not errors, f"Validation failed: {errors}"
 
-    @pytest.mark.xfail(reason="Rust-only robustness feature: duplicate event deduplication")
+    @pytest.mark.xfail(reason="Rust-only robustness feature: duplicate event deduplication", strict=True)
     def test_fixture_10_duplicate_event(self):
         fixture = load_parity_fixture("10_duplicate_event")
         errors = run_parity_fixture_python(fixture)
         assert not errors, f"Validation failed: {errors}"
 
-    @pytest.mark.xfail(reason="Rust-only robustness feature: out-of-order event reordering")
+    @pytest.mark.xfail(reason="Rust-only robustness feature: out-of-order event reordering", strict=True)
     def test_fixture_11_out_of_order_event(self):
         fixture = load_parity_fixture("11_out_of_order_event")
         errors = run_parity_fixture_python(fixture)
